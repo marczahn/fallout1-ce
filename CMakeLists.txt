@@ -41,6 +41,12 @@ endif()
 target_include_directories(${EXECUTABLE_NAME} PUBLIC src)
 
 target_sources(${EXECUTABLE_NAME} PUBLIC
+    "src/companion_protocol.cc"
+    "src/companion_protocol.h"
+    "src/companion_server.cc"
+    "src/companion_server.h"
+    "src/companion_snapshot.cc"
+    "src/companion_snapshot.h"
     "src/game/actions.cc"
     "src/game/actions.h"
     "src/game/amutex.cc"

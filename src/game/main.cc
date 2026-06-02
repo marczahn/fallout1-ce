@@ -13,6 +13,7 @@
 #include <limits.h>
 #include <stddef.h>
 
+#include "companion_server.h"
 #include "game/amutex.h"
 #include "game/art.h"
 #include "game/credits.h"
@@ -44,6 +45,7 @@
 #include "plib/gnw/intrface.h"
 #include "plib/gnw/svga.h"
 #include "plib/gnw/text.h"
+#include "platform_compat.h"
 
 namespace fallout {
 
@@ -227,6 +229,8 @@ static bool main_init_system(int argc, char** argv)
         return false;
     }
 
+    companionServerInit();
+
     // NOTE: Uninline.
     main_selfrun_init();
 
@@ -248,6 +252,8 @@ static void main_exit_system()
 
     // NOTE: Uninline.
     main_selfrun_exit();
+
+    companionServerExit();
 
     game_exit();
 
@@ -328,6 +334,8 @@ static void main_game_loop()
         scripts_check_state();
 
         map_check_state();
+
+        companionServerTick(compat_timeGetTime());
 
         if (main_game_paused != 0) {
             main_game_paused = 0;
