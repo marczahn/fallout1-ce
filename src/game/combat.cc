@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "companion_server.h"
 #include "game/actions.h"
 #include "game/anim.h"
 #include "game/art.h"
@@ -2133,6 +2134,7 @@ void combat_turn_run()
         sharedFpsLimiter.mark();
 
         process_bk();
+        companionServerTick(compat_timeGetTime());
 
         renderPresent();
         sharedFpsLimiter.throttle();
@@ -2179,6 +2181,8 @@ static int combat_input()
             scripts_check_state_in_combat();
             game_handle_input(input, true);
         }
+
+        companionServerTick(compat_timeGetTime());
 
         renderPresent();
         sharedFpsLimiter.throttle();
