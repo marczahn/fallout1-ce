@@ -45,7 +45,6 @@
 #include "plib/gnw/intrface.h"
 #include "plib/gnw/svga.h"
 #include "plib/gnw/text.h"
-#include "platform_compat.h"
 
 namespace fallout {
 
@@ -334,8 +333,6 @@ static void main_game_loop()
         scripts_check_state();
 
         map_check_state();
-
-        companionServerTick(compat_timeGetTime());
 
         if (main_game_paused != 0) {
             main_game_paused = 0;

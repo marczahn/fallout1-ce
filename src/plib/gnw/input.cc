@@ -4,6 +4,7 @@
 #include <stdio.h>
 
 #include "audio_engine.h"
+#include "companion_server.h"
 #include "platform_compat.h"
 #include "plib/color/color.h"
 #include "plib/gnw/button.h"
@@ -214,6 +215,8 @@ void get_input_position(int* x, int* y)
 void process_bk()
 {
     int v1;
+
+    companionServerTick(compat_timeGetTime());
 
     GNW_do_bk_process();
 
