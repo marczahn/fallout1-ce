@@ -48,21 +48,20 @@ enum class ClientState {
 };
 
 struct CompanionConnection {
-    int fd;
-    ClientState state;
-    unsigned int nextSeq;
-    unsigned int lastSampleMs;
-    bool playerWasAvailable;
-    CompanionPlayerSnapshot lastSentPlayer;
-    char inbound[kInboundBufferSize];
-    size_t inboundLen;
+    int fd = -1;
+    ClientState state = ClientState::AwaitingHello;
+    unsigned int nextSeq = 1;
+    unsigned int lastSampleMs = 0;
+    bool playerWasAvailable = false;
+    CompanionPlayerSnapshot lastSentPlayer = {};
+    char inbound[kInboundBufferSize] = {};
+    size_t inboundLen = 0;
     std::string outbound;
 };
 
 ServerState gServerState = ServerState::Disabled;
 int gListenerFd = -1;
 
-#if !defined(_WIN32)
 IdleFunc* gOriginalIdleFunc = nullptr;
 bool gIdleHookInstalled = false;
 
@@ -73,19 +72,8 @@ void companionIdleHook()
     }
     companionServerTick(compat_timeGetTime());
 }
-#endif
 
-CompanionConnection gConnection = {
-    -1,
-    ClientState::AwaitingHello,
-    1,
-    0,
-    false,
-    { 0, 0 },
-    {},
-    0,
-    std::string(),
-};
+CompanionConnection gConnection;
 
 bool hasClient()
 {
@@ -477,26 +465,22 @@ bool companionServerInit()
     gServerState = ServerState::Listening;
     debug_printf("companion: listening on %s:%d\n", kListenHost, kListenPort);
 
-#if !defined(_WIN32)
     if (!gIdleHookInstalled) {
         gOriginalIdleFunc = get_idle_func();
         set_idle_func(companionIdleHook);
         gIdleHookInstalled = true;
     }
-#endif
 
     return true;
 }
 
 void companionServerExit()
 {
-#if !defined(_WIN32)
     if (gIdleHookInstalled) {
         set_idle_func(gOriginalIdleFunc);
         gOriginalIdleFunc = nullptr;
         gIdleHookInstalled = false;
     }
-#endif
 
     closeConnection();
     closeFd(&gListenerFd);

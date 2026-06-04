@@ -228,6 +228,11 @@ static bool main_init_system(int argc, char** argv)
         return false;
     }
 
+    // Companion server: must be initialized after game_init (so the
+    // engine's idle_func is set up; the companion server chains its
+    // own idle hook) and before main_selfrun_init (no functional
+    // dependency today, but keeps init order stable across the two
+    // peer subsystems). Init failure is non-fatal by design.
     companionServerInit();
 
     // NOTE: Uninline.

@@ -1,3 +1,21 @@
+// Wire format: one JSON object per line (newline-delimited JSON, UTF-8).
+// All field names use camelCase; type identifiers are lowercase.
+//
+// Client -> server:
+//   {"type":"hello"}              handshake; must be the first message
+//   {"type":"get_snapshot"}       request a full snapshot
+//
+// Server -> client:
+//   {"type":"world","schemaVersion":1,"game":"fallout1-ce","playerAvailable":bool}
+//   {"type":"snapshot","seq":N,"playerAvailable":bool,"data":{"player":{"hp":H,"maxHp":M}}}
+//   {"type":"update","entity":"player","seq":N,"playerAvailable":bool,"data":{"hp":H} | {"hp":H,"maxHp":M}}
+//   {"type":"player_unavailable","seq":N,"playerAvailable":false}
+//
+// `world` has no `seq`. `snapshot` has no `entity`. `update` always
+// has `entity` and a partial `data` covering only the fields that
+// changed since the last send. `player_unavailable` is emitted
+// one-shot on the present -> absent transition.
+
 #include "companion_protocol.h"
 
 #include <stddef.h>
