@@ -30,7 +30,7 @@ namespace fallout {
 namespace {
 
 constexpr int kListenPort = 28080;
-constexpr const char* kListenHost = "127.0.0.1";
+constexpr const char* kListenHost = "0.0.0.0";
 constexpr int kListenBacklog = 1;
 
 constexpr size_t kInboundBufferSize = 4096;
