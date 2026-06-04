@@ -278,7 +278,7 @@ Reject solutions that are:
 The current agreed direction for step 1 is:
 
 - one TCP client
-- localhost only
+- localhost only (intended target; step 1 currently binds to `0.0.0.0` for development convenience — a step 2 task is to default to `127.0.0.1` and add authentication)
 - newline-delimited JSON
 - client sends `hello`
 - server replies `world`

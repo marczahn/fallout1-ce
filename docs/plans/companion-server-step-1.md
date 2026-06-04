@@ -166,7 +166,7 @@ Protocol behavior:
 4. Enter `ready`.
 5. When the client sends `{"type":"get_snapshot"}`, send one full snapshot.
 6. Every 500 ms, sample snapshot and send `update` if changed.
-7. On parse error, unknown first message, socket error, or disconnect, drop client and continue listening.
+7. On parse error, unknown message, socket error, or disconnect, drop client and continue listening. (The first message must be `hello`; any other first message is rejected as a special case of "unknown message.")
 
 ## Message Schema
 

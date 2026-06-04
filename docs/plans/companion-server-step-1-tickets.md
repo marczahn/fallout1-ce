@@ -18,7 +18,7 @@ Carried over from the plan, restated as a hard wall:
 - No generalized engine event bus.
 - No background threads.
 - No new third-party dependencies.
-- No Windows socket support (POSIX first; keep code isolated for step 2).
+- No Windows socket implementation (POSIX only; Windows path is empty stubs that satisfy the linker and let the rest of the codebase compile).
 
 ## Cross-Cutting Constraints
 
@@ -27,8 +27,8 @@ Carried over from the plan, restated as a hard wall:
 - **Third-party libraries only if they clearly pay for themselves in step 1.** They do not here. Reject any PR that adds one.
 - **Server init failure must not abort the game.** On any socket setup failure, the server transitions to `disabled` and `companionServerInit` still returns success.
 - **No per-tick churn.** No allocation in the steady state path. No log spam. Sampling and serialization cost must be negligible vs. frame time.
-- **Fail closed.** Malformed input, unknown first message, or socket error drops the client and returns the server to `listening`. Game state untouched.
-- **Localized diff.** Touch only the three new files, the three `main.cc` integration points, the existing `set_idle_func` hook for the background tick, the two combat loops in `src/game/combat.cc`, the build system entry. Nothing else.
+- **Fail closed.** Malformed input, unknown message, or socket error drops the client and returns the server to `listening`. Game state untouched. (A non-`hello` first message is the most common case of "unknown message" and is rejected as such.)
+- **Localized diff.** Touch only the three new files, the two `main.cc` integration points (init + exit), the single `process_bk()` tick site in `src/plib/gnw/input.cc`, the `set_idle_func` hook in `src/plib/gnw/input.cc`, the one-character `debug_register_log` typo fix in `src/plib/gnw/debug.cc`, the build system entry, and the `.gitignore` rule that was preventing the plan and tickets from being tracked. Nothing else.
 - **No background threads.** The background tick hook is **not** a thread. It is a function pointer invoked from the existing `GNW95_lost_focus` busy-wait on the main thread, chained in front of the default `SDL_Delay(125)` throttle.
 
 ## Hidden Assumptions (Verified)
@@ -47,7 +47,7 @@ These came from the plan. They are real in this repo:
 1. **Slow consumer policy.** Drop the client when the outbound buffer exceeds **256 KiB**. Tolerant of slow networks; bounded memory.
 2. **`seq` start value.** `world` has no `seq`. The first `snapshot` or `update` after `world` is `seq=1`. Counter increments per post-handshake send.
 3. **Missing-player behavior.** Emit a one-shot `player_unavailable` event on the transition from "player present" to "player absent." On the transition back to "player present," let the next 500 ms sample's normal change detection fire a regular `update` (no separate `player_available` event). Initial state is "absent," so the first load does not emit `player_unavailable`.
-4. **Build system entry.** Single executable target `fallout-ce` defined at `CMakeLists.txt:5`. Sources listed explicitly in `target_sources` (`CMakeLists.txt:43`). Three new `.cc` files are added as three lines in alphabetical order, before the first `src/game/...` entry.
+4. **Build system entry.** Single executable target `fallout-ce` defined at `CMakeLists.txt:5`. Sources listed explicitly in `target_sources` (`CMakeLists.txt:43`). The three new `.cc` and three matching `.h` files are added as six lines in alphabetical order, before the first `src/game/...` entry.
 5. **`seq` scope.** Per-connection counter. Resets on connect/disconnect.
 
 ## Top-Level Success Criteria (For Closing Step 1)
@@ -84,8 +84,9 @@ These came from the plan. They are real in this repo:
   void companionServerTick(unsigned int now);
   }
   ```
-- Add calls at `src/game/main.cc:224` (`main_init_system`), `:311` (`main_game_loop`), `:245` (`main_exit_system`).
-- Add the three new `.cc` files to the CMake target.
+- Add calls at `src/game/main.cc` (`main_init_system` and `main_exit_system`).
+- Add the single tick call at `process_bk()` in `src/plib/gnw/input.cc` (this is the only tick site; see "Tick integration" in the plan).
+- Add the three new `.cc` and three matching `.h` files to the CMake target.
 
 **Acceptance:**
 - Build succeeds.
@@ -201,10 +202,11 @@ These came from the plan. They are real in this repo:
 - Inbound:
   - Read into a fixed-size receive buffer (suggested 4 KiB).
   - Split on `\n`. Each complete line goes to the protocol parser.
-  - On parse error or unknown first message, drop the client.
+  - On parse error or unknown message, drop the client.
 - Handshake:
   - In `awaiting_hello`: only `hello` is valid. Any other first message → drop, back to `listening`.
   - On `hello` → enqueue `world`, transition to `ready`, reset `seq` to 0 (next send becomes seq=1).
+  - In `ready`: only `get_snapshot` and `hello` are valid. `get_snapshot` enqueues a `snapshot`. `hello` is silently ignored (no state change, no `seq` increment). Any other message → drop, back to `listening`.
 - Post-handshake:
   - `get_snapshot` → enqueue one `snapshot` with current `seq`, then increment.
   - Every 500 ms (time-based, not frame-based):
