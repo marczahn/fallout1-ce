@@ -174,7 +174,7 @@ These are the facts each ticket depends on. Step 1's verified facts (`obj_dude`,
 
 ### T2 — Real Player-Availability Signal
 
-**Status:** done
+**Status:** done (revised)
 
 **Implementation notes:**
 
@@ -183,59 +183,66 @@ These are the facts each ticket depends on. Step 1's verified facts (`obj_dude`,
   1. `obj_dude == nullptr` (covers game start, after `game_exit`).
   2. `in_main_menu` (covers the main menu loop).
   3. `moviePlaying()` from `int/movie.h` (covers MVE playback: IPLOGO, INTRO, OVRINTRO, the death scene, and the MVE-rendered sub-variants of `gmovie_play`).
-  4. `map_data.name[0] == '\0'` (covers "no real map is currently loaded", which also covers the world map, because `map_save_in_game(true)` clears the name at entry).
+  4. `map_data.name[0] == '\0' && !worldMapIsActive()` (covers "no real map is currently loaded" but accepts the world map as gameplay, because `map_save_in_game(true)` clears the name at world-map entry; `worldMapIsActive()` exposes `wwin_flag` from `game/worldmap.cc`, which is true for the entire duration of a `world_map()` invocation).
   5. `(obj_dude->flags & OBJECT_HIDDEN) != 0` (covers the post-`main_unload_new` state, including "player returned to the main menu from a previous game and then started a new game and is now in character creation", where `map_data.name` still holds the previous map's name).
-- No new engine files were touched. `in_main_menu` is read from `game/mainmenu.h`, `moviePlaying()` from `int/movie.h`, `map_data` from `game/map.h` (already an `extern`), `OBJECT_HIDDEN` from `game/object_types.h`, and `obj_dude` from `game/object.h`. The localized diff rule is preserved.
+- The original revision treated the world map as "not real gameplay" because `map_save_in_game(true)` clears `map_data.name[0]`. That diagnosis was wrong: `obj_dude` carries `OBJECT_NO_REMOVE` (`src/game/object.cc:334`), so `obj_remove_all()` (called from `map_save_in_game(true)` at `src/game/map.cc:1500`) does not touch the player. HP, max HP, inventory, and party state are all real on the world map, and reporting them as zero was a lie. The revised check uses `worldMapIsActive()` to disambiguate the world map from the other "no real map" states (cold startup, MVE playback, post-`main_unload_new`, character creation), none of which ever have the world map window up.
+- One new public function on the world map module: `bool worldMapIsActive()` in `src/game/worldmap.h`, implemented in `src/game/worldmap.cc` as `return wwin_flag != 0;`. `wwin_flag` is a `static unsigned char` in `worldmap.cc` set to 1 by `InitWorldMapData` (`worldmap.cc:2706`, also set by the town map picker at `worldmap.cc:3295`) and cleared by `KillWorldWin` (`worldmap.cc:3500`). The flag is true for the entire duration of a `world_map()` invocation, including the brief periods the town map picker is shown. Both callers (`scripts.cc:789,798` and `map.cc:1268,1277`) call `world_map` synchronously and `KillWorldWin` immediately after, so the flag tracks "is the world map function on the call stack" with no false positives.
+- The transition from "real map" to "world map" still has a brief flicker: `map_save_in_game(true)` clears the map name before `InitWorldMapData` sets `wwin_flag`. The companion server samples every 500 ms, so a 500 ms sample landing in that window will report `hasPlayer: false` once. This is a pre-existing limitation; the change does not make it worse.
+- No new engine files were touched. `in_main_menu` is read from `game/mainmenu.h`, `moviePlaying()` from `int/movie.h`, `map_data` from `game/map.h` (already an `extern`), `OBJECT_HIDDEN` from `game/object_types.h`, `obj_dude` from `game/object.h`, and `worldMapIsActive()` from `game/worldmap.h` (the only new include in the helper). The localized diff rule is preserved.
 - The step-1 contract "`playerAvailable` reflects the game state at the moment the message is built" is preserved: every `world`, `snapshot`, `update`, and `player_unavailable` message already derives `playerAvailable` from the snapshot's `hasPlayer`, and `hasPlayer` is now the helper's output.
 
 **Audit: engine-signal investigation for the player-availability contract.**
 
-The T2 contract is "`hasPlayer` is true only when all of: `obj_dude != nullptr`, real map loaded, not main menu/intro/world-map, no fullscreen movie." This is the disambiguation table that justifies the five checks above. For each state the ticket lists, the table records which check (or which pair of checks) is responsible for reporting `hasPlayer = false`.
+The T2 contract is "`hasPlayer` is true only when all of: `obj_dude != nullptr`, real map loaded OR world map active, not main menu/intro, no fullscreen movie, player not torn down." This is the disambiguation table that justifies the five checks above. For each state the ticket lists, the table records which check (or which pair of checks) is responsible for reporting `hasPlayer = false`.
 
-| State                       | obj_dude | in_main_menu | moviePlaying | map_data.name[0] | OBJECT_HIDDEN | hasPlayer |
-|-----------------------------|----------|--------------|--------------|------------------|---------------|-----------|
-| Game start (cold)           | NULL     | false        | false        | '\0'             | n/a           | false     |
-| IPLOGO + INTRO (game start) | non-null | false        | **true**     | '\0'             | set           | false     |
-| Main menu (no prior game)   | non-null | **true**     | false        | '\0'             | set           | false     |
-| Main menu (after gameplay)  | non-null | **true**     | false        | set              | **set**       | false     |
-| Character creation (fresh)  | non-null | false        | false        | '\0'             | set           | false     |
-| Character creation (after prior game) | non-null | false | false | set (from prior map) | **set** | false |
-| OVRINTRO                    | non-null | false        | **true**     | '\0'             | set           | false     |
-| World map                   | non-null | false        | false        | **'\0'** (cleared by `map_save_in_game(true)`) | clear | false |
-| Real in-map gameplay        | non-null | false        | false        | set              | clear         | **true**  |
-| In-game menu (dialog, pip-boy, barter, save, options, etc.) | non-null | false | false | set | clear | true |
-| Save/load screen            | non-null | false        | false        | set (loading) or '\0' (briefly) | clear | true (no menu mask) |
-| Death scene (movie)         | non-null | false        | **true**     | set              | clear         | false     |
-| Between death and main menu | non-null | false        | false        | set (from last map) | **set** (after `main_unload_new`) | false |
-| After game quit (`game_exit`) | NULL   | n/a          | n/a          | n/a              | n/a           | false     |
+| State                       | obj_dude | in_main_menu | moviePlaying | map_data.name[0] | worldMapIsActive | OBJECT_HIDDEN | hasPlayer |
+|-----------------------------|----------|--------------|--------------|------------------|------------------|---------------|-----------|
+| Game start (cold)           | NULL     | false        | false        | '\0'             | false            | n/a           | false     |
+| IPLOGO + INTRO (game start) | non-null | false        | **true**     | '\0'             | false            | set           | false     |
+| Main menu (no prior game)   | non-null | **true**     | false        | '\0'             | false            | set           | false     |
+| Main menu (after gameplay)  | non-null | **true**     | false        | set              | false            | **set**       | false     |
+| Character creation (fresh)  | non-null | false        | false        | '\0'             | false            | set           | false     |
+| Character creation (after prior game) | non-null | false | false | set (from prior map) | false | **set** | false |
+| OVRINTRO                    | non-null | false        | **true**     | '\0'             | false            | set           | false     |
+| World map                   | non-null | false        | false        | **'\0'** (cleared by `map_save_in_game(true)`) | **true** | clear         | **true**  |
+| World map → town map picker (transient) | non-null | false | false | '\0' (still cleared) | **true** | clear | **true** |
+| Real in-map gameplay        | non-null | false        | false        | set              | false            | clear         | **true**  |
+| In-game menu (dialog, pip-boy, barter, save, options, etc.) | non-null | false | false | set | false | clear | true |
+| Save/load screen            | non-null | false        | false        | set (loading) or '\0' (briefly) | false | clear | true (no menu mask) |
+| Death scene (movie)         | non-null | false        | **true**     | set              | false            | clear         | false     |
+| Between death and main menu | non-null | false        | false        | set (from last map) | false | **set** (after `main_unload_new`) | false |
+| After game quit (`game_exit`) | NULL   | n/a          | n/a          | n/a              | n/a              | n/a           | false     |
 
 Notes on the table:
 
 - `map_data.field_34` is **not** a reliable "no map" signal. The struct is BSS-initialized to 0, which happens to be `MAP_DESERT1`. The world map does not change `field_34` either; it only changes `map_data.name[0]`. This is why the step-1 plan's "`map_get_index_number() != -1`" suggestion is insufficient on its own — the world map keeps `field_34` at the last real map's index.
-- The world-map detection signal is `map_data.name[0] == '\0'`, not `field_34 == -1`. `map_save_in_game(true)` (called by `world_map` at entry, `src/game/worldmap.cc:999`) clears the name field but does not touch `field_34`. The world-map exits via `LoadTownMap` (`worldmap.cc:2523`) which calls `map_load` and re-sets the name.
+- The world-map detection signal is `worldMapIsActive()` (the new helper backed by `wwin_flag`), not `map_data.name[0]` alone. `wwin_flag` is set to 1 by `InitWorldMapData` (`src/game/worldmap.cc:2706`) when the world map window is created, and cleared by `KillWorldWin` (`worldmap.cc:3500`) which the caller invokes immediately after `world_map()` returns (`scripts.cc:789-790,798-799` and `map.cc:1268-1270,1277-1279`). The flag tracks "is the world map function on the call stack" with no false positives.
+- `map_save_in_game(true)` (called by `world_map` at entry, `src/game/worldmap.cc:999`) clears `map_data.name[0]` but does not touch `field_34`. The world-map exits via `LoadTownMap` (`worldmap.cc:2523`) which calls `map_load` and re-sets the name.
+- The "world map → town map picker" row covers the brief moments inside the world map when the small in-world-map city picker is shown (`town_map` at `src/game/worldmap.cc:3098`). The world map window is still up (`wwin_flag == 1`), so the helper correctly returns `hasPlayer: true`. The player is interacting with the game (picking an entrance), so this is the right call.
 - The `OBJECT_HIDDEN` check is the one that disambiguates "real map is still named but the player is not playing." It is set by `obj_turn_off` (`src/game/object.cc:1840`), which `main_unload_new` (`src/game/main.cc:316`) calls when leaving real gameplay. It is cleared by `obj_turn_on` (`src/game/object.cc:1809`), which `main_load_new` (`src/game/main.cc:274`) calls when starting real gameplay. The object is created with `OBJECT_HIDDEN` set in `obj_new`/`obj_init` (`object.cc:332-340`), so a fresh game also starts hidden.
-- The save/load screen row reflects the design choice that pause screens (save, load, dialog, pip-boy, barter, character sheet, options, world map excepted) do not mask `hasPlayer`. The underlying map is loaded the whole time. The world map is the one exception: it actively tears down the map via `map_save_in_game(true)`.
+- The save/load screen row reflects the design choice that pause screens (save, load, dialog, pip-boy, barter, character sheet, options) do not mask `hasPlayer`. The underlying map is loaded the whole time. The world map is now in the same category: it is a real-gameplay surface with real player data, and the helper returns `true` for it.
 - The "in-game menu" row covers dialog, pip-boy, barter, character sheet, options, save, and the other in-game UI surfaces. None of them set `OBJECT_HIDDEN`, clear the map name, or start a movie. They are all "player is in a real map, looking at a UI."
 
 **Acceptance verification (static, from the table):**
 
 - Main menu: `in_main_menu` is `true` → `hasPlayer = false`. ✓
 - Intro movie: `moviePlaying()` is `true` → `hasPlayer = false`. ✓
-- World map: `map_data.name[0] == '\0'` (cleared by `map_save_in_game(true)`) → `hasPlayer = false`. ✓
+- World map: `map_data.name[0] == '\0'` and `worldMapIsActive()` is `true` → the combined check does not return false → `hasPlayer = true`. ✓
+- World map → town map picker (transient): same as world map, `worldMapIsActive()` is `true` → `hasPlayer = true`. ✓
 - Character creation: `OBJECT_HIDDEN` is `set` (from prior `main_unload_new` or from initial `obj_new`) → `hasPlayer = false`. ✓
 - Save/load: name is set (during load the name is briefly empty but the helper's first three checks already return false during the load movie/menu flow, and the client sees a transition through `player_unavailable` if the load fails). ✓
 - Real in-map gameplay: all five checks pass → `hasPlayer = true`. ✓
 - Absent → present transition: `hasPlayer` flips to `true`, no `player_available` event. The next sample sees the change in `hp`/`maxHp` and emits a normal `update`. Per `companion_server.cc:269-287` (`queuePlayerUpdateIfNeeded`) and the absent→present path in `sampleReadyClient` (`companion_server.cc:439-464`). ✓
 - Present → absent transition (death): `hasPlayer` flips to `false`, the server emits exactly one `player_unavailable`. Per `companion_server.cc:260-267` and `sampleReadyClient`. ✓
-- Cost: the helper is five O(1) checks (pointer compare, bool read, function call returning a global int, byte compare, bitwise AND). No allocation, no scan, no global lock. ✓
+- Cost: the helper is five O(1) checks (pointer compare, bool read, function call returning a global int, byte compare + bool function call, bitwise AND). No allocation, no scan, no global lock. ✓
 
 **Verification status:**
 
 - Build passes (`cmake --build build --target fallout-ce`).
 - The unit-test surface in `/tmp/opencode/protocol_test.cc` does not cover the new helper, because the helper reads engine globals and is not linkable into a host-only test binary. A runtime check requires the game data files (`master.dat`), which are not present in this workspace. The acceptance table above is the substitute for the runtime check.
-- The next QA pass should run the game with `companion_server` enabled and a `nc` client connected, and walk through each row of the table while observing the wire. Recommended manual cases: fresh game start, load a saved game, walk off a map edge to the world map, enter a city from the world map, die in combat, and start a new game after a previous game session.
+- The next QA pass should run the game with `companion_server` enabled and a `nc` client connected, and walk through each row of the table while observing the wire. Recommended manual cases: fresh game start, load a saved game, walk off a map edge to the world map, walk across the world map, click a city and pick an entrance from the town map picker, enter a city from the world map, die in combat, and start a new game after a previous game session.
 
-**Goal:** `hasPlayer` (and therefore `playerAvailable`) is `true` only when the engine is in real gameplay: a real map is loaded, the main menu / intro / world-map state is false, and no fullscreen movie is playing. The placeholder 30/30 HP that step 1 reports from the main menu / intro / world map must not be exposed.
+**Goal:** `hasPlayer` (and therefore `playerAvailable`) is `true` only when the engine is in real gameplay: a real map is loaded, the world map is the active surface, the main menu / intro state is false, the player is not torn down, and no fullscreen movie is playing. The placeholder 30/30 HP that step 1 reports from the main menu / intro must not be exposed. The world map is real gameplay; HP, max HP, and inventory are real and are reported.
 
 **Scope:**
 - Investigate and document in `docs/audits/companion-server-step-2.md` (or a focused subsection in the tickets file) the engine signals that distinguish:
@@ -256,14 +263,17 @@ Notes on the table:
 - `companionCollectSnapshot` uses the new helper to set `hasPlayer`.
 - `world.playerAvailable`, `snapshot.playerAvailable`, and `update.playerAvailable` are derived from the new helper. The step-1 contract "reflects the game state at the moment the message is built" is preserved.
 - Re-verify the T7 step-1 manual validation cases (main menu, intro, world map, real play) against the new helper. Add the verification log to this ticket.
+- Expose a small public predicate on the world map module, `bool worldMapIsActive()`, so the helper can distinguish "no real map loaded and the world map is up" from "no real map loaded and we're in a non-gameplay state (cold startup, MVE playback, post-`main_unload_new`, character creation)." The predicate is backed by `wwin_flag` in `worldmap.cc` and is true for the entire duration of a `world_map()` invocation.
+- T3 (position and map) is the next consumer of `worldMapIsActive()`. T3 will need to decide whether to keep the existing `x, y, map` fields and emit sentinels on the world map, or to add world-map position fields. That work is **out of scope for this ticket**.
 
 **Acceptance:**
 - At the main menu, `playerAvailable` is `false` for any `world`, `snapshot`, or `update` the server would send.
 - During the intro movie, `playerAvailable` is `false`.
-- On the world map, `playerAvailable` is `false`.
+- On the world map, `playerAvailable` is `true`.
+- During the in-world-map town map picker, `playerAvailable` is `true`.
 - During character creation, `playerAvailable` is `false` (placeholder HP is being set but the player is not "playing").
 - During a save/load screen, `playerAvailable` matches the underlying real-map state, not the screen state.
-- During real in-map gameplay, `playerAvailable` is `true`.
+- During real in-game gameplay, `playerAvailable` is `true`.
 - The transition from "absent" to "present" still produces a normal `update` (no `player_available` event), per the step-1 contract.
 - The step-1 test for "player death → exactly one `player_unavailable`" still passes with the new helper as the source of truth.
 

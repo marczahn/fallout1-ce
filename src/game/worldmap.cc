@@ -3768,4 +3768,9 @@ static void BlackOut()
     memset(world_buf, colorTable[0], WM_WINDOW_WIDTH * WM_WINDOW_HEIGHT);
 }
 
+bool worldMapIsActive()
+{
+    return wwin_flag != 0;
+}
+
 } // namespace fallout

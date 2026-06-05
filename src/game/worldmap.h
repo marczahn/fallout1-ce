@@ -160,6 +160,14 @@ int worldmap_script_jump(int city, int a2);
 int xlate_mapidx_to_town(int map_idx);
 int PlayCityMapMusic();
 
+// Returns true while the world map (or the in-world-map town map picker) is
+// the active game surface. Internally backed by `wwin_flag` in
+// `worldmap.cc`, which is set when the world map window is created in
+// `InitWorldMapData` and cleared by `KillWorldWin`. The flag is true for
+// the entire duration of a `world_map()` invocation, including the brief
+// periods the town map picker is shown.
+bool worldMapIsActive();
+
 } // namespace fallout
 
 #endif /* FALLOUT_GAME_WORLDMAP_H_ */
