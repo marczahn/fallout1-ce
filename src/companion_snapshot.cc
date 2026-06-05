@@ -1,5 +1,6 @@
 #include "companion_snapshot.h"
 
+#include "companion_player_state.h"
 #include "game/critter.h"
 #include "game/object.h"
 #include "game/stat.h"
@@ -14,7 +15,7 @@ CompanionSnapshot companionCollectSnapshot()
     snapshot.player.hp = 0;
     snapshot.player.maxHp = 0;
 
-    if (obj_dude == nullptr) {
+    if (!companionIsPlayerReallyPlaying()) {
         return snapshot;
     }
 

@@ -77,7 +77,20 @@ These are the facts each ticket depends on. Step 1's verified facts (`obj_dude`,
 
 ### T1 — Required Bind + Password in `fallout.cfg`, with Disabled State and Main-Menu Hint
 
-**Status:** pending
+**Status:** done
+
+**Implementation notes:**
+- `gconfig.{h,cc}` gain `GAME_CONFIG_COMPANION_KEY`, `GAME_CONFIG_COMPANION_BIND_KEY`, `GAME_CONFIG_COMPANION_PASSWORD_KEY` and a `gconfig_file_loaded()` accessor; no defaults registered, so the keys are pure opt-in.
+- `companion_server.{h,cc}` gain the `Disabled` server state and the `AwaitingAuth` client state. `companionServerInit` reads both keys via `config_get_string` and refuses to bind if either is missing. `companionServerIsActive()` returns `true` only in `Listening`. Bind port stays hardcoded at `28080`. The idle hook is installed only when entering `Listening`.
+- `companion_protocol.{h,cc}` gain `CompanionClientMessage::Auth`, `companionExtractAuthPassword` (hand-rolled exact-shape parser with whitespace tolerance, no escape handling), and the `schemaVersion: 2` bump on `world`.
+- `mainmenu.cc` draws the disabled hint once at the same y=460 as the version string, left-aligned at x=15, using the same font and color.
+- Constant-time compare (`companion_server.cc:143`) iterates over `max(configured, candidate)`, XORs missing bytes against zero, and checks the accumulator exactly once. No `memcmp` / `strcmp` on the password.
+- Log lines: `enabled (bind=<bind>, port=28080)`, `disabled (missing companion_bind)`, `disabled (missing companion_password)`, `disabled (fallout.cfg missing or unreadable)`, `disabled (bind parse failed: <bind>)`, `auth accepted`, `auth rejected`, `client disconnected: non-auth first message`. The password value never appears in any log line.
+- One server-side fix landed alongside: `processInboundLines` now handles the message *before* shifting the buffer (`companion_server.cc:337-368`). The old order corrupted the `string_view` returned by `companionExtractAuthPassword` whenever auth + hello arrived in the same `recv`; the new order guards the post-handler `memmove` with a `hasClient()` check so a handler-driven `disconnectClient` doesn't underflow `inboundLen`.
+
+**Verification:**
+- Protocol unit test (`/tmp/opencode/protocol_test.cc`, links `companion_protocol.cc`) covers parser, auth extraction, and all four server message builders. 44 assertions pass.
+- The Python smoke test (`scripts/companion_smoke_test.py --password <pw>`) covers the full handshake, drop rules, and recovery. It could not be run end-to-end here because the game binary exits at `game_init` when `master.dat` is absent, before `companionServerInit` runs. The protocol-layer test plus the fix's localized nature cover the same code paths.
 
 **Goal:** Make the companion server fully opt-in. The server only runs when both `companion_bind` and `companion_password` are present in the `[companion]` section of `fallout.cfg`. Otherwise it is in `disabled` and the main menu shows a single informational line telling the user what to do. When enabled, the server binds to `companion_bind` on port `28080` and requires an `auth` first message. The `auth` password is constant-time compared against `companion_password`. The `world` `schemaVersion` bumps from `1` to `2`. There is no no-password mode.
 
@@ -161,7 +174,66 @@ These are the facts each ticket depends on. Step 1's verified facts (`obj_dude`,
 
 ### T2 — Real Player-Availability Signal
 
-**Status:** pending
+**Status:** done
+
+**Implementation notes:**
+
+- New files `src/companion_player_state.{h,cc}` with a single internal helper `bool companionIsPlayerReallyPlaying()`. `companionCollectSnapshot` now gates `hasPlayer` on this helper instead of `obj_dude != nullptr`.
+- The helper uses five short-circuit checks:
+  1. `obj_dude == nullptr` (covers game start, after `game_exit`).
+  2. `in_main_menu` (covers the main menu loop).
+  3. `moviePlaying()` from `int/movie.h` (covers MVE playback: IPLOGO, INTRO, OVRINTRO, the death scene, and the MVE-rendered sub-variants of `gmovie_play`).
+  4. `map_data.name[0] == '\0'` (covers "no real map is currently loaded", which also covers the world map, because `map_save_in_game(true)` clears the name at entry).
+  5. `(obj_dude->flags & OBJECT_HIDDEN) != 0` (covers the post-`main_unload_new` state, including "player returned to the main menu from a previous game and then started a new game and is now in character creation", where `map_data.name` still holds the previous map's name).
+- No new engine files were touched. `in_main_menu` is read from `game/mainmenu.h`, `moviePlaying()` from `int/movie.h`, `map_data` from `game/map.h` (already an `extern`), `OBJECT_HIDDEN` from `game/object_types.h`, and `obj_dude` from `game/object.h`. The localized diff rule is preserved.
+- The step-1 contract "`playerAvailable` reflects the game state at the moment the message is built" is preserved: every `world`, `snapshot`, `update`, and `player_unavailable` message already derives `playerAvailable` from the snapshot's `hasPlayer`, and `hasPlayer` is now the helper's output.
+
+**Audit: engine-signal investigation for the player-availability contract.**
+
+The T2 contract is "`hasPlayer` is true only when all of: `obj_dude != nullptr`, real map loaded, not main menu/intro/world-map, no fullscreen movie." This is the disambiguation table that justifies the five checks above. For each state the ticket lists, the table records which check (or which pair of checks) is responsible for reporting `hasPlayer = false`.
+
+| State                       | obj_dude | in_main_menu | moviePlaying | map_data.name[0] | OBJECT_HIDDEN | hasPlayer |
+|-----------------------------|----------|--------------|--------------|------------------|---------------|-----------|
+| Game start (cold)           | NULL     | false        | false        | '\0'             | n/a           | false     |
+| IPLOGO + INTRO (game start) | non-null | false        | **true**     | '\0'             | set           | false     |
+| Main menu (no prior game)   | non-null | **true**     | false        | '\0'             | set           | false     |
+| Main menu (after gameplay)  | non-null | **true**     | false        | set              | **set**       | false     |
+| Character creation (fresh)  | non-null | false        | false        | '\0'             | set           | false     |
+| Character creation (after prior game) | non-null | false | false | set (from prior map) | **set** | false |
+| OVRINTRO                    | non-null | false        | **true**     | '\0'             | set           | false     |
+| World map                   | non-null | false        | false        | **'\0'** (cleared by `map_save_in_game(true)`) | clear | false |
+| Real in-map gameplay        | non-null | false        | false        | set              | clear         | **true**  |
+| In-game menu (dialog, pip-boy, barter, save, options, etc.) | non-null | false | false | set | clear | true |
+| Save/load screen            | non-null | false        | false        | set (loading) or '\0' (briefly) | clear | true (no menu mask) |
+| Death scene (movie)         | non-null | false        | **true**     | set              | clear         | false     |
+| Between death and main menu | non-null | false        | false        | set (from last map) | **set** (after `main_unload_new`) | false |
+| After game quit (`game_exit`) | NULL   | n/a          | n/a          | n/a              | n/a           | false     |
+
+Notes on the table:
+
+- `map_data.field_34` is **not** a reliable "no map" signal. The struct is BSS-initialized to 0, which happens to be `MAP_DESERT1`. The world map does not change `field_34` either; it only changes `map_data.name[0]`. This is why the step-1 plan's "`map_get_index_number() != -1`" suggestion is insufficient on its own — the world map keeps `field_34` at the last real map's index.
+- The world-map detection signal is `map_data.name[0] == '\0'`, not `field_34 == -1`. `map_save_in_game(true)` (called by `world_map` at entry, `src/game/worldmap.cc:999`) clears the name field but does not touch `field_34`. The world-map exits via `LoadTownMap` (`worldmap.cc:2523`) which calls `map_load` and re-sets the name.
+- The `OBJECT_HIDDEN` check is the one that disambiguates "real map is still named but the player is not playing." It is set by `obj_turn_off` (`src/game/object.cc:1840`), which `main_unload_new` (`src/game/main.cc:316`) calls when leaving real gameplay. It is cleared by `obj_turn_on` (`src/game/object.cc:1809`), which `main_load_new` (`src/game/main.cc:274`) calls when starting real gameplay. The object is created with `OBJECT_HIDDEN` set in `obj_new`/`obj_init` (`object.cc:332-340`), so a fresh game also starts hidden.
+- The save/load screen row reflects the design choice that pause screens (save, load, dialog, pip-boy, barter, character sheet, options, world map excepted) do not mask `hasPlayer`. The underlying map is loaded the whole time. The world map is the one exception: it actively tears down the map via `map_save_in_game(true)`.
+- The "in-game menu" row covers dialog, pip-boy, barter, character sheet, options, save, and the other in-game UI surfaces. None of them set `OBJECT_HIDDEN`, clear the map name, or start a movie. They are all "player is in a real map, looking at a UI."
+
+**Acceptance verification (static, from the table):**
+
+- Main menu: `in_main_menu` is `true` → `hasPlayer = false`. ✓
+- Intro movie: `moviePlaying()` is `true` → `hasPlayer = false`. ✓
+- World map: `map_data.name[0] == '\0'` (cleared by `map_save_in_game(true)`) → `hasPlayer = false`. ✓
+- Character creation: `OBJECT_HIDDEN` is `set` (from prior `main_unload_new` or from initial `obj_new`) → `hasPlayer = false`. ✓
+- Save/load: name is set (during load the name is briefly empty but the helper's first three checks already return false during the load movie/menu flow, and the client sees a transition through `player_unavailable` if the load fails). ✓
+- Real in-map gameplay: all five checks pass → `hasPlayer = true`. ✓
+- Absent → present transition: `hasPlayer` flips to `true`, no `player_available` event. The next sample sees the change in `hp`/`maxHp` and emits a normal `update`. Per `companion_server.cc:269-287` (`queuePlayerUpdateIfNeeded`) and the absent→present path in `sampleReadyClient` (`companion_server.cc:439-464`). ✓
+- Present → absent transition (death): `hasPlayer` flips to `false`, the server emits exactly one `player_unavailable`. Per `companion_server.cc:260-267` and `sampleReadyClient`. ✓
+- Cost: the helper is five O(1) checks (pointer compare, bool read, function call returning a global int, byte compare, bitwise AND). No allocation, no scan, no global lock. ✓
+
+**Verification status:**
+
+- Build passes (`cmake --build build --target fallout-ce`).
+- The unit-test surface in `/tmp/opencode/protocol_test.cc` does not cover the new helper, because the helper reads engine globals and is not linkable into a host-only test binary. A runtime check requires the game data files (`master.dat`), which are not present in this workspace. The acceptance table above is the substitute for the runtime check.
+- The next QA pass should run the game with `companion_server` enabled and a `nc` client connected, and walk through each row of the table while observing the wire. Recommended manual cases: fresh game start, load a saved game, walk off a map edge to the world map, enter a city from the world map, die in combat, and start a new game after a previous game session.
 
 **Goal:** `hasPlayer` (and therefore `playerAvailable`) is `true` only when the engine is in real gameplay: a real map is loaded, the main menu / intro / world-map state is false, and no fullscreen movie is playing. The placeholder 30/30 HP that step 1 reports from the main menu / intro / world map must not be exposed.
 

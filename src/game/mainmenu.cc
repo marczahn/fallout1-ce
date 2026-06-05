@@ -156,7 +156,7 @@ int main_menu_create()
             "Companion server: disabled (set [companion] bind + password in fallout.cfg)",
             0,
             15,
-            440,
+            460,
             colorTable[21204] | 0x4000000 | 0x2000000);
     }
 
