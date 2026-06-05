@@ -275,16 +275,15 @@ Reject solutions that are:
 
 ## Current Companion Server Direction
 
-The current agreed direction for step 1 is:
+The current agreed direction (after step 2 T1) is:
 
 - one TCP client
-- localhost only (intended target; step 1 currently binds to `0.0.0.0` for development convenience — a step 2 task is to default to `127.0.0.1` and add authentication)
+- the server only starts when both `companion_bind` and `companion_password` are present in the `[companion]` section of `fallout.cfg`; otherwise it starts in `disabled` and the main menu shows a single-line hint
+- when enabled, binds to `companion_bind` on fixed port `28080`; the bind host is the only config knob for the bind, the port is hardcoded
+- when enabled, every connection must complete the full handshake: client sends `auth` (with the configured password, constant-time compared) → server transitions to `awaiting_hello` → client sends `hello` → server replies `world` → client may send `get_snapshot` → server replies with one full `snapshot` → server pushes automatic `update` messages
+- there is no opt-out mode. A step-1 client that does not know `auth` is always dropped at the `auth` step, which is the correct behavior
 - newline-delimited JSON
-- client sends `hello`
-- server replies `world`
-- client sends `get_snapshot`
-- server replies with one full `snapshot`
-- server later pushes automatic `update` messages
+- `world.schemaVersion` is `2` (unconditional bump from step 1's `1`); the rest of `world` is byte-identical to step 1
 - `snapshot` contains the full synchronized model
 - `update` contains one domain via `entity` and partial `data`
 - initial synced data is player HP only

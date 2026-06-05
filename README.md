@@ -102,6 +102,28 @@ Recommendations:
 
 In time this stuff will receive in-game interface, right now you have to do it manually.
 
+## Companion Server
+
+A small, optional, read-only TCP server is built into the game. It exposes selected in-game state (player HP today, more in later milestones) over a newline-delimited JSON protocol so a separate companion app can read it. The server is **disabled by default** and must be opted into via `fallout.cfg`. When disabled, the main menu shows a hint line at the bottom of the screen.
+
+To enable it, add a `[companion]` section to `fallout.cfg` with both a `bind` host and a `password`:
+
+```ini
+[companion]
+bind=0.0.0.0
+password=your-secret
+```
+
+Both keys are required. There is no no-password mode. A `fallout.cfg` without the `[companion]` section (or with either key missing) leaves the server off.
+
+- `bind` is the interface to listen on. Use `0.0.0.0` to accept connections from your LAN, or `127.0.0.1` to accept loopback only. IPv4 dotted-quad only.
+- `password` is the shared secret the client must send in its first message. Pick anything opaque; the password is compared in constant time and is never logged. It is stored in cleartext in `fallout.cfg`, so treat the file accordingly.
+- The port is hardcoded to `28080` and is not configurable.
+
+The handshake is `{"type":"auth","password":"<password>"}` followed by `{"type":"hello"}`. The server replies with a `world` message, after which the client may send `{"type":"get_snapshot"}` to pull a full snapshot, or just wait for the server to push `update` messages as state changes. The current `world.schemaVersion` is `2`.
+
+> **NOTE**: `0.0.0.0` exposes the server to your LAN. The protocol has no encryption and the only authentication is the password, so use loopback (`127.0.0.1`) unless you trust the network.
+
 ## Contributing
 
 Here is a couple of current goals. Open up an issue if you have suggestion or feature request.

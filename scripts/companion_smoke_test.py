@@ -1,24 +1,36 @@
 #!/usr/bin/env python3
-"""Smoke test for the companion server protocol.
+"""Smoke test for the companion server protocol (step 2).
 
-Assumes the game is running with the companion server enabled (default
-binds to 0.0.0.0:28080 in step 1). Verifies the parts of the protocol
-that do not depend on game state: wire format, handshake, the
-post-handshake `seq` invariant, the snapshot-shape invariant, and the
-"invalid first message drops the connection" rule.
+Assumes the game is running with the companion server enabled. The server
+is enabled only when `fallout.cfg` has both `[companion] bind` and
+`[companion] password` set. The test reads the password from
+`--password` on the command line (or the `FALLOUT_COMPANION_PASSWORD`
+environment variable) and uses it for the `auth` step of the handshake.
 
-What this script does not test (would need live gameplay):
+Verifies the parts of the protocol that do not depend on game state:
+- The `auth` -> `hello` -> `world` handshake with `schemaVersion: 2`.
+- The post-handshake `seq` invariant.
+- The snapshot-shape invariant.
+- The "invalid first message drops the connection" rule (extended for
+  step 2: a `hello` first message is also dropped).
+- A wrong / empty / missing-password `auth` is dropped.
+- After a bad client, the server is still listening.
+
+What this script does not test (would need live gameplay or visual
+inspection of the main menu):
 - HP values in `data.player`.
 - The 500 ms cadence of `update` messages.
 - The `player_unavailable` transition on death/world unload.
+- The main-menu "disabled" hint line (verify visually).
 
 Run:
-    python3 scripts/companion_smoke_test.py
-    python3 scripts/companion_smoke_test.py --port 28080
+    python3 scripts/companion_smoke_test.py --password foo
+    python3 scripts/companion_smoke_test.py --password foo --port 28080
 """
 
 import argparse
 import json
+import os
 import socket
 import sys
 
@@ -79,17 +91,23 @@ def assert_is_int(value, label):
     ok(f"{label} is int ({value})")
 
 
-def test_hello_world(sock):
-    print("test: hello -> world")
+def send_auth(sock, password):
+    payload = json.dumps({"type": "auth", "password": password})
+    sock.sendall(payload.encode("utf-8") + b"\n")
+
+
+def test_auth_then_hello(sock, password):
+    print(f"test: auth -> hello -> world")
+    send_auth(sock, password)
+    # No server response to a correct auth; the server stays silent until hello.
     sock.sendall(b'{"type":"hello"}\n')
     line = recv_line(sock)
     if line is None:
-        fail("server closed connection after hello")
-
+        fail("server closed connection after auth + hello")
     msg = json.loads(line)
     assert_equal(msg.get("type"), "world", "type")
     assert_field(msg, "schemaVersion", "world")
-    assert_equal(msg.get("schemaVersion"), 1, "world.schemaVersion")
+    assert_equal(msg.get("schemaVersion"), 2, "world.schemaVersion")
     assert_field(msg, "game", "world")
     assert_field(msg, "playerAvailable", "world")
     assert_is_bool(msg["playerAvailable"], "world.playerAvailable")
@@ -102,7 +120,6 @@ def test_get_snapshot(sock, expected_seq):
     line = recv_line(sock)
     if line is None:
         fail("server closed connection after get_snapshot")
-
     msg = json.loads(line)
     assert_equal(msg.get("type"), "snapshot", "type")
     assert_field(msg, "seq", "snapshot")
@@ -131,25 +148,18 @@ def test_post_handshake_hello_is_ignored(sock):
     sock.sendall(b'{"type":"hello"}\n')
     sock.sendall(b'{"type":"get_snapshot"}\n')
     # First response: ignored hello produces no message. Second response: snapshot.
-    # We read two lines and verify the second is a snapshot.
     line1 = recv_line(sock)
     if line1 is None:
         fail("server closed connection unexpectedly after second hello")
     msg = json.loads(line1)
     assert_equal(msg.get("type"), "snapshot", "first response after ignored hello")
-    # If hello is NOT ignored, the second response would be a snapshot at seq=N+2
-    # and the first would be a world. If hello IS ignored, the first response is
-    # the snapshot at seq=N+1.
-    # (This test relies on the snapshot arriving before any 500ms update; that
-    # holds because the test runs in well under 500ms.)
 
 
-def test_invalid_first_message(host, port):
-    print("test: invalid first message drops the connection")
+def expect_dropped(host, port, send_payload, label):
+    print(f"test: {label}")
     with socket.create_connection((host, port), timeout=RECV_TIMEOUT_SECONDS) as sock:
         sock.settimeout(RECV_TIMEOUT_SECONDS)
-        sock.sendall(b'{"type":"foo"}\n')
-        # Server should close the connection promptly. Read until EOF.
+        sock.sendall(send_payload)
         chunks = []
         try:
             while True:
@@ -158,18 +168,54 @@ def test_invalid_first_message(host, port):
                     break
                 chunks.append(chunk)
         except socket.timeout:
-            fail("server did not close connection on invalid first message")
-    ok("server closed the connection")
+            fail(f"server did not close connection on: {label}")
+    ok(f"{label}: server closed the connection")
 
 
-def test_server_still_listening(host, port):
+def test_hello_first_message_drops(host, port):
+    expect_dropped(host, port, b'{"type":"hello"}\n', "hello as first message is dropped")
+
+
+def test_auth_wrong_password_drops(host, port, real_password):
+    expect_dropped(
+        host,
+        port,
+        b'{"type":"auth","password":"wrong-guess"}\n',
+        "wrong auth password is dropped",
+    )
+
+
+def test_auth_empty_password_drops(host, port):
+    expect_dropped(
+        host,
+        port,
+        b'{"type":"auth","password":""}\n',
+        "empty auth password is dropped",
+    )
+
+
+def test_auth_missing_password_field_drops(host, port):
+    expect_dropped(
+        host,
+        port,
+        b'{"type":"auth"}\n',
+        "auth without password field is dropped",
+    )
+
+
+def test_unknown_first_message_drops(host, port):
+    expect_dropped(host, port, b'{"type":"foo"}\n', "unknown first message is dropped")
+
+
+def test_server_still_listening(host, port, password):
     print("test: server still listening after a bad client")
     with socket.create_connection((host, port), timeout=RECV_TIMEOUT_SECONDS) as sock:
         sock.settimeout(RECV_TIMEOUT_SECONDS)
+        send_auth(sock, password)
         sock.sendall(b'{"type":"hello"}\n')
         line = recv_line(sock)
         if line is None:
-            fail("server did not respond to a new hello after the bad client")
+            fail("server did not respond to a new auth + hello after the bad client")
         msg = json.loads(line)
         assert_equal(msg.get("type"), "world", "type after recovery")
 
@@ -178,16 +224,29 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument(
+        "--password",
+        default=os.environ.get("FALLOUT_COMPANION_PASSWORD", ""),
+        help="the configured companion_password in fallout.cfg",
+    )
     args = parser.parse_args()
+
+    if not args.password:
+        print("FAIL: --password (or FALLOUT_COMPANION_PASSWORD) is required", file=sys.stderr)
+        sys.exit(2)
 
     with socket.create_connection((args.host, args.port), timeout=RECV_TIMEOUT_SECONDS) as sock:
         sock.settimeout(RECV_TIMEOUT_SECONDS)
-        test_hello_world(sock)
+        test_auth_then_hello(sock, args.password)
         test_get_snapshot(sock, expected_seq=1)
         test_post_handshake_hello_is_ignored(sock)
 
-    test_invalid_first_message(args.host, args.port)
-    test_server_still_listening(args.host, args.port)
+    test_hello_first_message_drops(args.host, args.port)
+    test_auth_wrong_password_drops(args.host, args.port, args.password)
+    test_auth_empty_password_drops(args.host, args.port)
+    test_auth_missing_password_field_drops(args.host, args.port)
+    test_unknown_first_message_drops(args.host, args.port)
+    test_server_still_listening(args.host, args.port, args.password)
 
     print("\nAll smoke tests passed.")
 

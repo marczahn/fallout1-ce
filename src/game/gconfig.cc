@@ -12,6 +12,12 @@ namespace fallout {
 // 0x504FD8
 static bool gconfig_initialized = false;
 
+// True if `fallout.cfg` was successfully opened during `gconfig_init`.
+// Tracked separately because `config_load` returns `true` even when the
+// file is missing or unreadable (an engine-level bug, see
+// `src/game/config.cc:275`).
+static bool gconfig_file_was_loaded = false;
+
 // fallout.cfg
 //
 // 0x58CC20
@@ -133,6 +139,16 @@ bool gconfig_init(bool isMapper, int argc, char** argv)
     // will override the defaults above.
     config_load(&game_config, gconfig_file_name, false);
 
+    // Probe whether the file was actually readable. `config_load` returns
+    // `true` even on a failed open, so we check independently.
+    {
+        FILE* probe = compat_fopen(gconfig_file_name, "rt");
+        if (probe != nullptr) {
+            fclose(probe);
+            gconfig_file_was_loaded = true;
+        }
+    }
+
     // Add key-values from command line, which overrides both defaults and
     // whatever was loaded from `fallout.cfg`.
     config_cmd_line_parse(&game_config, argc, argv);
@@ -178,8 +194,14 @@ bool gconfig_exit(bool shouldSave)
     config_exit(&game_config);
 
     gconfig_initialized = false;
+    gconfig_file_was_loaded = false;
 
     return result;
+}
+
+bool gconfig_file_loaded()
+{
+    return gconfig_file_was_loaded;
 }
 
 } // namespace fallout

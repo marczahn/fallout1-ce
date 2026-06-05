@@ -13,6 +13,10 @@ namespace fallout {
 #define GAME_CONFIG_SOUND_KEY "sound"
 #define GAME_CONFIG_MAPPER_KEY "mapper"
 #define GAME_CONFIG_DEBUG_KEY "debug"
+#define GAME_CONFIG_COMPANION_KEY "companion"
+
+#define GAME_CONFIG_COMPANION_BIND_KEY "bind"
+#define GAME_CONFIG_COMPANION_PASSWORD_KEY "password"
 
 #define GAME_CONFIG_EXECUTABLE_KEY "executable"
 #define GAME_CONFIG_MASTER_DAT_KEY "master_dat"
@@ -118,6 +122,12 @@ extern Config game_config;
 bool gconfig_init(bool isMapper, int argc, char** argv);
 bool gconfig_save();
 bool gconfig_exit(bool shouldSave);
+
+// Returns true if `fallout.cfg` was successfully opened during `gconfig_init`.
+// `config_load` returns `true` even when the file was unreadable, so the
+// companion server uses this accessor to distinguish "file present and read"
+// from "file missing or unreadable."
+bool gconfig_file_loaded();
 
 } // namespace fallout
 

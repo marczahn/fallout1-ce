@@ -4,6 +4,7 @@
 #include <limits.h>
 #include <string.h>
 
+#include "companion_server.h"
 #include "game/art.h"
 #include "game/game.h"
 #include "game/gsound.h"
@@ -149,6 +150,15 @@ int main_menu_create()
     getverstr(version, sizeof(version));
     len = text_width(version);
     win_print(main_window, version, 0, 615 - len, 460, colorTable[21204] | 0x4000000 | 0x2000000);
+
+    if (!companionServerIsActive()) {
+        win_print(main_window,
+            "Companion server: disabled (set [companion] bind + password in fallout.cfg)",
+            0,
+            15,
+            440,
+            colorTable[21204] | 0x4000000 | 0x2000000);
+    }
 
     // menuup.frm
     fid = art_id(OBJ_TYPE_INTERFACE, 299, 0, 0, 0);

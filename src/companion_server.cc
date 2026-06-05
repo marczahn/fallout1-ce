@@ -13,9 +13,11 @@
 #endif
 
 #include <string>
+#include <string_view>
 
 #include "companion_protocol.h"
 #include "companion_snapshot.h"
+#include "game/gconfig.h"
 #include "platform_compat.h"
 #include "plib/gnw/debug.h"
 
@@ -30,7 +32,6 @@ namespace fallout {
 namespace {
 
 constexpr int kListenPort = 28080;
-constexpr const char* kListenHost = "0.0.0.0";
 constexpr int kListenBacklog = 1;
 
 constexpr size_t kInboundBufferSize = 4096;
@@ -43,13 +44,14 @@ enum class ServerState {
 };
 
 enum class ClientState {
+    AwaitingAuth,
     AwaitingHello,
     Ready,
 };
 
 struct CompanionConnection {
     int fd = -1;
-    ClientState state = ClientState::AwaitingHello;
+    ClientState state = ClientState::AwaitingAuth;
     unsigned int nextSeq = 1;
     unsigned int lastSampleMs = 0;
     bool playerWasAvailable = false;
@@ -61,6 +63,13 @@ struct CompanionConnection {
 
 ServerState gServerState = ServerState::Disabled;
 int gListenerFd = -1;
+
+// Server-owned copies of the bind host and password read from
+// `fallout.cfg` at init time. The pointers returned by `config_get_string`
+// are owned by `game_config`; we copy into our own buffers to keep the
+// lifetime independent of the config subsystem.
+std::string gBindHost;
+std::string gPassword;
 
 IdleFunc* gOriginalIdleFunc = nullptr;
 bool gIdleHookInstalled = false;
@@ -102,9 +111,15 @@ void closeFd(int* fdPtr)
     }
 }
 
+void clearConfigBuffers()
+{
+    gBindHost.clear();
+    gPassword.clear();
+}
+
 void resetConnectionState()
 {
-    gConnection.state = ClientState::AwaitingHello;
+    gConnection.state = ClientState::AwaitingAuth;
     gConnection.nextSeq = 1;
     gConnection.lastSampleMs = 0;
     gConnection.playerWasAvailable = false;
@@ -112,6 +127,29 @@ void resetConnectionState()
     gConnection.lastSentPlayer.maxHp = 0;
     gConnection.inboundLen = 0;
     gConnection.outbound.clear();
+}
+
+// Constant-time comparison of a candidate `std::string_view` against a
+// configured `std::string`. The loop iterates over the longer of the two
+// lengths; the missing bytes of the shorter side are XOR'd against zero.
+// The accumulator is checked exactly once at the end; we never use
+// `memcmp`, `strcmp`, or any other early-exit comparison.
+//
+// Threat model: this defends against LAN-local timing attacks on the
+// password compare. The password itself is stored in cleartext in
+// `fallout.cfg`; it does NOT defend against a same-host attacker with
+// read access to the file. That ceiling is accepted per the milestone
+// scope.
+bool constantTimeEquals(std::string_view candidate, const std::string& configured)
+{
+    size_t n = candidate.size() > configured.size() ? candidate.size() : configured.size();
+    unsigned int acc = 0;
+    for (size_t i = 0; i < n; ++i) {
+        unsigned char cb = i < configured.size() ? static_cast<unsigned char>(configured[i]) : 0;
+        unsigned char xb = i < candidate.size() ? static_cast<unsigned char>(candidate[i]) : 0;
+        acc |= static_cast<unsigned int>(cb ^ xb);
+    }
+    return acc == 0;
 }
 
 void closeConnection()
@@ -248,11 +286,35 @@ void queuePlayerUpdateIfNeeded(const CompanionSnapshot& snapshot)
     debug_printf("companion: update sent\n");
 }
 
-void handleClientMessage(CompanionClientMessage message)
+void handleClientMessage(CompanionClientMessage message, const char* line, size_t lineLength)
 {
+    if (gConnection.state == ClientState::AwaitingAuth) {
+        if (message != CompanionClientMessage::Auth) {
+            disconnectClient("non-auth first message");
+            return;
+        }
+
+        std::string_view candidate;
+        if (!companionExtractAuthPassword(line, lineLength, candidate)) {
+            debug_printf("companion: auth rejected\n");
+            disconnectClient("auth rejected");
+            return;
+        }
+
+        if (!constantTimeEquals(candidate, gPassword)) {
+            debug_printf("companion: auth rejected\n");
+            disconnectClient("auth rejected");
+            return;
+        }
+
+        debug_printf("companion: auth accepted\n");
+        gConnection.state = ClientState::AwaitingHello;
+        return;
+    }
+
     if (gConnection.state == ClientState::AwaitingHello) {
         if (message != CompanionClientMessage::Hello) {
-            disconnectClient("non-hello first message");
+            disconnectClient("invalid message");
             return;
         }
 
@@ -281,9 +343,19 @@ void processInboundLines()
         }
 
         size_t lineLength = static_cast<size_t>(newline - gConnection.inbound);
-        CompanionClientMessage message = companionParseClientMessage(gConnection.inbound, lineLength);
+        char* lineStart = gConnection.inbound;
+        CompanionClientMessage message = companionParseClientMessage(lineStart, lineLength);
         if (message == CompanionClientMessage::Invalid) {
             disconnectClient("invalid message");
+            return;
+        }
+
+        // Handle the message before shifting the buffer. `lineStart` is
+        // `gConnection.inbound`; once the `memmove` runs, those bytes are
+        // the *next* line, and the auth handler (which returns a
+        // `string_view` into the buffer) would read the wrong content.
+        handleClientMessage(message, lineStart, lineLength);
+        if (!hasClient()) {
             return;
         }
 
@@ -292,8 +364,6 @@ void processInboundLines()
             gConnection.inbound + consumed,
             gConnection.inboundLen - consumed);
         gConnection.inboundLen -= consumed;
-
-        handleClientMessage(message);
     }
 }
 
@@ -413,10 +483,38 @@ bool companionServerInit()
 {
     companionEnableDebugLog();
 
+    gServerState = ServerState::Disabled;
+    clearConfigBuffers();
+
+    if (!gconfig_file_loaded()) {
+        debug_printf("companion: disabled (fallout.cfg missing or unreadable)\n");
+        return true;
+    }
+
+    char* bindPtr = nullptr;
+    if (!config_get_string(&game_config,
+            GAME_CONFIG_COMPANION_KEY,
+            GAME_CONFIG_COMPANION_BIND_KEY,
+            &bindPtr)) {
+        debug_printf("companion: disabled (missing companion_bind)\n");
+        return true;
+    }
+    gBindHost = bindPtr;
+
+    char* passwordPtr = nullptr;
+    if (!config_get_string(&game_config,
+            GAME_CONFIG_COMPANION_KEY,
+            GAME_CONFIG_COMPANION_PASSWORD_KEY,
+            &passwordPtr)) {
+        debug_printf("companion: disabled (missing companion_password)\n");
+        return true;
+    }
+    gPassword = passwordPtr;
+
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         debug_printf("companion: socket() failed: %d\n", errno);
-        gServerState = ServerState::Disabled;
+        clearConfigBuffers();
         return true;
     }
 
@@ -424,14 +522,14 @@ bool companionServerInit()
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0) {
         debug_printf("companion: setsockopt SO_REUSEADDR failed: %d\n", errno);
         close(fd);
-        gServerState = ServerState::Disabled;
+        clearConfigBuffers();
         return true;
     }
 
     if (!setNonBlocking(fd)) {
         debug_printf("companion: set non-blocking failed: %d\n", errno);
         close(fd);
-        gServerState = ServerState::Disabled;
+        clearConfigBuffers();
         return true;
     }
 
@@ -439,31 +537,31 @@ bool companionServerInit()
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons(kListenPort);
-    if (inet_pton(AF_INET, kListenHost, &addr.sin_addr) != 1) {
-        debug_printf("companion: inet_pton failed\n");
+    if (inet_pton(AF_INET, gBindHost.c_str(), &addr.sin_addr) != 1) {
+        debug_printf("companion: disabled (bind parse failed: %s)\n", gBindHost.c_str());
         close(fd);
-        gServerState = ServerState::Disabled;
+        clearConfigBuffers();
         return true;
     }
 
     if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-        debug_printf("companion: bind %s:%d failed: %d\n", kListenHost, kListenPort, errno);
+        debug_printf("companion: bind %s:%d failed: %d\n", gBindHost.c_str(), kListenPort, errno);
         close(fd);
-        gServerState = ServerState::Disabled;
+        clearConfigBuffers();
         return true;
     }
 
     if (listen(fd, kListenBacklog) < 0) {
         debug_printf("companion: listen failed: %d\n", errno);
         close(fd);
-        gServerState = ServerState::Disabled;
+        clearConfigBuffers();
         return true;
     }
 
     gListenerFd = fd;
     resetConnectionState();
     gServerState = ServerState::Listening;
-    debug_printf("companion: listening on %s:%d\n", kListenHost, kListenPort);
+    debug_printf("companion: enabled (bind=%s, port=%d)\n", gBindHost.c_str(), kListenPort);
 
     if (!gIdleHookInstalled) {
         gOriginalIdleFunc = get_idle_func();
@@ -485,6 +583,7 @@ void companionServerExit()
     closeConnection();
     closeFd(&gListenerFd);
     gServerState = ServerState::Disabled;
+    clearConfigBuffers();
 }
 
 void companionServerTick(unsigned int now)
@@ -511,6 +610,11 @@ void companionServerTick(unsigned int now)
     flushOutbound();
 }
 
+bool companionServerIsActive()
+{
+    return gServerState == ServerState::Listening;
+}
+
 #else // _WIN32
 
 bool companionServerInit()
@@ -525,6 +629,11 @@ void companionServerExit()
 void companionServerTick(unsigned int now)
 {
     (void)now;
+}
+
+bool companionServerIsActive()
+{
+    return false;
 }
 
 #endif
