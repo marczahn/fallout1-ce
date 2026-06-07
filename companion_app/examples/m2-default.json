@@ -1,0 +1,9 @@
+{
+  "display": {
+    "scale": 1.0,
+    "crtOverlay": true
+  },
+  "debug": {
+    "eventLog": false
+  }
+}

@@ -15,7 +15,13 @@ from companion_app.config import (
 )
 from companion_app.debug.event_log import EventLogOverlay
 from companion_app.input.keyboard import KeyboardInput
-from companion_app.ui.shell import draw_shell
+from companion_app.render.crt import (
+    RoundedCornerOverlay,
+    ScanlineOverlay,
+    VignetteOverlay,
+)
+from companion_app.render.font import FontLoadError, load_font
+from companion_app.ui.shell import BODY_SIZE, HEADER_SIZE, draw_shell
 
 VIRTUAL_WIDTH = 480
 VIRTUAL_HEIGHT = 800
@@ -57,8 +63,30 @@ def _run_loop(config: Config) -> int:
     clock = pygame.time.Clock()
 
     pygame.font.init()
+
+    # Preload the Fallout webfont at the sizes the shell uses, so a
+    # missing/unreadable asset aborts here (caught by main()) instead
+    # of mid-frame inside the main loop.
+    load_font(HEADER_SIZE)
+    load_font(BODY_SIZE)
+
     keyboard = KeyboardInput(config.keymap)
-    overlay = EventLogOverlay()
+
+    vignette: VignetteOverlay | None = None
+    if config.display_vignette:
+        vignette = VignetteOverlay((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
+
+    scanlines: ScanlineOverlay | None = None
+    if config.display_crt_overlay:
+        scanlines = ScanlineOverlay((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
+
+    rounded_crt: RoundedCornerOverlay | None = None
+    if config.display_rounded_crt:
+        rounded_crt = RoundedCornerOverlay((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
+
+    debug_overlay: EventLogOverlay | None = None
+    if config.debug_event_log:
+        debug_overlay = EventLogOverlay()
 
     running = True
     while running:
@@ -70,11 +98,20 @@ def _run_loop(config: Config) -> int:
                 if event.key in (pygame.K_ESCAPE, pygame.K_q):
                     running = False
 
-        for input_event in keyboard.poll(pygame_events):
-            overlay.record(input_event)
+        input_events = keyboard.poll(pygame_events)
+        if debug_overlay is not None:
+            for input_event in input_events:
+                debug_overlay.record(input_event)
 
         draw_shell(virtual, SECTION_NAME, CONNECTION_STATUS, BODY_PLACEHOLDER)
-        overlay.draw(virtual)
+        if vignette is not None:
+            vignette.draw(virtual)
+        if scanlines is not None:
+            scanlines.draw(virtual)
+        if rounded_crt is not None:
+            rounded_crt.draw(virtual)
+        if debug_overlay is not None:
+            debug_overlay.draw(virtual)
 
         if window_size == (VIRTUAL_WIDTH, VIRTUAL_HEIGHT):
             window.blit(virtual, (0, 0))
@@ -97,4 +134,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"companion_app: config error: {e}", file=sys.stderr)
         return 2
 
-    return _run_loop(config)
+    try:
+        return _run_loop(config)
+    except FontLoadError as e:
+        # Per M2 Resolved Decision 12 + acceptance criterion 9: missing
+        # font asset aborts with a one-line message and a non-zero exit,
+        # with pygame shut down cleanly.
+        import pygame
+        if pygame.get_init():
+            pygame.quit()
+        print(f"companion_app: font error: {e}", file=sys.stderr)
+        return 3

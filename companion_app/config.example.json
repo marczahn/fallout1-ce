@@ -1,6 +1,12 @@
 {
   "display": {
-    "scale": 1.0
+    "scale": 1.0,
+    "crtOverlay": true,
+    "vignette": true,
+    "roundedCrt": true
+  },
+  "debug": {
+    "eventLog": false
   },
   "input": {
     "keymap": {

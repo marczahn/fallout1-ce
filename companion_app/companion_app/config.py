@@ -1,4 +1,4 @@
-"""Companion app configuration loader (M1).
+"""Companion app configuration loader.
 
 JSON config file with two stages of validation:
 
@@ -10,8 +10,16 @@ JSON config file with two stages of validation:
    `pygame.key.key_code`. Unknown event names or unknown key names
    abort with `ConfigError`.
 
-Only the keys M1 actually consumes are honored. Unknown keys (e.g.
-`server.host`, `display.crtOverlay`) are warned about and ignored.
+Only the keys the current app consumes are honored. Unknown keys
+(e.g. `server.host`) are warned about and ignored.
+
+Currently honored keys:
+  - `display.scale`         (float, M1)
+  - `display.crtOverlay`    (bool,  M2)
+  - `display.vignette`      (bool,  M2)
+  - `display.roundedCrt`    (bool,  M2)
+  - `debug.eventLog`        (bool,  M2)
+  - `input.keymap`          (object, M1)
 """
 from __future__ import annotations
 
@@ -33,6 +41,10 @@ VALID_EVENT_NAMES: tuple[str, ...] = (
 )
 
 DEFAULT_DISPLAY_SCALE: float = 1.0
+DEFAULT_DISPLAY_CRT_OVERLAY: bool = True
+DEFAULT_DISPLAY_VIGNETTE: bool = True
+DEFAULT_DISPLAY_ROUNDED_CRT: bool = True
+DEFAULT_DEBUG_EVENT_LOG: bool = False
 
 # Default keymap uses pygame key *names* (resolved later to codes).
 DEFAULT_KEYMAP_NAMES: dict[str, list[str]] = {
@@ -56,6 +68,10 @@ class ConfigError(Exception):
 @dataclass
 class Config:
     display_scale: float = DEFAULT_DISPLAY_SCALE
+    display_crt_overlay: bool = DEFAULT_DISPLAY_CRT_OVERLAY
+    display_vignette: bool = DEFAULT_DISPLAY_VIGNETTE
+    display_rounded_crt: bool = DEFAULT_DISPLAY_ROUNDED_CRT
+    debug_event_log: bool = DEFAULT_DEBUG_EVENT_LOG
     # event name -> list of pygame key codes
     keymap: dict[str, list[int]] = field(default_factory=dict)
 
@@ -122,12 +138,23 @@ def _load_raw(path: str | None) -> tuple[dict[str, Any], Path | None]:
     return {}, None
 
 
-def _extract_m1_fields(
+def _require_bool(key: str, value: Any) -> bool:
+    # bool is a subclass of int; this is the right place to be strict.
+    if not isinstance(value, bool):
+        raise ConfigError(f"{key} must be a boolean, got {value!r}")
+    return value
+
+
+def _extract_fields(
     raw: dict[str, Any],
     source: Path | None,
-) -> tuple[float, dict[str, list[str]]]:
-    """Pull only the keys M1 cares about. Warn on the rest."""
+) -> tuple[float, bool, bool, bool, bool, dict[str, list[str]]]:
+    """Pull only the keys the app honors. Warn on the rest."""
     scale: float = DEFAULT_DISPLAY_SCALE
+    crt_overlay: bool = DEFAULT_DISPLAY_CRT_OVERLAY
+    vignette: bool = DEFAULT_DISPLAY_VIGNETTE
+    rounded_crt: bool = DEFAULT_DISPLAY_ROUNDED_CRT
+    debug_event_log: bool = DEFAULT_DEBUG_EVENT_LOG
     keymap_names: dict[str, Any] | None = None
 
     for top_key, top_value in raw.items():
@@ -145,6 +172,12 @@ def _extract_m1_fields(
                             f"display.scale must be > 0, got {v}"
                         )
                     scale = float(v)
+                elif k == "crtOverlay":
+                    crt_overlay = _require_bool("display.crtOverlay", v)
+                elif k == "vignette":
+                    vignette = _require_bool("display.vignette", v)
+                elif k == "roundedCrt":
+                    rounded_crt = _require_bool("display.roundedCrt", v)
                 else:
                     _warn(f"ignoring unknown config key display.{k}")
         elif top_key == "input":
@@ -155,11 +188,19 @@ def _extract_m1_fields(
                     keymap_names = v
                 else:
                     _warn(f"ignoring unknown config key input.{k}")
+        elif top_key == "debug":
+            if not isinstance(top_value, dict):
+                raise ConfigError("debug section must be an object")
+            for k, v in top_value.items():
+                if k == "eventLog":
+                    debug_event_log = _require_bool("debug.eventLog", v)
+                else:
+                    _warn(f"ignoring unknown config key debug.{k}")
         else:
             _warn(f"ignoring unknown config key {top_key}")
 
     resolved_names = _merge_keymap_names(keymap_names, source)
-    return scale, resolved_names
+    return scale, crt_overlay, vignette, rounded_crt, debug_event_log, resolved_names
 
 
 def _resolve_key_codes(keymap_names: dict[str, list[str]]) -> dict[str, list[int]]:
@@ -197,8 +238,17 @@ def load_config(path: str | None) -> Config:
     it, or use `load_and_resolve_config()` which handles both stages.
     """
     raw, source = _load_raw(path)
-    scale, _names = _extract_m1_fields(raw, source)
-    return Config(display_scale=scale, keymap={})
+    scale, crt_overlay, vignette, rounded_crt, debug_event_log, _names = (
+        _extract_fields(raw, source)
+    )
+    return Config(
+        display_scale=scale,
+        display_crt_overlay=crt_overlay,
+        display_vignette=vignette,
+        display_rounded_crt=rounded_crt,
+        debug_event_log=debug_event_log,
+        keymap={},
+    )
 
 
 def load_and_resolve_config(path: str | None) -> Config:
@@ -209,7 +259,9 @@ def load_and_resolve_config(path: str | None) -> Config:
     JSON aborts before pygame is initialized.
     """
     raw, source = _load_raw(path)
-    scale, keymap_names = _extract_m1_fields(raw, source)
+    scale, crt_overlay, vignette, rounded_crt, debug_event_log, keymap_names = (
+        _extract_fields(raw, source)
+    )
 
     # pygame must be initialized before key_code lookups.
     import pygame
@@ -217,4 +269,11 @@ def load_and_resolve_config(path: str | None) -> Config:
         pygame.init()
 
     resolved = _resolve_key_codes(keymap_names)
-    return Config(display_scale=scale, keymap=resolved)
+    return Config(
+        display_scale=scale,
+        display_crt_overlay=crt_overlay,
+        display_vignette=vignette,
+        display_rounded_crt=rounded_crt,
+        debug_event_log=debug_event_log,
+        keymap=resolved,
+    )

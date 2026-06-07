@@ -40,11 +40,19 @@ Config resolution order:
 2. `./companion_app.config.json` in the current working directory.
 3. Built-in defaults.
 
-## Config schema (M1)
+## Config schema
 
 ```json
 {
-  "display": { "scale": 1.0 },
+  "display": {
+    "scale": 1.0,
+    "crtOverlay": true,
+    "vignette": true,
+    "roundedCrt": true
+  },
+  "debug": {
+    "eventLog": false
+  },
   "input": {
     "keymap": {
       "SectionButton1": ["1"],
@@ -60,11 +68,33 @@ Config resolution order:
 }
 ```
 
-Future config keys reserved for later milestones (do not put them in
-M1 configs; they are ignored with a warning):
+Honored keys:
 
-- `server.host`, `server.port` — companion server endpoint (M3)
-- `display.crtOverlay` — CRT scanline overlay toggle (M2)
+- `display.scale` — window scale factor over the 480×800 virtual
+  surface. Must be a positive number. Default `1.0`.
+- `display.crtOverlay` — draw the CRT scanline overlay on top of the
+  screen shell each frame. Must be a boolean. Default `true`. When
+  `false`, the overlay surface is not built and no per-frame cost is
+  paid.
+- `display.vignette` — radial edge-darkening overlay. Darkens the
+  screen edges using a power-curve falloff to suggest CRT phosphor
+  dropout near the bezel. Must be a boolean. Default `true`. When
+  `false`, the overlay is not built.
+- `display.roundedCrt` — black bezel overlay that masks the four
+  corners into a rounded CRT shape. Must be a boolean. Default `true`.
+  When `false`, the overlay is not built.
+- `debug.eventLog` — developer aid. When `true`, the M1 debug event
+  overlay (last 10 input events, rendered at the bottom of the
+  screen in the default pygame font) is drawn on top of the shell.
+  Must be a boolean. Default `false`. Keep this off for normal use;
+  it is unstyled and overlaps the body intentionally.
+- `input.keymap` — keyboard bindings per input event. Each entry is
+  a list of pygame key *names* (resolved at startup).
+
+Future config keys reserved for later milestones (currently ignored
+with a warning):
+
+- `server.host`, `server.port` — companion server endpoint (M3).
 
 ## Dev keys
 
@@ -103,4 +133,7 @@ attribution, and the `fontTools` conversion command). `fontTools` is
 
 - `keymap-default.json` — default keymap.
 - `keymap-swapped-encoder.json` — swapped encoder, `display.scale=1.5`.
+- `m2-default.json` — default M2 config with CRT effects enabled.
+- `m2-debug-overlay.json` — debug overlay enabled, CRT effects off,
+  `display.scale=1.5`.
 - `malformed.json` — trailing-comma JSON for the malformed-input check.

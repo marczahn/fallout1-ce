@@ -136,14 +136,62 @@ class LoadConfigTests(unittest.TestCase):
                 load_and_resolve_config(str(p))
 
     def test_unknown_keys_are_ignored(self) -> None:
-        # Future-section keys must not crash M1; loader should warn and ignore.
+        # Future-section keys must not crash; loader should warn and ignore.
         with _Tempdir() as td:
             p = self._write(td / "c.json", {
                 "server": {"host": "127.0.0.1"},
-                "display": {"crtOverlay": True, "scale": 1.0},
+                "display": {"scale": 1.0},
             })
             cfg = load_and_resolve_config(str(p))
         self.assertEqual(cfg.display_scale, 1.0)
+
+    def test_display_crt_overlay_default_is_true(self) -> None:
+        with _Tempdir():
+            cfg = load_and_resolve_config(None)
+        self.assertTrue(cfg.display_crt_overlay)
+
+    def test_display_crt_overlay_false_honored(self) -> None:
+        with _Tempdir() as td:
+            p = self._write(td / "c.json", {"display": {"crtOverlay": False}})
+            cfg = load_and_resolve_config(str(p))
+        self.assertFalse(cfg.display_crt_overlay)
+
+    def test_display_crt_overlay_must_be_bool(self) -> None:
+        with _Tempdir() as td:
+            p = self._write(td / "c.json", {"display": {"crtOverlay": "yes"}})
+            with self.assertRaises(ConfigError) as ctx:
+                load_and_resolve_config(str(p))
+            self.assertIn("display.crtOverlay", str(ctx.exception))
+
+    def test_debug_event_log_default_is_false(self) -> None:
+        with _Tempdir():
+            cfg = load_and_resolve_config(None)
+        self.assertFalse(cfg.debug_event_log)
+
+    def test_debug_event_log_true_honored(self) -> None:
+        with _Tempdir() as td:
+            p = self._write(td / "c.json", {"debug": {"eventLog": True}})
+            cfg = load_and_resolve_config(str(p))
+        self.assertTrue(cfg.debug_event_log)
+
+    def test_debug_event_log_must_be_bool(self) -> None:
+        with _Tempdir() as td:
+            p = self._write(td / "c.json", {"debug": {"eventLog": 1}})
+            with self.assertRaises(ConfigError) as ctx:
+                load_and_resolve_config(str(p))
+            self.assertIn("debug.eventLog", str(ctx.exception))
+
+    def test_unknown_debug_key_warns_and_ignored(self) -> None:
+        with _Tempdir() as td:
+            p = self._write(td / "c.json", {"debug": {"someFutureFlag": True}})
+            cfg = load_and_resolve_config(str(p))
+        self.assertFalse(cfg.debug_event_log)
+
+    def test_debug_section_must_be_object(self) -> None:
+        with _Tempdir() as td:
+            p = self._write(td / "c.json", {"debug": "on"})
+            with self.assertRaises(ConfigError):
+                load_and_resolve_config(str(p))
 
     def test_partial_keymap_merges_with_defaults(self) -> None:
         with _Tempdir() as td:
@@ -154,6 +202,42 @@ class LoadConfigTests(unittest.TestCase):
         # Other defaults still present:
         self.assertEqual(cfg.keymap["SectionButton1"], [pygame.K_1])
         self.assertEqual(cfg.keymap["EncoderLeft"], [pygame.K_UP])
+
+    def test_display_vignette_default_is_true(self) -> None:
+        with _Tempdir():
+            cfg = load_and_resolve_config(None)
+        self.assertTrue(cfg.display_vignette)
+
+    def test_display_vignette_false_honored(self) -> None:
+        with _Tempdir() as td:
+            p = self._write(td / "c.json", {"display": {"vignette": False}})
+            cfg = load_and_resolve_config(str(p))
+        self.assertFalse(cfg.display_vignette)
+
+    def test_display_vignette_must_be_bool(self) -> None:
+        with _Tempdir() as td:
+            p = self._write(td / "c.json", {"display": {"vignette": 1}})
+            with self.assertRaises(ConfigError) as ctx:
+                load_and_resolve_config(str(p))
+            self.assertIn("display.vignette", str(ctx.exception))
+
+    def test_display_rounded_crt_default_is_true(self) -> None:
+        with _Tempdir():
+            cfg = load_and_resolve_config(None)
+        self.assertTrue(cfg.display_rounded_crt)
+
+    def test_display_rounded_crt_false_honored(self) -> None:
+        with _Tempdir() as td:
+            p = self._write(td / "c.json", {"display": {"roundedCrt": False}})
+            cfg = load_and_resolve_config(str(p))
+        self.assertFalse(cfg.display_rounded_crt)
+
+    def test_display_rounded_crt_must_be_bool(self) -> None:
+        with _Tempdir() as td:
+            p = self._write(td / "c.json", {"display": {"roundedCrt": "no"}})
+            with self.assertRaises(ConfigError) as ctx:
+                load_and_resolve_config(str(p))
+            self.assertIn("display.roundedCrt", str(ctx.exception))
 
 
 if __name__ == "__main__":

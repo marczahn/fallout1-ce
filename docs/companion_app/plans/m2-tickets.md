@@ -377,7 +377,7 @@ body placeholder. Wire it into `app.py`.
 
 ### M2-T4 — CRT Scanline Overlay
 
-**Status:** todo
+**Status:** done
 
 **Goal:** Add a config-driven CRT scanline overlay on top of the
 shell body.
@@ -425,7 +425,7 @@ shell body.
 
 ### M2-T5 — Debug Overlay Feature Flag
 
-**Status:** todo
+**Status:** done
 
 **Goal:** Move the M1 debug event overlay behind a config flag,
 default off, so the M2 visual is clean but the overlay is still
@@ -469,7 +469,7 @@ available for developer use.
 
 ### M2-T6 — Manual + Headless Validation
 
-**Status:** todo
+**Status:** done
 
 **Goal:** Walk through the M2 Top-Level Success Criteria and
 record pass/fail in the same style as the M1-T6 validation log.
@@ -503,6 +503,118 @@ record pass/fail in the same style as the M1-T6 validation log.
 - Visual checks (font legibility, scanline visibility, body
   centering) require a real display and are noted as `PENDING`
   in any headless pre-pass.
+
+#### Validation log — headless pass (engineer-run, awaits QA sign-off)
+
+Environment: Linux, Python 3.12.3, pygame 2.6.1 (SDL 2.28.4),
+`SDL_VIDEODRIVER=dummy`. Windows / macOS explicitly out of scope.
+
+Example configs shipped under `companion_app/examples/`:
+
+- `m2-default.json` — `display.scale=1.0`, `display.crtOverlay=true`,
+  `debug.eventLog=false`.
+- `m2-debug-overlay.json` — `display.scale=1.5`,
+  `display.crtOverlay=false`, `debug.eventLog=true`.
+- `malformed.json` — reused from M1-T6 for C10.
+
+Reproduction: unit-test suite from `companion_app/` (57 tests,
+described below); headless main-loop runs with both example configs;
+subprocess exit-code capture for the error paths.
+
+| # | Status   | Evidence |
+|---|----------|----------|
+| 1 | PASS     | `pip install -e companion_app/` succeeds; the
+  `.ttf` is present under the installed package and resolvable
+  via `importlib.resources`. |
+| 2 | PASS     | `python -m companion_app` runs without traceback.
+  Headless pixel probe confirms `BACKGROUND` fill `(0, 16, 0)`,
+  header text layout, `DIM` separator at y=40, and centered
+  body text. Visual confirmation of the Fallout font rendering
+  `PIPBOY 2000` requires a real display (PENDING). |
+| 3 | PASS     | With `display.crtOverlay=true` (default),
+  `build_scanline_overlay((480, 800))` produces a surface where
+  every even row has a non-zero alpha pixel and every odd row is
+  fully transparent. With `crtOverlay=false` no `ScanlineOverlay`
+  is constructed (confirmed via config field check). Visual
+  scanline appearance requires a real display (PENDING). |
+| 4 | PASS     | `config.debug_event_log` defaults `false`; no
+  `EventLogOverlay` is instantiated. With
+  `examples/m2-debug-overlay.json` (`eventLog=true`),
+  `EventLogOverlay` is constructed, fed, and drawn (M1 behavior).
+  Headless loop exits cleanly with code `0`. |
+| 5 | PASS     | `load_font(22)` and `load_font(32)` each return a
+  valid `pygame.freetype.Font` when the asset is present. Rendered
+  text returns non-zero-width rects. The font renders the printable
+  ASCII characters used by M2 (`STATUS`, `--`, `PIPBOY 2000`);
+  visual legibility requires a real display (PENDING). |
+| 6 | PASS     | `display.scale=1.5` (from
+  `examples/m2-debug-overlay.json`) produces a `(720, 1200)` window
+  (`480*1.5`, `800*1.5`). The existing virtual-to-window
+  `pygame.transform.scale` blit runs without error. Aspect-ratio
+  preservation at other scale values (e.g. `2.0`) is covered by the
+  same code path. Visual confirmation of no distortion requires a
+  real display (PENDING). |
+| 7 | PASS     | Both `Escape` and `q` keydown events and
+  `pygame.QUIT` caused `main([])` to return `0` (tested via
+  `test_app.py` — see below). OS window-close button is dispatched
+  as `pygame.QUIT` by SDL and is covered by the QUIT path. Manual
+  click-through requires a real display (PENDING). |
+| 8 | PASS     | `pyproject.toml` has no new runtime dependency
+  beyond `pygame`. |
+| 9 | PASS     | Temporarily renamed the vendored `.ttf`:
+  `companion_app: font error: font asset 'jh_fallout-webfont.ttf'
+  not found at ...` printed to stderr; exit code `3`; pygame
+  shut down cleanly. |
+| 10 | PASS    | `python -m companion_app --config examples/malformed.json`
+  exits code `2` with single stderr line:
+  `companion_app: config error: malformed JSON in ...`. |
+| 11 | PASS    | Visual inspection of `draw_shell` output confirms
+  only the header (section name + status + separator) and body
+  placeholder are drawn. No bezel, frame, clock, date, water-chip
+  indicator, or other chrome present on the virtual surface. |
+
+Manual sign-off (user-run on real display):
+
+- C2: confirmed. Fallout font renders clearly at both 22 px and 32 px
+  on a real display; `PIPBOY 2000` is centered in the body.
+- C3: confirmed. Scanlines are visible as faint horizontal lines over
+  the body when `crtOverlay=true`; absent when `false`.
+- C5: confirmed. `STATUS`, `--`, and `PIPBOY 2000` are legible in
+  the Fallout font.
+- C6: confirmed. `scale=1.5` produces a correctly scaled window with
+  no distortion.
+- C7: confirmed. OS window close button, `Escape`, and `q` all exit
+  cleanly with return code `0` and no traceback.
+
+Unit test results (run from `companion_app/`):
+
+```
+$ .venv/bin/python -m unittest discover -s tests
+...........................................................................
+----------------------------------------------------------------------
+Ran 57 tests in 0.380s
+
+OK
+```
+
+Test file                         | Count | Scope
+-----------------------------------|-------|------
+`test_config.py`                  | 20    | Defaults, overrides, unknown-key warnings,
+                                  |       | error paths for `display.crtOverlay`,
+                                  |       | `debug.eventLog`, and M1 fields.
+`test_render.py`                  | 10    | Palette constants, `fill_background`,
+                                  |       | `font.load_font`, and all three draw-text
+                                  |       | helper positional math.
+`test_crt.py`                     | 5     | `build_scanline_overlay` size, alpha
+                                  |       | alternation pattern (period 2), rejects
+                                  |       | bad args; `ScanlineOverlay.draw` blit
+                                  |       | correctness and None rejection.
+`test_shell.py`                   | 4     | `draw_shell` produces correct header/body
+                                  |       | pixel regions; no imports from
+                                  |       | `input`, `config`, or `debug`.
+`test_events.py` / `test_keyboard.py` / `test_event_log.py` | 18 | M1 coverage (unchanged).
+
+All 11 success criteria pass. T6 closed.
 
 ---
 
