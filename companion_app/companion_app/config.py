@@ -11,7 +11,7 @@ JSON config file with two stages of validation:
    abort with `ConfigError`.
 
 Only the keys the current app consumes are honored. Unknown keys
-(e.g. `server.host`) are warned about and ignored.
+are warned about and ignored.
 
 Currently honored keys:
   - `display.scale`         (float, M1)
@@ -20,6 +20,9 @@ Currently honored keys:
   - `display.roundedCrt`    (bool,  M2)
   - `debug.eventLog`        (bool,  M2)
   - `input.keymap`          (object, M1)
+  - `server.host`           (str,   M3)
+  - `server.port`           (int,   M3)
+  - `server.password`       (str,   M3, required, no default)
 """
 from __future__ import annotations
 
@@ -58,6 +61,9 @@ DEFAULT_KEYMAP_NAMES: dict[str, list[str]] = {
     "Back":           ["backspace"],
 }
 
+SERVER_DEFAULT_HOST: str = "127.0.0.1"
+SERVER_DEFAULT_PORT: int = 28080
+
 DEFAULT_CONFIG_FILENAME = "companion_app.config.json"
 
 
@@ -74,6 +80,9 @@ class Config:
     debug_event_log: bool = DEFAULT_DEBUG_EVENT_LOG
     # event name -> list of pygame key codes
     keymap: dict[str, list[int]] = field(default_factory=dict)
+    server_host: str = SERVER_DEFAULT_HOST
+    server_port: int = SERVER_DEFAULT_PORT
+    server_password: str = ""
 
 
 def _warn(msg: str) -> None:
@@ -148,7 +157,7 @@ def _require_bool(key: str, value: Any) -> bool:
 def _extract_fields(
     raw: dict[str, Any],
     source: Path | None,
-) -> tuple[float, bool, bool, bool, bool, dict[str, list[str]]]:
+) -> tuple[float, bool, bool, bool, bool, dict[str, list[str]], str, int, str]:
     """Pull only the keys the app honors. Warn on the rest."""
     scale: float = DEFAULT_DISPLAY_SCALE
     crt_overlay: bool = DEFAULT_DISPLAY_CRT_OVERLAY
@@ -156,6 +165,9 @@ def _extract_fields(
     rounded_crt: bool = DEFAULT_DISPLAY_ROUNDED_CRT
     debug_event_log: bool = DEFAULT_DEBUG_EVENT_LOG
     keymap_names: dict[str, Any] | None = None
+    server_host: str = SERVER_DEFAULT_HOST
+    server_port: int = SERVER_DEFAULT_PORT
+    server_password: str | None = None
 
     for top_key, top_value in raw.items():
         if top_key == "display":
@@ -196,11 +208,47 @@ def _extract_fields(
                     debug_event_log = _require_bool("debug.eventLog", v)
                 else:
                     _warn(f"ignoring unknown config key debug.{k}")
+        elif top_key == "server":
+            if not isinstance(top_value, dict):
+                raise ConfigError("server section must be an object")
+            for k, v in top_value.items():
+                if k == "host":
+                    if not isinstance(v, str) or not v:
+                        raise ConfigError(
+                            f"server.host must be a non-empty string, got {v!r}"
+                        )
+                    server_host = v
+                elif k == "port":
+                    if isinstance(v, bool) or not isinstance(v, int):
+                        raise ConfigError(
+                            f"server.port must be an integer, got {v!r}"
+                        )
+                    if v < 1 or v > 65535:
+                        raise ConfigError(
+                            f"server.port must be between 1 and 65535, got {v}"
+                        )
+                    server_port = v
+                elif k == "password":
+                    if not isinstance(v, str) or not v:
+                        raise ConfigError(
+                            f"server.password must be a non-empty string, got {v!r}"
+                        )
+                    server_password = v
+                else:
+                    _warn(f"ignoring unknown config key server.{k}")
         else:
             _warn(f"ignoring unknown config key {top_key}")
 
+    if server_password is None:
+        raise ConfigError(
+            "server.password is required (set it in the config file)"
+        )
+
     resolved_names = _merge_keymap_names(keymap_names, source)
-    return scale, crt_overlay, vignette, rounded_crt, debug_event_log, resolved_names
+    return (
+        scale, crt_overlay, vignette, rounded_crt, debug_event_log,
+        resolved_names, server_host, server_port, server_password,
+    )
 
 
 def _resolve_key_codes(keymap_names: dict[str, list[str]]) -> dict[str, list[int]]:
@@ -238,9 +286,10 @@ def load_config(path: str | None) -> Config:
     it, or use `load_and_resolve_config()` which handles both stages.
     """
     raw, source = _load_raw(path)
-    scale, crt_overlay, vignette, rounded_crt, debug_event_log, _names = (
-        _extract_fields(raw, source)
-    )
+    (
+        scale, crt_overlay, vignette, rounded_crt, debug_event_log,
+        _names, server_host, server_port, server_password,
+    ) = _extract_fields(raw, source)
     return Config(
         display_scale=scale,
         display_crt_overlay=crt_overlay,
@@ -248,6 +297,9 @@ def load_config(path: str | None) -> Config:
         display_rounded_crt=rounded_crt,
         debug_event_log=debug_event_log,
         keymap={},
+        server_host=server_host,
+        server_port=server_port,
+        server_password=server_password,
     )
 
 
@@ -259,9 +311,10 @@ def load_and_resolve_config(path: str | None) -> Config:
     JSON aborts before pygame is initialized.
     """
     raw, source = _load_raw(path)
-    scale, crt_overlay, vignette, rounded_crt, debug_event_log, keymap_names = (
-        _extract_fields(raw, source)
-    )
+    (
+        scale, crt_overlay, vignette, rounded_crt, debug_event_log,
+        keymap_names, server_host, server_port, server_password,
+    ) = _extract_fields(raw, source)
 
     # pygame must be initialized before key_code lookups.
     import pygame
@@ -276,4 +329,7 @@ def load_and_resolve_config(path: str | None) -> Config:
         display_rounded_crt=rounded_crt,
         debug_event_log=debug_event_log,
         keymap=resolved,
+        server_host=server_host,
+        server_port=server_port,
+        server_password=server_password,
     )

@@ -19,6 +19,8 @@ from importlib import resources
 from importlib.resources.abc import Traversable
 from typing import TYPE_CHECKING
 
+import pygame
+
 if TYPE_CHECKING:
     import pygame.freetype
 
@@ -167,3 +169,21 @@ def draw_text_centered(
     text_rect.center = rect.center
     font.render_to(surface, text_rect.topleft, text, color, size=size)
     return text_rect
+
+
+def font_render_surface(
+    text: str,
+    size: int,
+    color: tuple[int, int, int] | pygame.Color,
+) -> pygame.Surface | None:
+    """Render `text` to a new transparent surface and return it.
+
+    Returns ``None`` if the text is empty (nothing to blit).
+    """
+    if not text:
+        return None
+    font = _get_font(size)
+    rect = font.get_rect(text, size=size)
+    surf = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+    font.render_to(surf, (0, 0), text, color, size=size)
+    return surf

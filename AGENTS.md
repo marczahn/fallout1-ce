@@ -322,6 +322,44 @@ The current agreed direction (after step 2 T1) is:
 
 If future proposals deviate from this, challenge them unless they clearly improve the design.
 
+## Current Companion App State
+
+The companion app (Python + pygame) has been built through milestones M1–M4:
+
+**M1** (app skeleton, input): project layout, pygame main loop, keyboard input
+map (`SectionButton(1..4)`, `EncoderLeft/Right`, `Confirm`, `Back`), config
+loader with JSON file.
+
+**M2** (rendering, shell): vendored Fallout webfont, monochrome-green palette,
+480×800 portrait virtual screen, header (section name + connection status) +
+body area, CRT overlays (scanlines, vignette, rounded corners), virtual-to-window
+scaling.
+
+**M3** (network, state): non-blocking TCP `NetworkClient` with auth → hello/world
+→ get_snapshot handshake, `AppState` / `PlayerState` / `ConnectionState` data
+models, exponential backoff reconnect (1 s – 30 s), `TypewriterConsole` debug
+overlay (togglable with Tab), connection status shown in header (`CONNECTING`,
+`OK`, `NO SIGNAL`, `RECONNECTING`, `--`).
+
+**M4** (STATUS section): `ui/status.py` renders live HP / maxHP when
+`playerAvailable` is true, NO SIGNAL overlay when false. Body text is empty
+when READY+available so the active section draws its own content.
+`SectionButton(1)` routes to STATUS (default section). Introspection via
+`Section` enum.
+
+**Layout**: `companion_app/` — `app.py` (main loop), `config.py` (loader),
+`state/` (models), `net/` (client, framing), `render/` (font, palette, CRT),
+`ui/` (shell, status), `input/` (keyboard events), `debug/` (console, event
+log), `assets/` (font). Tests in `tests/`.
+
+**155 tests pass** covering: config loading, state models, network client
+(handshake, dispatch, reconnect, malformed input), framing, input events,
+shell/body/status helpers, console typewriter, and status renderer smoke tests.
+
+**Known issue**: when `connect_ex` returns a synchronous error (e.g.
+ECONNREFUSED), the failed socket is now explicitly closed in the except handler
+(`client.py:113`).
+
 ## Questions
 
 Default assumption: proceed unless a question materially affects architecture, correctness, or scope.

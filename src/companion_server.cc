@@ -231,6 +231,13 @@ void acceptClient(int fd)
 
 void rejectExtraClient(int fd)
 {
+    static constexpr char kAlreadyConnected[] = R"({"type":"already_connected"})";
+    send(fd, kAlreadyConnected, sizeof(kAlreadyConnected) - 1, 0);
+    send(fd, "\n", 1, 0);
+    // Shutdown the write half so the client receives the message before
+    // the connection disappears.  The client will see EOF on read after
+    // the message, not an RST.
+    shutdown(fd, SHUT_WR);
     close(fd);
 }
 

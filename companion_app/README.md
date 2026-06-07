@@ -1,12 +1,13 @@
 # Companion App
 
 Python + pygame companion app for Fallout 1 CE. Renders the contents
-of a Pip-Boy 2000 Mk I-style CRT screen and (later) consumes data
-from the in-game companion server.
+of a Pip-Boy 2000 Mk I-style CRT screen and consumes data from the
+in-game companion server via TCP / newline-delimited JSON.
 
-This package corresponds to milestone **M1** of
-`docs/companion_app/plans/mvp-milestones.md`: app skeleton, main
-loop, and dev keyboard input. No networking, no UI chrome.
+This package implements milestones **M1–M3** of
+`docs/companion_app/plans/mvp-milestones.md`: app skeleton, CRT
+screen shell, dev keyboard input, and real-time network client with
+auth handshake and auto-reconnect.
 
 ## Requirements
 
@@ -64,6 +65,11 @@ Config resolution order:
       "Confirm":        ["return"],
       "Back":           ["backspace"]
     }
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 28080,
+    "password": "changeme"
   }
 }
 ```
@@ -90,11 +96,13 @@ Honored keys:
   it is unstyled and overlaps the body intentionally.
 - `input.keymap` — keyboard bindings per input event. Each entry is
   a list of pygame key *names* (resolved at startup).
-
-Future config keys reserved for later milestones (currently ignored
-with a warning):
-
-- `server.host`, `server.port` — companion server endpoint (M3).
+- `server.host` — companion server hostname or IP. Must be a non-empty
+  string. Default `"127.0.0.1"`.
+- `server.port` — companion server TCP port. Must be an integer 1–65535.
+  Default `28080`.
+- `server.password` — companion server auth password. **Required**.
+  Must be a non-empty string. The app aborts at startup (before
+  pygame init) if this key is missing or empty.
 
 ## Dev keys
 

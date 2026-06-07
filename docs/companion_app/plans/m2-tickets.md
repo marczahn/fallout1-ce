@@ -229,7 +229,7 @@ Carried over from the milestone, restated as a hard wall:
 
 ### M2-T1 — Font Asset Pipeline
 
-**Status:** todo
+**Status:** done
 
 **Goal:** Vendor the Fallout webfont as a TrueType file inside the
 installed package, expose a font loader that returns sized `Font`
@@ -279,7 +279,7 @@ objects, and document the conversion path.
 
 ### M2-T2 — Palette and Render Primitives
 
-**Status:** todo
+**Status:** done
 
 **Goal:** Establish the monochrome-green palette, the background
 fill, and the text-drawing helpers the screen shell will compose.
@@ -323,7 +323,7 @@ fill, and the text-drawing helpers the screen shell will compose.
 
 ### M2-T3 — Screen Shell (Header + Body)
 
-**Status:** todo
+**Status:** done
 
 **Goal:** Compose the static screen shell: header line with
 section name and connection status, separator rule, and centered

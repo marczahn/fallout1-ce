@@ -18,6 +18,8 @@ import pygame
 
 from companion_app.config import (
     DEFAULT_DISPLAY_SCALE,
+    SERVER_DEFAULT_HOST,
+    SERVER_DEFAULT_PORT,
     Config,
     ConfigError,
     load_and_resolve_config,
@@ -38,6 +40,11 @@ class _Tempdir:
         self._td.cleanup()
 
 
+def _with_password(data: dict) -> dict:
+    """Wrap config data with a minimal server.password block."""
+    return {**data, "server": {"password": "test"}}
+
+
 class LoadConfigTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -54,8 +61,13 @@ class LoadConfigTests(unittest.TestCase):
             path.write_text(json.dumps(data), encoding="utf-8")
         return path
 
+    def _write_pw(self, td: Path, data: dict) -> Path:
+        """Write a config with the given data plus a password."""
+        return self._write(td / "c.json", _with_password(data))
+
     def test_defaults_when_no_file_and_no_path(self) -> None:
-        with _Tempdir():
+        with _Tempdir() as td:
+            self._write(td / "companion_app.config.json", _with_password({}))
             cfg = load_and_resolve_config(None)
         self.assertIsInstance(cfg, Config)
         self.assertEqual(cfg.display_scale, DEFAULT_DISPLAY_SCALE)
@@ -69,14 +81,20 @@ class LoadConfigTests(unittest.TestCase):
 
     def test_cwd_config_file_is_picked_up(self) -> None:
         with _Tempdir() as td:
-            self._write(td / "companion_app.config.json", {"display": {"scale": 1.25}})
+            self._write(
+                td / "companion_app.config.json",
+                _with_password({"display": {"scale": 1.25}}),
+            )
             cfg = load_and_resolve_config(None)
         self.assertEqual(cfg.display_scale, 1.25)
 
     def test_explicit_path_overrides_cwd_file(self) -> None:
         with _Tempdir() as td:
-            self._write(td / "companion_app.config.json", {"display": {"scale": 1.25}})
-            other = self._write(td / "other.json", {"display": {"scale": 2.0}})
+            self._write(
+                td / "companion_app.config.json",
+                _with_password({"display": {"scale": 1.25}}),
+            )
+            other = self._write(td / "other.json", _with_password({"display": {"scale": 2.0}}))
             cfg = load_and_resolve_config(str(other))
         self.assertEqual(cfg.display_scale, 2.0)
 
@@ -97,34 +115,34 @@ class LoadConfigTests(unittest.TestCase):
 
     def test_unknown_event_name_aborts(self) -> None:
         with _Tempdir() as td:
-            p = self._write(td / "c.json", {"input": {"keymap": {"SectionButton5": ["1"]}}})
+            p = self._write_pw(td, {"input": {"keymap": {"SectionButton5": ["1"]}}})
             with self.assertRaises(ConfigError) as ctx:
                 load_and_resolve_config(str(p))
             self.assertIn("SectionButton5", str(ctx.exception))
 
     def test_unknown_key_name_aborts(self) -> None:
         with _Tempdir() as td:
-            p = self._write(td / "c.json", {"input": {"keymap": {"Confirm": ["not-a-real-key"]}}})
+            p = self._write_pw(td, {"input": {"keymap": {"Confirm": ["not-a-real-key"]}}})
             with self.assertRaises(ConfigError) as ctx:
                 load_and_resolve_config(str(p))
             self.assertIn("not-a-real-key", str(ctx.exception))
 
     def test_keymap_must_be_list_of_strings(self) -> None:
         with _Tempdir() as td:
-            p = self._write(td / "c.json", {"input": {"keymap": {"Confirm": "return"}}})
+            p = self._write_pw(td, {"input": {"keymap": {"Confirm": "return"}}})
             with self.assertRaises(ConfigError):
                 load_and_resolve_config(str(p))
 
     def test_negative_or_zero_scale_aborts(self) -> None:
         for bad in (0, -1, -0.5):
             with _Tempdir() as td:
-                p = self._write(td / "c.json", {"display": {"scale": bad}})
+                p = self._write_pw(td, {"display": {"scale": bad}})
                 with self.assertRaises(ConfigError):
                     load_and_resolve_config(str(p))
 
     def test_boolean_scale_rejected(self) -> None:
         with _Tempdir() as td:
-            p = self._write(td / "c.json", {"display": {"scale": True}})
+            p = self._write_pw(td, {"display": {"scale": True}})
             with self.assertRaises(ConfigError):
                 load_and_resolve_config(str(p))
 
@@ -138,64 +156,66 @@ class LoadConfigTests(unittest.TestCase):
     def test_unknown_keys_are_ignored(self) -> None:
         # Future-section keys must not crash; loader should warn and ignore.
         with _Tempdir() as td:
-            p = self._write(td / "c.json", {
-                "server": {"host": "127.0.0.1"},
+            p = self._write_pw(td, {
                 "display": {"scale": 1.0},
+                "someFutureSection": {"foo": 1},
             })
             cfg = load_and_resolve_config(str(p))
         self.assertEqual(cfg.display_scale, 1.0)
 
     def test_display_crt_overlay_default_is_true(self) -> None:
-        with _Tempdir():
+        with _Tempdir() as td:
+            self._write(td / "companion_app.config.json", _with_password({}))
             cfg = load_and_resolve_config(None)
         self.assertTrue(cfg.display_crt_overlay)
 
     def test_display_crt_overlay_false_honored(self) -> None:
         with _Tempdir() as td:
-            p = self._write(td / "c.json", {"display": {"crtOverlay": False}})
+            p = self._write_pw(td, {"display": {"crtOverlay": False}})
             cfg = load_and_resolve_config(str(p))
         self.assertFalse(cfg.display_crt_overlay)
 
     def test_display_crt_overlay_must_be_bool(self) -> None:
         with _Tempdir() as td:
-            p = self._write(td / "c.json", {"display": {"crtOverlay": "yes"}})
+            p = self._write_pw(td, {"display": {"crtOverlay": "yes"}})
             with self.assertRaises(ConfigError) as ctx:
                 load_and_resolve_config(str(p))
             self.assertIn("display.crtOverlay", str(ctx.exception))
 
     def test_debug_event_log_default_is_false(self) -> None:
-        with _Tempdir():
+        with _Tempdir() as td:
+            self._write(td / "companion_app.config.json", _with_password({}))
             cfg = load_and_resolve_config(None)
         self.assertFalse(cfg.debug_event_log)
 
     def test_debug_event_log_true_honored(self) -> None:
         with _Tempdir() as td:
-            p = self._write(td / "c.json", {"debug": {"eventLog": True}})
+            p = self._write_pw(td, {"debug": {"eventLog": True}})
             cfg = load_and_resolve_config(str(p))
         self.assertTrue(cfg.debug_event_log)
 
     def test_debug_event_log_must_be_bool(self) -> None:
         with _Tempdir() as td:
-            p = self._write(td / "c.json", {"debug": {"eventLog": 1}})
+            p = self._write_pw(td, {"debug": {"eventLog": 1}})
             with self.assertRaises(ConfigError) as ctx:
                 load_and_resolve_config(str(p))
             self.assertIn("debug.eventLog", str(ctx.exception))
 
     def test_unknown_debug_key_warns_and_ignored(self) -> None:
         with _Tempdir() as td:
-            p = self._write(td / "c.json", {"debug": {"someFutureFlag": True}})
+            p = self._write_pw(td, {"debug": {"someFutureFlag": True}})
             cfg = load_and_resolve_config(str(p))
         self.assertFalse(cfg.debug_event_log)
 
     def test_debug_section_must_be_object(self) -> None:
         with _Tempdir() as td:
-            p = self._write(td / "c.json", {"debug": "on"})
+            p = self._write_pw(td, {"debug": "on"})
             with self.assertRaises(ConfigError):
                 load_and_resolve_config(str(p))
 
     def test_partial_keymap_merges_with_defaults(self) -> None:
         with _Tempdir() as td:
-            p = self._write(td / "c.json", {"input": {"keymap": {"Confirm": ["space"]}}})
+            p = self._write_pw(td, {"input": {"keymap": {"Confirm": ["space"]}}})
             cfg = load_and_resolve_config(str(p))
         # Override applied:
         self.assertEqual(cfg.keymap["Confirm"], [pygame.K_SPACE])
@@ -204,40 +224,132 @@ class LoadConfigTests(unittest.TestCase):
         self.assertEqual(cfg.keymap["EncoderLeft"], [pygame.K_UP])
 
     def test_display_vignette_default_is_true(self) -> None:
-        with _Tempdir():
+        with _Tempdir() as td:
+            self._write(td / "companion_app.config.json", _with_password({}))
             cfg = load_and_resolve_config(None)
         self.assertTrue(cfg.display_vignette)
 
     def test_display_vignette_false_honored(self) -> None:
         with _Tempdir() as td:
-            p = self._write(td / "c.json", {"display": {"vignette": False}})
+            p = self._write_pw(td, {"display": {"vignette": False}})
             cfg = load_and_resolve_config(str(p))
         self.assertFalse(cfg.display_vignette)
 
     def test_display_vignette_must_be_bool(self) -> None:
         with _Tempdir() as td:
-            p = self._write(td / "c.json", {"display": {"vignette": 1}})
+            p = self._write_pw(td, {"display": {"vignette": 1}})
             with self.assertRaises(ConfigError) as ctx:
                 load_and_resolve_config(str(p))
             self.assertIn("display.vignette", str(ctx.exception))
 
     def test_display_rounded_crt_default_is_true(self) -> None:
-        with _Tempdir():
+        with _Tempdir() as td:
+            self._write(td / "companion_app.config.json", _with_password({}))
             cfg = load_and_resolve_config(None)
         self.assertTrue(cfg.display_rounded_crt)
 
     def test_display_rounded_crt_false_honored(self) -> None:
         with _Tempdir() as td:
-            p = self._write(td / "c.json", {"display": {"roundedCrt": False}})
+            p = self._write_pw(td, {"display": {"roundedCrt": False}})
             cfg = load_and_resolve_config(str(p))
         self.assertFalse(cfg.display_rounded_crt)
 
     def test_display_rounded_crt_must_be_bool(self) -> None:
         with _Tempdir() as td:
-            p = self._write(td / "c.json", {"display": {"roundedCrt": "no"}})
+            p = self._write_pw(td, {"display": {"roundedCrt": "no"}})
             with self.assertRaises(ConfigError) as ctx:
                 load_and_resolve_config(str(p))
             self.assertIn("display.roundedCrt", str(ctx.exception))
+
+
+    # ── server.* config tests (M3-T1) ─────────────────────────────
+
+    def test_server_defaults_when_no_server_block(self) -> None:
+        # Password is required, so no-server-block raises ConfigError.
+        with _Tempdir() as td:
+            p = self._write(td / "c.json", {"display": {"scale": 1.0}})
+            with self.assertRaises(ConfigError) as ctx:
+                load_and_resolve_config(str(p))
+        self.assertIn("server.password", str(ctx.exception).lower())
+
+    def test_server_all_keys_set_correctly(self) -> None:
+        with _Tempdir() as td:
+            p = self._write(td / "c.json", {
+                "server": {"host": "0.0.0.0", "port": 28080, "password": "hunter2"},
+            })
+            cfg = load_and_resolve_config(str(p))
+        self.assertEqual(cfg.server_host, "0.0.0.0")
+        self.assertEqual(cfg.server_port, 28080)
+        self.assertEqual(cfg.server_password, "hunter2")
+
+    def test_server_password_missing_raises(self) -> None:
+        with _Tempdir() as td:
+            p = self._write(td / "c.json", {
+                "server": {"host": "127.0.0.1", "port": 28080},
+            })
+            with self.assertRaises(ConfigError) as ctx:
+                load_and_resolve_config(str(p))
+            self.assertIn("password", str(ctx.exception).lower())
+
+    def test_server_password_empty_raises(self) -> None:
+        with _Tempdir() as td:
+            p = self._write(td / "c.json", {
+                "server": {"host": "127.0.0.1", "port": 28080, "password": ""},
+            })
+            with self.assertRaises(ConfigError) as ctx:
+                load_and_resolve_config(str(p))
+            self.assertIn("password", str(ctx.exception).lower())
+
+    def test_server_port_as_string_raises(self) -> None:
+        with _Tempdir() as td:
+            p = self._write(td / "c.json", {
+                "server": {"host": "127.0.0.1", "port": "8080", "password": "pw"},
+            })
+            with self.assertRaises(ConfigError) as ctx:
+                load_and_resolve_config(str(p))
+            self.assertIn("server.port", str(ctx.exception))
+
+    def test_server_port_out_of_range_raises(self) -> None:
+        for bad in (0, 65536, -1):
+            with _Tempdir() as td:
+                p = self._write(td / "c.json", {
+                    "server": {"host": "127.0.0.1", "port": bad, "password": "pw"},
+                })
+                with self.assertRaises(ConfigError):
+                    load_and_resolve_config(str(p))
+
+    def test_server_host_empty_raises(self) -> None:
+        with _Tempdir() as td:
+            p = self._write(td / "c.json", {
+                "server": {"host": "", "port": 28080, "password": "pw"},
+            })
+            with self.assertRaises(ConfigError) as ctx:
+                load_and_resolve_config(str(p))
+            self.assertIn("server.host", str(ctx.exception))
+
+    def test_server_section_must_be_object(self) -> None:
+        with _Tempdir() as td:
+            p = self._write(td / "c.json", {"server": "foo"})
+            with self.assertRaises(ConfigError) as ctx:
+                load_and_resolve_config(str(p))
+            self.assertIn("server section", str(ctx.exception).lower())
+
+    def test_server_host_default_when_only_password(self) -> None:
+        with _Tempdir() as td:
+            p = self._write(td / "c.json", {
+                "server": {"password": "mypw"},
+            })
+            cfg = load_and_resolve_config(str(p))
+        self.assertEqual(cfg.server_host, SERVER_DEFAULT_HOST)
+        self.assertEqual(cfg.server_port, SERVER_DEFAULT_PORT)
+
+    def test_server_unknown_sub_key_does_not_raise(self) -> None:
+        with _Tempdir() as td:
+            p = self._write(td / "c.json", {
+                "server": {"password": "pw", "unknownSubKey": 1},
+            })
+            cfg = load_and_resolve_config(str(p))
+        self.assertEqual(cfg.server_password, "pw")
 
 
 if __name__ == "__main__":
