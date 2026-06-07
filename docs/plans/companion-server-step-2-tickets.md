@@ -4,7 +4,7 @@ Derived from `docs/plans/companion-server-step-1.md` (the seven candidates liste
 
 ## Scope Statement
 
-Close the step-1 security gap, fix the step-1 player-availability correctness bug, and expand the synchronized model to position, map, and inventory. The server only runs when both `companion_bind` and `companion_password` are present in the `[companion]` section of `fallout.cfg`; otherwise it is in `disabled` and the main menu shows a single-line hint. Bind host and password are both required; there is no no-password mode. The auth handshake is `auth` (constant-time compared) → `hello` → `world`, and the rest of the step-1 flow runs unchanged. The milestone adds no new thread model. Game remains authoritative and must not be observably affected by the server's presence or absence.
+Close the step-1 security gap, fix the step-1 player-availability correctness bug, and expand the synchronized model to position, map, and inventory. The server only runs when both `companion_bind` and `companion_password` are present in the `[companion]` section of `fallout.cfg`; otherwise it is in `disabled` and the main menu shows a single-line hint. Bind host and password are both required; there is no no-password mode. The auth handshake is `auth` (constant-time compared) → `hello` → `world`. **The `update` and `snapshot` wire shapes are redesigned in T0 before T3–T5 land; see T0 for the new shape.** The milestone adds no new thread model. Game remains authoritative and must not be observably affected by the server's presence or absence.
 
 ## Out Of Scope (Step 2)
 
@@ -20,7 +20,7 @@ Close the step-1 security gap, fix the step-1 player-availability correctness bu
 ## Cross-Cutting Constraints
 
 - **Step-1 invariants are preserved.** Non-blocking, single-thread, single-client, hand-rolled JSON, sampled-with-change-detection for any new field added by T2–T5. A step-1 client that does not know `auth` is always dropped at the `auth` step (the "unknown first message" path), which is the correct behavior. There is no no-password mode.
-- **Backwards-compatible protocol field additions only.** New server message types and new `update` fields are additive. The fields a step-1 client knows (`type`, `seq`, `playerAvailable`, `data.player.hp`, `data.player.maxHp`) keep their semantics. `schemaVersion` bumps from 1 to 2 in `world`; step-1 clients can detect the bump and refuse cleanly.
+- **T0 is the explicit exception to additive-only protocol changes.** T0 is a breaking change to the `update` and `snapshot` wire shapes. The `schemaVersion` bump from 2 to 3 makes the break visible. A step-1/step-2 client that hard-asserts `== 2` will refuse; a step-1/step-2 client that ignores the field will fail because the old `data.player.hp` path is gone. T0 must land before T3, T4, and T5 because they all add new `update` fields and the dispatch model needs to be settled first.
 - **No allocation in the steady state path.** Reuse the same buffer strategy as step 1. The inventory serialization in T4 is the highest-risk path and must be measured before being accepted.
 - **Fail closed.** Any parse error, auth failure, unknown message, or socket error drops the client and returns the server to `listening`. Game state untouched.
 - **Localized diff.** Touch only the three step-1 files plus the new files introduced by individual tickets, the two `main.cc` integration points, the tick sites in `src/plib/gnw/input.cc`, the `gconfig.h` / `gconfig.cc` config-key additions for T1, the `mainmenu.cc` hint line for T1, and the build system. Nothing else.
@@ -47,12 +47,13 @@ These are the facts each ticket depends on. Step 1's verified facts (`obj_dude`,
 4. **Bind port.** `28080`. Hardcoded. Not overridable in milestone 2.
 5. **`schemaVersion` bump.** `world` reports `schemaVersion: 2`. The bump is unconditional. Step-1 clients that hard-assert `== 1` will refuse; step-1 clients that ignore the field will be dropped at the `auth` step (correct behavior). No deprecation period, no dual-version support.
 6. **Player-availability signal (T2 contract).** `hasPlayer` is true only when **all** of: `obj_dude != nullptr`, the engine reports a real map loaded (the existing `map_get_index_number() != -1` check), the main menu / intro / world-map state is false (the new check T2 adds), and no fullscreen movie is playing. The exact combination is T2's engineering output; this section only fixes the contract.
-7. **Position sampling cadence.** Same 500 ms cadence as HP. Position and map-id are sampled in the same tick; a single `update` may carry both `x`/`y` and `map` if both changed in the same interval. The `data` payload is field-level diff, not full state.
-8. **Inventory model (T4 contract).** Flat array of `{id, count, equipped}`. No slots, no weight, no condition, no ordering beyond "as returned by the engine iterator." The array is the full inventory on every `snapshot` and the diff on every `update`.
-9. **Inventory change detection.** T5 emits one `update` per detected transition between samples: `added`, `removed`, `equipped`, `unequipped`. The full flat diff is the fallback when transitions cannot be cleanly derived. If the inventory iterator is not stable across calls, T5 falls back to "send full diff on any change," and the ticket is marked partial.
+7. **Position sampling cadence.** Same 500 ms cadence as HP. Position and map-id are sampled in the same tick; if both changed in the same interval, both kinds' updates fire in that tick (vitals is independent of position). The `payload` of every `update` is the *complete* per-kind object (T0 refinement; see Decision #13).
+8. **Inventory model (T4 contract).** Flat array of `{id, count, equipped}`. No slots, no weight, no condition, no ordering beyond "as returned by the engine iterator." The array is the full inventory on every `snapshot` and on every `update` (T0 "always full" principle applies to T4 as well; see Decision #13).
+9. **Inventory change detection.** T5 emits one `update` per kind (`player.inventory`) whose `payload` is the full inventory array. The server's diff against its `lastSent` decides whether to call the builder; the protocol layer is pure formatting. If the inventory iterator is not stable across calls, T5 falls back to comparing the full arrays per slot and emitting on any change, and the ticket is marked partial.
 10. **Commands (T6 contract).** Server accepts `{"type":"cmd","id":N,"name":"X","args":{...}}` and replies with `{"type":"cmd_ack","id":N,"ok":true|false,"error":"..."}`. The initial allowlist is exactly two commands: `ping` (no args, always ok) and `get_snapshot` (no args, behaves like the step-1 client message). This validates the command channel end-to-end without inventing new engine behavior.
 11. **UDP discovery (T7 contract).** Server broadcasts `{"type":"announce","game":"fallout1-ce","schemaVersion":2,"host":"<bind host>","port":28080,"authRequired":true}\n` to `255.255.255.255:28080` once per second, only when a client is **not** currently connected. The `host` field is the value of `companion_bind`. `authRequired` is unconditionally `true` (the only enabled mode is auth-required). The password is **never** broadcast; clients must obtain the password through a separate channel (today: read it from the host's `fallout.cfg`). Discovery is a hint, not a substitute for the password.
 12. **Slow-consumer policy.** Unchanged from step 1. The 256 KiB outbound cap applies to all new message types. UDP is a separate concern: T7 uses fire-and-forget `sendto` and does not maintain a per-client outbound buffer for discovery.
+13. **T0 protocol shape (the design this milestone implements).** Every server-to-client message except `world`, `player_unavailable`, `cmd_ack`, and `announce` carries a `payload` object whose schema is determined by a `kind` string. `update` adds a top-level `kind`; `snapshot` is a `payload` that is itself a kind→object map. The `entity` field is removed. Kinds are namespaced as `player.<aspect>`. The current set: `player.vitals`, `player.local_location`, `player.world_location`; `player.inventory` is added by T4. `world.schemaVersion` is `3`. **Every `update.payload` is the complete per-kind object (T0 refinement).** The server compares each tick's sample to a `lastSent: CompanionSnapshot` and calls a builder only when a kind's fields (or, for location kinds, the current surface) differ. A surface change force-emits the new kind's update even if its numeric fields match the stale `lastSent` (which holds the other surface's data). Future kinds follow the same pattern: one builder per kind, one `lastSent` slot, server-side diff.
 
 ## Top-Level Success Criteria (For Closing Step 2)
 
@@ -60,13 +61,13 @@ These are the facts each ticket depends on. Step 1's verified facts (`obj_dude`,
 2. When the server is enabled, the bind host is exactly what `companion_bind` says and the port is `28080`. A client on the LAN can reach the listener only if the bind host is reachable from the client.
 3. When the server is enabled, a `{"type":"hello"}` as the first message drops the client (the only first message accepted is `auth`). A `{"type":"auth","password":"<correct>"}` is accepted and transitions to `awaiting_hello`; a `{"type":"auth","password":"<wrong>"}`, a `{"type":"auth","password":""}` (when the configured password is non-empty), or a `{"type":"auth"}` (no `password` field) all drop the client. A constant-time compare is used.
 4. The mode (`disabled` or `awaiting_auth`) is decided at `companionServerInit` and is immutable for the lifetime of the process. Changing `fallout.cfg` requires a restart.
-5. `world.schemaVersion` is `2`. All other step-1 message shapes and field names are preserved when the server is enabled; the new `auth` message is added to the protocol.
+5. `world.schemaVersion` is `3`. All other step-1 message shapes and field names are preserved when the server is enabled except where T0 explicitly supersedes them (the `update`/`snapshot` payload shape; the `entity` field removal). The new `auth` message is added to the protocol. The authoritative wire-shape spec is the T0 ticket; this criterion is a pointer to it.
 6. `playerAvailable` is `false` on the main menu, during the intro movie, on the world map, and between maps. `playerAvailable` is `true` only during real gameplay. Verified manually for each state.
-7. `snapshot.data.player` includes `x`, `y`, `map` when a player is loaded. `update` for the `player` entity carries any of `hp`, `maxHp`, `x`, `y`, `map` that changed in the last interval.
-8. `snapshot.data.inventory` is a non-empty flat array of `{id, count, equipped}` during real gameplay. Picking up or dropping an item produces an `update` for the `inventory` entity within 500 ms. Equipping or unequipping produces an `update`.
+7. `snapshot.payload` is a kind→object map. When a player is loaded, it includes `player.vitals` (with `hp`, `maxHp`) and exactly one of `player.local_location` (with `tile`, `elevation`, `map`, `location`, `locationId`) or `player.world_location` (with `x`, `y`). `update` for a kind carries the complete per-kind object (T0 "always full" principle), not a field-level diff. The server emits an `update` only when the kind's fields (or the current surface) differ from `lastSent`.
+8. `snapshot.payload["player.inventory"]` is a non-empty flat array of `{id, count, equipped}` during real gameplay (T4, deferred). Picking up or dropping an item produces a `player.inventory` `update` within 500 ms (T5, deferred). Equipping or unequipping produces a `player.inventory` `update`. Both follow the T0 "always full" principle: the update's `payload` is the full inventory array.
 9. A step-2 client can send `{"type":"cmd","id":1,"name":"ping","args":{}}` and receive `{"type":"cmd_ack","id":1,"ok":true,...}` with the same `id`. The `id` echo proves the request/response pairing works.
 10. A step-2 client can send `{"type":"cmd","id":2,"name":"get_snapshot","args":{}}` and receive a `cmd_ack` followed by a `snapshot` message (or the snapshot is the ack payload; the contract is fixed in T6).
-11. A `nc -u -l 28080` listener on the same machine receives the JSON announce broadcast from a step-2 server. The broadcast includes `host` (the configured `companion_bind`), `port` (28080), `schemaVersion` (2), `authRequired` (`true`), and never includes the password. The broadcast stops while a TCP client is connected and resumes within 1 second after disconnect.
+11. A `nc -u -l 28080` listener on the same machine receives the JSON announce broadcast from a step-2 server. The broadcast includes `host` (the configured `companion_bind`), `port` (28080), `schemaVersion` (3), `authRequired` (`true`), and never includes the password. The broadcast stops while a TCP client is connected and resumes within 1 second after disconnect.
 12. The main menu hint line reads `Companion server: disabled (set [companion] bind + password in fallout.cfg)` and is drawn once during `main_menu_create()`. It is purely informational: no button, no input handler, no settings screen. The hint is drawn only when the server is in `disabled`.
 13. Game starts, runs, and shuts down identically with the server enabled and no client connected, with the server disabled, with or without a UDP listener. The `fallout.cfg` is read at `companionServerInit`; a missing or unreadable `fallout.cfg` is treated as "server disabled."
 14. All twelve plan deliverables in the milestone 1 plan remain demonstrably met for the enabled case; the disabled case is a new post-step-1 state and is verified by the absence of a listening socket.
@@ -74,6 +75,137 @@ These are the facts each ticket depends on. Step 1's verified facts (`obj_dude`,
 ---
 
 ## Tickets
+
+### T0 — Protocol Redesign: Kind-Discriminated `update` and `payload` Everywhere
+
+**Status:** done
+
+**Implementation notes:**
+
+- `companion_snapshot.h` splits the previous `CompanionPlayerSnapshot` into three per-kind structs: `CompanionPlayerVitals` (hp, maxHp), `CompanionPlayerLocalLocation` (tile, elevation, map, location, locationId), `CompanionPlayerWorldLocation` (x, y). `CompanionSnapshot` becomes a small aggregator with `hasPlayer`, `surface`, and the three substructs. The old `companionPlayerSnapshotEquals` helper is dropped; per-kind comparison lives in the server.
+- `companion_protocol.h` drops `companionBuildPlayerUpdate` and exposes three per-kind builders: `companionBuildVitalsUpdate`, `companionBuildLocalLocationUpdate`, `companionBuildWorldLocationUpdate`. Each takes `(seq, current)` and emits the `kind`-tagged `update` with the *complete* per-kind object in `payload`. There is no `lastSent` parameter: the protocol layer does no diffing; the server decides whether to call a builder by comparing the current sample to its own last-sent state. `companionBuildSnapshot` is rewritten to emit the new kind→object map shape; the wrapper field is renamed from `data` to `payload`. `world`, `player_unavailable`, and the client-side parsers are unchanged.
+- `companion_server.cc` holds a single `lastSent: CompanionSnapshot` plus a `lastSentPrimed` bool on `CompanionConnection`. The diff is done inline in `sampleReadyClient`: vitals differ → emit `player.vitals`; surface changed or local-location fields differ → emit `player.local_location`; surface changed (to World) or world-location fields differ → emit `player.world_location`. A surface change force-emits the new kind's update even if its numeric fields happen to match the stale `lastSent` (which holds the *other* surface's data). The per-kind `*Differ` helpers (`vitalsDiffer`, `localLocationDiffer`, `worldLocationDiffer`) are local to the anonymous namespace.
+- The `auth` parser and password extractor now accept the spaced form `{"type": "auth"` (Python's `json.dumps` default) in addition to the compact form `{"type":"auth"`. This was a pre-existing bug discovered during live smoke-testing: the step-1/step-2 smoke test had never been run end-to-end against a real server, so the standard `json.dumps` output was never exercised. Fix is localized to `companionParseClientMessage` and `companionExtractAuthPassword`.
+- Wire header comment in `companion_protocol.cc` is rewritten to describe the new shape, the kind list, and the "always full payload" semantics.
+- The protocol test at `/tmp/opencode/protocol_test.cc` is rewritten to assert the new shape; ~60 assertions cover the builders (always-full payloads for each kind), the `kind` discriminator, the `payload` field, the surface transition (forced emit), and the unchanged `world` / `player_unavailable` / parser paths.
+- `world.schemaVersion` is bumped from `2` to `3`. The T1 implementation note that records the `2` bump is left in place as history; the new authoritative value is in the protocol header.
+
+**Design refinement during live testing:**
+
+The original T0 design had `update.payload` as a field-level diff (per-field partial emission). Live testing against a running game revealed that this created a desync window: a client that missed the snapshot (or hadn't requested one yet) only got partial fields and didn't know the full state of a kind. The "snapshot-first" expectation was implicit and easy to violate. The T0 design was refined to "always full payload" at the protocol layer, with the server still doing a diff to decide whether to call a builder. This is a refinement, not a wire-shape break: clients that read fields defensively work with both. `schemaVersion` stays at `3`.
+
+**Verification:**
+
+- The protocol-layer test at `/tmp/opencode/protocol_test.cc` covers the new builders and the unchanged parsers.
+- The build (`cmake --build build --target fallout-ce`) passes. The companion-server change is protocol- and dispatch-layer only; the engine integration points (`process_bk`, idle hook, main-menu hint, config keys) are untouched.
+
+**Goal:** Replace the current monolithic `update.data` field with a kind-discriminated payload model. Each `update` carries exactly one `kind` whose `payload` matches that kind's schema. The `snapshot` message becomes a kind→object map. This makes client dispatch explicit (the `kind` tag) and lets future per-kind additions land without breaking unrelated clients. The `entity` field is removed; the `entity` is now part of the `kind` namespace (e.g., `player.vitals`). The wrapper field is renamed from `data` to `payload` for both `update` and `snapshot` so the client always knows where the structured content lives.
+
+**Why this is T0, not a follow-up ticket:**
+
+- The current `update.data` is *already* a field-level diff, but the field set is implicit. A client has to inspect the keys to know which aspect of the player changed. The same flat object carries vitals, local position, and world position depending on what changed. This is the implicit-dispatch problem the redesign is solving.
+- T3, T4, and T5 are all about *adding more fields to that same implicit blob*. Each one makes the dispatch problem worse. T0 must land before any of them.
+- T1 (auth + bind + password) does not need this, but T0 invalidates one fact in T1 — the `schemaVersion` bump from `1` to `2` is now superseded by T0's bump from `2` to `3`. T1's auth path, constant-time compare, disabled state, and main-menu hint are unchanged.
+
+**Scope:**
+
+- Wire shape changes in `companion_protocol`:
+  - `update` adds a top-level `kind` field. Valid values in T0: `"player.vitals"`, `"player.local_location"`, `"player.world_location"`. T4 adds `"player.inventory"`.
+  - `update` removes the top-level `entity` field.
+  - `update.data` is renamed to `update.payload`. The `payload` shape is per-kind.
+  - `snapshot.data` is renamed to `snapshot.payload`. The `payload` is a kind→object map containing only the kinds valid in the current state.
+  - `world.schemaVersion` bumps from `2` to `3`. Hard break.
+- Code changes in `src/companion_protocol.{h,cc}`:
+  - Drop `companionBuildPlayerUpdate`. Replace with the three per-kind builders.
+  - Each builder takes `(seq, current)` and emits a `kind`-tagged `update` with the *complete* per-kind object in `payload`. There is no `lastSent` or `playerAvailable` parameter: the protocol layer does no diffing and the envelope's `playerAvailable` is hardcoded to `true` (the server only calls an update builder while the player is loaded).
+  - `companionBuildSnapshot` emits the new kind→object map shape.
+  - The wire-format comment at the top of `companion_protocol.cc` is rewritten.
+- Code changes in `src/companion_snapshot.{h,cc}`:
+  - Split `CompanionPlayerSnapshot` into per-kind structs (`CompanionPlayerVitals`, `CompanionPlayerLocalLocation`, `CompanionPlayerWorldLocation`).
+  - `CompanionSnapshot` becomes a small aggregator.
+  - Drop `companionPlayerSnapshotEquals`; per-kind comparison lives in the server.
+- Code changes in `src/companion_server.cc`:
+  - Replace the per-kind `lastSent*` slots and `primed` flags with a single `lastSent: CompanionSnapshot` plus a `lastSentPrimed` bool on `CompanionConnection`.
+  - Replace the three `queue*UpdateIfNeeded` functions with inline dispatch in `sampleReadyClient`.
+  - On surface change, the `surface` field in `lastSent` differs from the current surface, which force-emits the new kind's update on the next sample.
+- No changes to: `world`, `player_unavailable`, the auth/hello/`get_snapshot`/`cmd`/`cmd_ack` client messages, the step-1 contracts for `hasPlayer` and constant-time compare, the engine integration points, the config keys, the main-menu hint, the build system.
+
+**Wire shapes:**
+
+```json
+// Snapshot: payload is a kind->object map. Only valid kinds are present.
+{"type":"snapshot","seq":1,"playerAvailable":true,"payload":{
+  "player.vitals":          {"hp":30,"maxHp":40},
+  "player.local_location":  {"tile":12345,"elevation":0,"map":3,"location":"Vault 13","locationId":"VAULT13"}
+}}
+
+// Vitals update: full payload (always, regardless of which subfield changed).
+{"type":"update","seq":2,"playerAvailable":true,
+ "kind":"player.vitals",
+ "payload":{"hp":28,"maxHp":40}}
+
+// Vitals update: maxHp changed (still full payload).
+{"type":"update","seq":3,"playerAvailable":true,
+ "kind":"player.vitals",
+ "payload":{"hp":30,"maxHp":50}}
+
+// Local location update: full payload (all 5 schema fields).
+{"type":"update","seq":4,"playerAvailable":true,
+ "kind":"player.local_location",
+ "payload":{"tile":12346,"elevation":0,"map":3,"location":"Vault 13","locationId":"VAULT13"}}
+
+// Local location update: map changed (still full payload; `location` is JSON
+// `null` when the engine has no localized name for the new map).
+{"type":"update","seq":5,"playerAvailable":true,
+ "kind":"player.local_location",
+ "payload":{"tile":12345,"elevation":0,"map":5,"location":"Junktown","locationId":"JUNKKILL"}}
+
+// World location update: full payload.
+{"type":"update","seq":6,"playerAvailable":true,
+ "kind":"player.world_location",
+ "payload":{"x":12,"y":20}}
+
+// player_unavailable: no `kind`, no `payload`.
+{"type":"player_unavailable","seq":7,"playerAvailable":false}
+```
+
+**Payload semantics (always full, server-side diff):**
+
+- Every `update.payload` is the *complete* per-kind object (all schema fields present). There is no field-level diff at the protocol layer. A client that receives an `update` can merge it into its current state without having to first `get_snapshot`.
+- The server decides whether to call a builder by comparing the current sample to its `lastSent` snapshot. If a kind's fields (or, for location kinds, the current surface) differ from `lastSent`, the server calls the builder and updates `lastSent`. If nothing changed, the server does not call the builder.
+- The server's diff is the only place "what changed" is computed. The protocol layer is pure formatting.
+
+**Surface transition handling:**
+
+When the player transitions between the local and world surface:
+
+- The new surface's kind is force-emitted on the next sample, regardless of whether the new state's numeric fields match the stale `lastSent` for that kind. Implementation: the server compares `lastSent.surface` with `current.surface`; if they differ, the new kind is force-emitted. This covers both directions (local→world and world→local) and handles the "return to a numerically-identical previous tile after visiting the world map" case correctly.
+- The old surface's kind is not emitted on transition. The client infers the surface change from the new kind appearing on the wire (e.g., a `player.world_location` update is itself the signal that the player is on the world map).
+- A return to a numerically-identical tile *without* a surface change is a no-op: the fields match `lastSent`, and the server does not emit an `update`. This is the intended behavior under the "always full" semantics: the state did not change, so there is nothing to send.
+
+**Acceptance:**
+
+- `world.schemaVersion` is `3`.
+- `update` messages carry exactly one `kind` and a `payload` object whose keys are the complete schema for that kind. There is no `entity` field, and there are no partial payloads.
+- `snapshot.payload` is a JSON object whose keys are kinds and whose values are the per-kind full state. Only kinds valid in the current state are present.
+- A step-1 client (no `auth`, no `kind`) is still dropped at the auth step.
+- A step-2 client (no `kind`, looking for `data.player.hp`) is broken: that path no longer exists on the wire. This is the intentional breaking change; the bump to 3 makes it visible.
+- The T1 success criteria (auth, disabled state, main-menu hint, constant-time compare, no-password-is-not-an-option) continue to pass byte-for-byte: T0 does not touch the auth path or the config subsystem (the parser now also accepts the spaced `{"type": "auth"` form, but the canonical compact form is unchanged).
+- The T2 success criteria (player-availability signal) continue to pass: T0 does not touch the helper or the snapshot collector's gating logic.
+- A position change in real gameplay emits exactly one `update` whose `kind` is `player.local_location` (or `player.world_location` on the world map), never a `player.vitals` update.
+- A vitals change emits exactly one `update` whose `kind` is `player.vitals`, never a location update.
+- A surface transition (local ↔ world) force-emits the new kind's update on the next sample, even if the new state's numeric fields happen to match the stale `lastSent`.
+- The protocol-layer test at `/tmp/opencode/protocol_test.cc` covers the new builders and the unchanged parsers, and passes.
+
+**Notes:**
+
+- The protocol surface from the server is now: `world` (handshake), `snapshot` (full state), `update` (per-kind diff), `player_unavailable` (transition), `cmd_ack` (command reply), `announce` (UDP discovery, T7). Six message types.
+- T6 (commands) and T7 (UDP discovery) are unaffected: they do not use the `update` or `snapshot` shape.
+- T4 (inventory) lands as a new `kind: "player.inventory"` with a separate snapshot map entry. The per-kind model is what makes T4 additive.
+- T5 (inventory events) is deferred per the protocol discussion; when it lands, the decision between flat-state-diff vs structured-events will be revisited.
+- The `schemaVersion` bump from 2 to 3 is unconditional. There is no dual-version support.
+
+---
 
 ### T1 — Required Bind + Password in `fallout.cfg`, with Disabled State and Main-Menu Hint
 
@@ -473,9 +605,9 @@ Notes on the table:
 
 ## Suggested Ordering
 
-T1 → T2 → T3 → T4 → T5 → T6 → T7. T1 and T2 are independent and can be implemented in either order; T1 is recommended first because it closes the LAN-by-default footgun and gives the user a working security knob early. T3 depends on T2 (T2's `hasPlayer` is the gate for emitting position). T4 depends on T2 for the same reason. T5 depends on T4. T6 and T7 are independent of T3–T5 and of each other; they can land in any order after T1, but T6 is recommended before T7 because it exercises the protocol surface more and may surface parsing edge cases that T7 inherits.
+T0 → T1 → T2 → T3 → T4 → T5 → T6 → T7. T0 must land first: it sets the protocol shape that T3, T4, and T5 build on. T1 and T2 are independent and can be implemented in either order after T0; T1 is recommended first because it closes the LAN-by-default footgun and gives the user a working security knob early. T3 depends on T2 (T2's `hasPlayer` is the gate for emitting position). T4 depends on T2 for the same reason. T5 depends on T4. T6 and T7 are independent of T3–T5 and of each other; they can land in any order after T1, but T6 is recommended before T7 because it exercises the protocol surface more and may surface parsing edge cases that T7 inherits.
 
-T1 and T6 are protocol changes. T1's bump is `1 → 2`, unconditional. T6 is additive (a step-1 client that ignores `cmd` and `cmd_ack` is unaffected), so no bump is required for T6; the bump already happened in T1.
+T0 and T1 are protocol changes. T0's bump is `2 → 3`, unconditional, and supersedes T1's `1 → 2` bump (the authoritative value is now 3). T6 is additive (a step-1 client that ignores `cmd` and `cmd_ack` is unaffected), so no bump is required for T6; the bump already happened in T0.
 
 ## Rejection Heuristics For Future Proposals
 
@@ -491,3 +623,7 @@ Push back on any of:
 - "Add a websocket or HTTP fallback for the discovery broadcast." The announce is a UDP packet, not an API.
 - "Bump `schemaVersion` for T6." T6 is additive; the bump already happened in T1.
 - "Implement the Windows socket path in this milestone." POSIX only; Windows is still empty stubs.
+- "Revert the T0 protocol redesign" (drop `kind`, re-add `entity`, rename `payload` back to `data`, fold the per-kind builders back into a monolithic `companionBuildPlayerUpdate`). T0 is the architectural decision this milestone is built on; reverting it forces T3–T5 to land into a worse dispatch model.
+- "Add a second discriminator on top of `kind`" (e.g., `subtype`, `domain`, or `aspect`). One tag is enough. Adding more creates the same implicit-dispatch problem T0 was designed to fix.
+- "Flatten `payload` and merge it with the message envelope" (e.g., put `hp` and `seq` and `type` at the same level). The `payload` wrapper is the boundary between protocol-level fields (`type`, `seq`, `kind`, `playerAvailable`) and per-kind data. Removing the boundary makes dispatch harder, not easier.
+- "Skip T0 because step-1 clients are gone." T0 is what makes the protocol evolvable; landing T3, T4, or T5 first would force a redo of T0 after more code is in place.

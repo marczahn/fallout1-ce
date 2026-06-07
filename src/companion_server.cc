@@ -55,7 +55,22 @@ struct CompanionConnection {
     unsigned int nextSeq = 1;
     unsigned int lastSampleMs = 0;
     bool playerWasAvailable = false;
-    CompanionPlayerSnapshot lastSentPlayer = {};
+
+    // Last-sent snapshot. The server compares each tick's sample to
+    // this and emits a `kind`-tagged `update` whose `payload` is the
+    // *complete* per-kind object whenever the kind's fields (or, for
+    // location kinds, the current surface) differ from `lastSent`.
+    //
+    // `lastSentPrimed` is the "we have a baseline to diff against" flag.
+    // It is `true` from the first prime (`queueWorldMessage` after
+    // `hello`, or the absent->present transition in `sampleReadyClient`)
+    // and `false` only when the player is absent or on a fresh
+    // connection. While `lastSentPrimed` is `false` the server does not
+    // emit `update`s; it just records the current snapshot as the
+    // baseline on the prime.
+    CompanionSnapshot lastSent = {};
+    bool lastSentPrimed = false;
+
     char inbound[kInboundBufferSize] = {};
     size_t inboundLen = 0;
     std::string outbound;
@@ -123,7 +138,8 @@ void resetConnectionState()
     gConnection.nextSeq = 1;
     gConnection.lastSampleMs = 0;
     gConnection.playerWasAvailable = false;
-    gConnection.lastSentPlayer = CompanionPlayerSnapshot{};
+    gConnection.lastSent = CompanionSnapshot{};
+    gConnection.lastSentPrimed = false;
     gConnection.inboundLen = 0;
     gConnection.outbound.clear();
 }
@@ -188,8 +204,13 @@ bool queueMessage(const std::string& message)
 
 void primeLastSentState(const CompanionSnapshot& snapshot)
 {
-    gConnection.playerWasAvailable = snapshot.hasPlayer;
-    gConnection.lastSentPlayer = snapshot.player;
+    gConnection.lastSent = snapshot;
+    // `lastSentPrimed` is true only when the player is loaded. When the
+    // player is absent, the next prime (on the absent->present
+    // transition) will set it. This way the first post-hello tick does
+    // not emit anything for a connection that starts at the main menu
+    // or in a save-load transition.
+    gConnection.lastSentPrimed = snapshot.hasPlayer;
 }
 
 void acceptClient(int fd)
@@ -265,22 +286,23 @@ void queuePlayerUnavailableMessage()
     debug_printf("companion: player_unavailable sent\n");
 }
 
-void queuePlayerUpdateIfNeeded(const CompanionSnapshot& snapshot)
+bool vitalsDiffer(const CompanionPlayerVitals& a, const CompanionPlayerVitals& b)
 {
-    if (companionPlayerSnapshotEquals(snapshot.player, gConnection.lastSentPlayer)) {
-        return;
-    }
+    return a.hp != b.hp || a.maxHp != b.maxHp;
+}
 
-    if (!queueMessage(companionBuildPlayerUpdate(
-            nextSequence(),
-            snapshot.hasPlayer,
-            snapshot.player,
-            gConnection.lastSentPlayer))) {
-        return;
-    }
+bool localLocationDiffer(const CompanionPlayerLocalLocation& a, const CompanionPlayerLocalLocation& b)
+{
+    return a.tile != b.tile
+        || a.elevation != b.elevation
+        || a.map != b.map
+        || strcmp(a.location, b.location) != 0
+        || strcmp(a.locationId, b.locationId) != 0;
+}
 
-    gConnection.lastSentPlayer = snapshot.player;
-    debug_printf("companion: update sent\n");
+bool worldLocationDiffer(const CompanionPlayerWorldLocation& a, const CompanionPlayerWorldLocation& b)
+{
+    return a.x != b.x || a.y != b.y;
 }
 
 void handleClientMessage(CompanionClientMessage message, const char* line, size_t lineLength)
@@ -446,17 +468,69 @@ void sampleReadyClient(unsigned int now)
 
     gConnection.lastSampleMs = now;
 
-    CompanionSnapshot snapshot = companionCollectSnapshot();
-    if (snapshot.hasPlayer != gConnection.playerWasAvailable) {
-        gConnection.playerWasAvailable = snapshot.hasPlayer;
-        if (!snapshot.hasPlayer) {
+    CompanionSnapshot current = companionCollectSnapshot();
+
+    if (current.hasPlayer != gConnection.playerWasAvailable) {
+        gConnection.playerWasAvailable = current.hasPlayer;
+        if (current.hasPlayer) {
+            // Absent -> present. Prime `lastSent` to the current
+            // sample so the next tick's diff is empty; the client is
+            // expected to call `get_snapshot` to learn the state. We
+            // do not force-emit here, because the client just got the
+            // `world` handshake and has not asked for data yet.
+            primeLastSentState(current);
+        } else {
+            // Present -> absent. Emit the one-shot transition and
+            // clear the baseline so the next present sample is
+            // treated as fresh.
+            gConnection.lastSentPrimed = false;
             queuePlayerUnavailableMessage();
         }
         return;
     }
 
-    if (snapshot.hasPlayer) {
-        queuePlayerUpdateIfNeeded(snapshot);
+    if (!current.hasPlayer || !gConnection.lastSentPrimed) {
+        return;
+    }
+
+    // Vitals. Always present when the player is loaded.
+    if (vitalsDiffer(current.vitals, gConnection.lastSent.vitals)) {
+        if (!queueMessage(companionBuildVitalsUpdate(
+                nextSequence(), current.vitals))) {
+            return;
+        }
+        gConnection.lastSent.vitals = current.vitals;
+        debug_printf("companion: update sent (player.vitals)\n");
+    }
+
+    // Surface. The current surface drives which location kind is
+    // meaningful. A change in `surface` forces the new kind's first
+    // emit even if its numeric fields happen to match the stale
+    // `lastSent` (which still holds the *other* surface's data).
+    if (current.surface == CompanionPlayerSurface::Local) {
+        bool surfaceChanged = gConnection.lastSent.surface != CompanionPlayerSurface::Local;
+        if (surfaceChanged
+            || localLocationDiffer(current.localLocation, gConnection.lastSent.localLocation)) {
+            if (!queueMessage(companionBuildLocalLocationUpdate(
+                    nextSequence(), current.localLocation))) {
+                return;
+            }
+            gConnection.lastSent.localLocation = current.localLocation;
+            gConnection.lastSent.surface = CompanionPlayerSurface::Local;
+            debug_printf("companion: update sent (player.local_location)\n");
+        }
+    } else {
+        bool surfaceChanged = gConnection.lastSent.surface != CompanionPlayerSurface::World;
+        if (surfaceChanged
+            || worldLocationDiffer(current.worldLocation, gConnection.lastSent.worldLocation)) {
+            if (!queueMessage(companionBuildWorldLocationUpdate(
+                    nextSequence(), current.worldLocation))) {
+                return;
+            }
+            gConnection.lastSent.worldLocation = current.worldLocation;
+            gConnection.lastSent.surface = CompanionPlayerSurface::World;
+            debug_printf("companion: update sent (player.world_location)\n");
+        }
     }
 }
 

@@ -1,49 +1,61 @@
 // Wire format: one JSON object per line (newline-delimited JSON, UTF-8).
-// All field names use camelCase; type identifiers are lowercase.
+// All field names use camelCase; type identifiers and kind strings are
+// lowercase or dot-namespaced.
 //
 // Client -> server:
 //   {"type":"auth","password":"<string>"}   handshake; must be the first message
 //   {"type":"hello"}              post-auth handshake; second message
 //   {"type":"get_snapshot"}       request a full snapshot
+//   {"type":"cmd","id":N,"name":"X","args":{...}}
+//                                          step-2 command channel (T6)
 //
 // Server -> client:
-//   {"type":"world","schemaVersion":2,"game":"fallout1-ce","playerAvailable":bool}
-//   {"type":"snapshot","seq":N,"playerAvailable":bool,
-//      "data":{"player":{"hp":H,"maxHp":M,"surface":"local|world",
-//                         <local fields: tile,elevation,map,location,locationId>
-//                         <world fields: x,y>}}}
-//   {"type":"update","entity":"player","seq":N,"playerAvailable":bool,
-//      "data":{<union of changed fields>}}
+//   {"type":"world","schemaVersion":3,"game":"fallout1-ce","playerAvailable":bool}
+//
+//   {"type":"snapshot","seq":N,"playerAvailable":bool,"payload":{
+//      "player.vitals":          {"hp":H,"maxHp":M},
+//      "player.local_location":  {"tile":T,"elevation":E,"map":M,
+//                                 "location":"<name>","locationId":"<id>"},
+//      "player.world_location":  {"x":X,"y":Y}
+//   }}
+//   The `payload` of `snapshot` is a kind->object map. Only kinds valid
+//   in the current state are present. `player.local_location` and
+//   `player.world_location` are mutually exclusive (driven by
+//   `CompanionPlayerSurface`).
+//
+//   {"type":"update","seq":N,"playerAvailable":true,
+//      "kind":"<kind>",
+//      "payload":{<complete per-kind object>}}
+//   `kind` is the discriminator; `payload` is the *complete* per-kind
+//   object (all schema fields present, not a field-level diff). The
+//   current kinds are:
+//     "player.vitals":          payload fields are {hp, maxHp}
+//     "player.local_location":  payload fields are {tile, elevation,
+//                               map, location, locationId}
+//     "player.world_location":  payload fields are {x, y}
+//   `playerAvailable` in the envelope is always `true` for an `update`:
+//   the server only emits `update` while the player is loaded. When
+//   the player is not loaded, the server emits `player_unavailable`
+//   instead.
+//
 //   {"type":"player_unavailable","seq":N,"playerAvailable":false}
 //
-// `world` has no `seq`. `snapshot` has no `entity`. `update` always
-// has `entity` and a partial `data` covering only the fields that
-// changed since the last send. `player_unavailable` is emitted
-// one-shot on the present -> absent transition.
+//   {"type":"cmd_ack","id":N,"ok":bool,"error":"<string>"?,"data":{...}?}
 //
-// Step 2 adds `auth` as the new first message and bumps `world.schemaVersion`
-// from 1 to 2. A step-1 client that does not know `auth` is dropped at the
-// auth step (the "unknown first message" path).
+// `world` has no `seq`, no `payload`. `snapshot` has no `kind`; the
+// `payload` *is* the kind dispatch. `update` always has `kind` and
+// `payload`. `player_unavailable` has neither.
 //
-// Step 3 adds surface-typed position and a localized location string.
-// The player is on exactly one of two engine surfaces:
-//   - "local": a real in-city / dungeon / vault map. Position is the
-//     engine's 1D hex-grid tile number plus elevation and map index.
-//     `location` is the localized display name from the engine's
-//     `map_get_short_name` (or JSON null when the engine has no name
-//     loaded). `locationId` is a stable, locale-independent identifier
-//     from a static table, e.g. "VAULT13" / "HUBWATER".
-//   - "world": the overland world map (including the in-world-map town
-//     picker). Position is the engine's pixel coordinates at the
-//     50-pixel-per-area scale (world_xpos, world_ypos).
-// The `data.player` object in `snapshot` includes the surface-typed
-// position fields. The `data` object in `update` is a field-level diff:
-// a surface transition emits `surface` plus the new surface's full
-// position fields; otherwise only the position fields that actually
-// changed are included. `map`, `location`, and `locationId` are
-// co-emitted on a single map transition. A step-1 / step-2 client that
-// ignores `surface`, `tile`, `elevation`, `map`, `location`,
-// `locationId`, `x`, `y` continues to work.
+// T0 changes from step 1/2:
+//   - `world.schemaVersion` is now `3` (was `1`, then `2`).
+//   - `update` no longer carries `entity`; the entity is encoded in
+//     the `kind` namespace (e.g. `player.vitals`).
+//   - `update.data` is renamed to `update.payload`. The payload is
+//     always the complete per-kind object (not a field-level diff).
+//   - `snapshot.data` is renamed to `snapshot.payload`. The payload
+//     shape changed from a single flat object to a kind->object map.
+// A step-1/step-2 client is intentionally broken by these changes; the
+// `schemaVersion` bump makes the break visible.
 
 #include "companion_protocol.h"
 
@@ -63,6 +75,10 @@ constexpr size_t kHelloLen = sizeof(kHello) - 1;
 constexpr size_t kGetSnapshotLen = sizeof(kGetSnapshot) - 1;
 constexpr size_t kAuthPrefixLen = sizeof(kAuthPrefix) - 1;
 
+constexpr char kVitalsKind[] = "player.vitals";
+constexpr char kLocalLocationKind[] = "player.local_location";
+constexpr char kWorldLocationKind[] = "player.world_location";
+
 } // namespace
 
 std::string companionBuildWorld(bool playerAvailable)
@@ -71,7 +87,7 @@ std::string companionBuildWorld(bool playerAvailable)
     char buffer[96];
     int n = snprintf(buffer,
         sizeof(buffer),
-        R"({"type":"world","schemaVersion":2,"game":"fallout1-ce","playerAvailable":%s})"
+        R"({"type":"world","schemaVersion":3,"game":"fallout1-ce","playerAvailable":%s})"
         "\n",
         flag);
     if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
@@ -83,179 +99,204 @@ std::string companionBuildWorld(bool playerAvailable)
 std::string companionBuildSnapshot(unsigned int seq, const CompanionSnapshot& snapshot)
 {
     const char* flag = snapshot.hasPlayer ? "true" : "false";
-    const CompanionPlayerSnapshot& p = snapshot.player;
-    char buffer[320];
-    int n;
-    if (snapshot.hasPlayer && p.surface == CompanionPlayerSurface::World) {
-        n = snprintf(buffer,
-            sizeof(buffer),
-            R"({"type":"snapshot","seq":%u,"playerAvailable":%s,"data":{"player":{"hp":%d,"maxHp":%d,"surface":"world","x":%d,"y":%d}}})"
-            "\n",
-            seq,
-            flag,
-            p.hp,
-            p.maxHp,
-            p.worldX,
-            p.worldY);
-    } else if (p.location[0] == '\0') {
-        // Local surface, no localized name available. `location` is JSON
-        // null. `locationId` is empty (no player loaded) or the stable
-        // identifier (player loaded, just no name string).
-        n = snprintf(buffer,
-            sizeof(buffer),
-            R"({"type":"snapshot","seq":%u,"playerAvailable":%s,"data":{"player":{"hp":%d,"maxHp":%d,"surface":"local","tile":%d,"elevation":%d,"map":%d,"location":null,"locationId":"%s"}}})"
-            "\n",
-            seq,
-            flag,
-            p.hp,
-            p.maxHp,
-            p.tile,
-            p.elevation,
-            p.map,
-            p.locationId);
-    } else {
-        // Local surface with a localized name.
-        n = snprintf(buffer,
-            sizeof(buffer),
-            R"({"type":"snapshot","seq":%u,"playerAvailable":%s,"data":{"player":{"hp":%d,"maxHp":%d,"surface":"local","tile":%d,"elevation":%d,"map":%d,"location":"%s","locationId":"%s"}}})"
-            "\n",
-            seq,
-            flag,
-            p.hp,
-            p.maxHp,
-            p.tile,
-            p.elevation,
-            p.map,
-            p.location,
-            p.locationId);
+
+    // Build the inner `payload` (the kind->object map) and the outer
+    // `snapshot` envelope in two snprintf calls. The inner buffer is
+    // sized for the largest possible payload: both per-kind objects plus
+    // the kind-string overhead and the comma separators.
+    char inner[512];
+    int innerLen = 0;
+    bool first = true;
+
+    auto appendKind = [&](const char* kind, const char* body) -> bool {
+        // `body` is a complete per-kind object literal, e.g. `{"hp":30,"maxHp":40}`.
+        size_t kindLen = strlen(kind);
+        size_t bodyLen = strlen(body);
+        // kindLen + 2 (quotes) + 1 (colon) + bodyLen + 1 (comma) <= sizeof(inner)
+        if (innerLen + kindLen + 2 + 1 + bodyLen + 1 >= sizeof(inner)) {
+            return false;
+        }
+        char* p = inner + innerLen;
+        if (!first) {
+            *p++ = ',';
+        }
+        *p++ = '"';
+        memcpy(p, kind, kindLen);
+        p += kindLen;
+        *p++ = '"';
+        *p++ = ':';
+        memcpy(p, body, bodyLen);
+        p += bodyLen;
+        innerLen = static_cast<int>(p - inner);
+        first = false;
+        return true;
+    };
+
+    // Vitals are always present when the player is loaded (real map or
+    // world map).
+    if (snapshot.hasPlayer) {
+        char vitalsBody[64];
+        int n = snprintf(vitalsBody,
+            sizeof(vitalsBody),
+            R"({"hp":%d,"maxHp":%d})",
+            snapshot.vitals.hp,
+            snapshot.vitals.maxHp);
+        if (n < 0 || static_cast<size_t>(n) >= sizeof(vitalsBody)) {
+            return std::string();
+        }
+        if (!appendKind(kVitalsKind, vitalsBody)) {
+            return std::string();
+        }
     }
+
+    if (snapshot.hasPlayer && snapshot.surface == CompanionPlayerSurface::Local) {
+        char locationBody[256];
+        int n;
+        if (snapshot.localLocation.location[0] == '\0') {
+            n = snprintf(locationBody,
+                sizeof(locationBody),
+                R"({"tile":%d,"elevation":%d,"map":%d,"location":null,"locationId":"%s"})",
+                snapshot.localLocation.tile,
+                snapshot.localLocation.elevation,
+                snapshot.localLocation.map,
+                snapshot.localLocation.locationId);
+        } else {
+            n = snprintf(locationBody,
+                sizeof(locationBody),
+                R"({"tile":%d,"elevation":%d,"map":%d,"location":"%s","locationId":"%s"})",
+                snapshot.localLocation.tile,
+                snapshot.localLocation.elevation,
+                snapshot.localLocation.map,
+                snapshot.localLocation.location,
+                snapshot.localLocation.locationId);
+        }
+        if (n < 0 || static_cast<size_t>(n) >= sizeof(locationBody)) {
+            return std::string();
+        }
+        if (!appendKind(kLocalLocationKind, locationBody)) {
+            return std::string();
+        }
+    }
+
+    if (snapshot.hasPlayer && snapshot.surface == CompanionPlayerSurface::World) {
+        char worldBody[96];
+        int n = snprintf(worldBody,
+            sizeof(worldBody),
+            R"({"x":%d,"y":%d})",
+            snapshot.worldLocation.x,
+            snapshot.worldLocation.y);
+        if (n < 0 || static_cast<size_t>(n) >= sizeof(worldBody)) {
+            return std::string();
+        }
+        if (!appendKind(kWorldLocationKind, worldBody)) {
+            return std::string();
+        }
+    }
+
+    char buffer[640];
+    int n = snprintf(buffer,
+        sizeof(buffer),
+        R"({"type":"snapshot","seq":%u,"playerAvailable":%s,"payload":{%.*s}})"
+        "\n",
+        seq,
+        flag,
+        innerLen,
+        inner);
     if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
         return std::string();
     }
     return std::string(buffer, static_cast<size_t>(n));
 }
 
-std::string companionBuildPlayerUpdate(unsigned int seq,
-    bool playerAvailable,
-    const CompanionPlayerSnapshot& current,
-    const CompanionPlayerSnapshot& lastSent)
+namespace {
+
+// Shared emitter for the per-kind `update` builders. Wraps the
+// per-kind `payload` literal `body` in the standard envelope:
+//
+//   {"type":"update","seq":S,"playerAvailable":true,"kind":"K","payload":B}
+//
+// `playerAvailable` is hardcoded to `true` in the envelope: the server
+// only invokes an update builder while the player is loaded. When the
+// player is not loaded, the server emits `player_unavailable` instead.
+//
+// Returns an empty string on any formatting failure.
+std::string wrapUpdate(unsigned int seq,
+    const char* kind,
+    const char* body)
 {
-    const char* flag = playerAvailable ? "true" : "false";
-
-    // Build the inner `data` object as a flat field-level diff. The buffer
-    // is sized for the worst case (surface transition plus HP plus both
-    // maxHp plus both world coords, plus a couple of commas).
-    char dataBuf[256];
-    int dataLen = 0;
-    bool first = true;
-
-    auto appendField = [&](const char* fmt, ...) -> bool {
-        char tmp[96];
-        va_list args;
-        va_start(args, fmt);
-        int n = vsnprintf(tmp, sizeof(tmp), fmt, args);
-        va_end(args);
-        if (n < 0) {
-            return false;
-        }
-        if (dataLen + n + 2 >= static_cast<int>(sizeof(dataBuf))) {
-            return false;
-        }
-        if (!first) {
-            dataBuf[dataLen++] = ',';
-        }
-        memcpy(dataBuf + dataLen, tmp, static_cast<size_t>(n));
-        dataLen += n;
-        first = false;
-        return true;
-    };
-
-    // HP / maxHp diff. Match the step-1 rule: emit both only when maxHp
-    // changed; emit hp alone otherwise.
-    if (current.maxHp != lastSent.maxHp) {
-        if (!appendField(R"("hp":%d,"maxHp":%d)", current.hp, current.maxHp)) {
-            return std::string();
-        }
-    } else if (current.hp != lastSent.hp) {
-        if (!appendField(R"("hp":%d)", current.hp)) {
-            return std::string();
-        }
-    }
-
-    if (current.surface != lastSent.surface) {
-        // Surface transition: emit `surface` and the new surface's full
-        // position fields. The old surface's fields are no longer
-        // meaningful on the wire.
-        if (current.surface == CompanionPlayerSurface::World) {
-            if (!appendField(R"("surface":"world","x":%d,"y":%d)",
-                    current.worldX, current.worldY)) {
-                return std::string();
-            }
-        } else {
-            if (!appendField(R"("surface":"local","tile":%d,"elevation":%d,"map":%d)",
-                    current.tile, current.elevation, current.map)) {
-                return std::string();
-            }
-        }
-    } else if (current.surface == CompanionPlayerSurface::Local) {
-        if (current.tile != lastSent.tile) {
-            if (!appendField(R"("tile":%d)", current.tile)) {
-                return std::string();
-            }
-        }
-        if (current.elevation != lastSent.elevation) {
-            if (!appendField(R"("elevation":%d)", current.elevation)) {
-                return std::string();
-            }
-        }
-        if (current.map != lastSent.map) {
-            // `map` only changes on map transitions. Co-emit `location`
-            // and `locationId` because they are derived from the same
-            // transition. `location` is JSON null when the engine has no
-            // name (e.g. map.msg not loaded); `locationId` is always a
-            // quoted string from our static table.
-            if (current.location[0] == '\0') {
-                if (!appendField(R"("map":%d,"location":null,"locationId":"%s")",
-                        current.map, current.locationId)) {
-                    return std::string();
-                }
-            } else {
-                if (!appendField(R"("map":%d,"location":"%s","locationId":"%s")",
-                        current.map, current.location, current.locationId)) {
-                    return std::string();
-                }
-            }
-        }
-    } else {
-        if (current.worldX != lastSent.worldX) {
-            if (!appendField(R"("x":%d)", current.worldX)) {
-                return std::string();
-            }
-        }
-        if (current.worldY != lastSent.worldY) {
-            if (!appendField(R"("y":%d)", current.worldY)) {
-                return std::string();
-            }
-        }
-    }
-
-    if (first) {
-        return std::string();
-    }
-
-    char buffer[320];
+    char buffer[384];
     int n = snprintf(buffer,
         sizeof(buffer),
-        R"({"type":"update","entity":"player","seq":%u,"playerAvailable":%s,"data":{%.*s}})"
+        R"({"type":"update","seq":%u,"playerAvailable":true,"kind":"%s","payload":%s})"
         "\n",
         seq,
-        flag,
-        dataLen,
-        dataBuf);
+        kind,
+        body);
     if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
         return std::string();
     }
     return std::string(buffer, static_cast<size_t>(n));
+}
+
+} // namespace
+
+std::string companionBuildVitalsUpdate(unsigned int seq,
+    const CompanionPlayerVitals& current)
+{
+    char body[64];
+    int n = snprintf(body,
+        sizeof(body),
+        R"({"hp":%d,"maxHp":%d})",
+        current.hp,
+        current.maxHp);
+    if (n < 0 || static_cast<size_t>(n) >= sizeof(body)) {
+        return std::string();
+    }
+    return wrapUpdate(seq, kVitalsKind, body);
+}
+
+std::string companionBuildLocalLocationUpdate(unsigned int seq,
+    const CompanionPlayerLocalLocation& current)
+{
+    char body[256];
+    int n;
+    if (current.location[0] == '\0') {
+        n = snprintf(body,
+            sizeof(body),
+            R"({"tile":%d,"elevation":%d,"map":%d,"location":null,"locationId":"%s"})",
+            current.tile,
+            current.elevation,
+            current.map,
+            current.locationId);
+    } else {
+        n = snprintf(body,
+            sizeof(body),
+            R"({"tile":%d,"elevation":%d,"map":%d,"location":"%s","locationId":"%s"})",
+            current.tile,
+            current.elevation,
+            current.map,
+            current.location,
+            current.locationId);
+    }
+    if (n < 0 || static_cast<size_t>(n) >= sizeof(body)) {
+        return std::string();
+    }
+    return wrapUpdate(seq, kLocalLocationKind, body);
+}
+
+std::string companionBuildWorldLocationUpdate(unsigned int seq,
+    const CompanionPlayerWorldLocation& current)
+{
+    char body[64];
+    int n = snprintf(body,
+        sizeof(body),
+        R"({"x":%d,"y":%d})",
+        current.x,
+        current.y);
+    if (n < 0 || static_cast<size_t>(n) >= sizeof(body)) {
+        return std::string();
+    }
+    return wrapUpdate(seq, kWorldLocationKind, body);
 }
 
 std::string companionBuildPlayerUnavailable(unsigned int seq)
@@ -291,8 +332,20 @@ CompanionClientMessage companionParseClientMessage(const char* line, size_t leng
     if (start == length) {
         return CompanionClientMessage::Invalid;
     }
+    // Auth prefix match with whitespace tolerance around the `:`. The
+    // canonical form is `{"type":"auth"`, but Python's `json.dumps` and
+    // most other JSON emitters produce `{"type": "auth"` (with a space
+    // after the colon) by default. Accept both. Other whitespace
+    // patterns (e.g. tabs) are not currently exercised by any client
+    // and are rejected; add them here if a real client needs them.
     if (length - start >= kAuthPrefixLen
         && memcmp(line + start, kAuthPrefix, kAuthPrefixLen) == 0) {
+        return CompanionClientMessage::Auth;
+    }
+    static constexpr char kAuthPrefixSpaced[] = R"({"type": "auth")";
+    constexpr size_t kAuthPrefixSpacedLen = sizeof(kAuthPrefixSpaced) - 1;
+    if (length - start >= kAuthPrefixSpacedLen
+        && memcmp(line + start, kAuthPrefixSpaced, kAuthPrefixSpacedLen) == 0) {
         return CompanionClientMessage::Auth;
     }
 
@@ -333,16 +386,21 @@ bool companionExtractAuthPassword(const char* line, size_t length, std::string_v
     const char* p = line;
     const char* end = line + length;
 
-    // Skip past `{"type":"auth"`.
+    // Skip past `{"type":"auth"`. Accept the spaced form (`{"type": "auth"`)
+    // emitted by most JSON serializers; the parser already accepts both.
     static constexpr char kPrefix[] = R"({"type":"auth")";
     constexpr size_t kPrefixLen = sizeof(kPrefix) - 1;
-    if (static_cast<size_t>(end - p) < kPrefixLen) {
+    static constexpr char kPrefixSpaced[] = R"({"type": "auth")";
+    constexpr size_t kPrefixSpacedLen = sizeof(kPrefixSpaced) - 1;
+    if (static_cast<size_t>(end - p) >= kPrefixLen
+        && memcmp(p, kPrefix, kPrefixLen) == 0) {
+        p += kPrefixLen;
+    } else if (static_cast<size_t>(end - p) >= kPrefixSpacedLen
+        && memcmp(p, kPrefixSpaced, kPrefixSpacedLen) == 0) {
+        p += kPrefixSpacedLen;
+    } else {
         return false;
     }
-    if (memcmp(p, kPrefix, kPrefixLen) != 0) {
-        return false;
-    }
-    p += kPrefixLen;
 
     // Allow whitespace, then expect `,`.
     while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) {

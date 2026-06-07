@@ -6,13 +6,25 @@ Speaks the same newline-delimited JSON protocol as a real companion client
 but exposes send and receive in a browser UI with a Fallout-flavored CRT
 look, so you do not have to keep typing into netcat.
 
-Supports the current step-2 protocol surface:
+Supports the current step-2 / T0 protocol surface:
   - auth (constant-time compared by the server, with the configured
     companion_password from fallout.cfg)
   - hello
   - get_snapshot
   - cmd (T6: id, name, args)
   - any other raw JSON line for protocol experiments
+
+T0 protocol awareness (visible in the log and the toolbar):
+  - `world.schemaVersion` is displayed inline (T0 bumped it to 3).
+  - `update` messages show the `kind` tag (e.g. `player.vitals`,
+    `player.local_location`, `player.world_location`) so you can
+    tell at a glance which aspect of the player the update is about.
+  - The log toolbar has a "kind" filter so you can scope the log to
+    one kind (or one `world.schemaVersion`).
+  - `snapshot` and `update` no longer carry `entity` or `data` (T0
+    replaced them with `kind` and `payload`). The log still pretty-
+    prints whatever the server emits, so the new shape just shows up
+    as a different JSON object.
 
 If a password is provided, connect() sends auth then hello automatically.
 If no password is provided, connect() sends hello directly (step-1 mode).
@@ -71,6 +83,10 @@ class MessageBuffer:
     def since(self, seq):
         with self._lock:
             return [m for m in self._messages if m["seq"] > seq], self._seq
+
+    def all(self):
+        with self._lock:
+            return list(self._messages)
 
     def clear(self):
         with self._lock:
@@ -508,11 +524,19 @@ textarea {
     </div>
   </section>
 
-  <section class="panel">
+    <section class="panel">
     <h2>// Traffic Log</h2>
     <div class="toolbar">
       <label><input type="checkbox" id="autoscroll" checked> Auto-scroll</label>
       <label><input type="checkbox" id="show-types" checked> Color types</label>
+      <label>Filter
+        <select id="filter-mode">
+          <option value="off">off</option>
+          <option value="kind">by kind</option>
+          <option value="schema">by world.schemaVersion</option>
+        </select>
+        <input id="filter-value" placeholder="player.vitals / 3" size="16" disabled>
+      </label>
       <span class="spacer"></span>
       <span id="log-count">0 lines</span>
       <button type="button" id="clear-btn">Clear</button>
@@ -542,6 +566,59 @@ const TYPE_COLORS = {
   foo: "#ff66cc"
 };
 
+const META_COLORS = {
+  // `kind` values for `update` and the keys of `snapshot.payload`.
+  "player.vitals": "#19ff66",
+  "player.local_location": "#6ad0ff",
+  "player.world_location": "#ff66cc",
+  // `schemaVersion` for `world` (T0: 3).
+  "schema:3": "#6ad0ff",
+  "schema:2": "#6a4a00",
+  "schema:1": "#6a4a00"
+};
+
+// Pull the `kind` tag out of an `update` message, or the
+// `schemaVersion` tag out of a `world` message. Returns null when the
+// message has neither.
+function metaTag(parsed) {
+  if (!parsed || typeof parsed !== "object") return null;
+  if (parsed.type === "update" && typeof parsed.kind === "string") {
+    return parsed.kind;
+  }
+  if (parsed.type === "world" && typeof parsed.schemaVersion !== "undefined") {
+    return "schema:" + parsed.schemaVersion;
+  }
+  return null;
+}
+
+function messageMatchesFilter(msg) {
+  const mode = elFilterMode.value;
+  if (mode === "off") return true;
+  const needle = (elFilterValue.value || "").trim();
+  if (!needle) return true;
+  const parsed = safeJson(msg.text);
+  if (!parsed) return false;
+  const tag = metaTag(parsed);
+  if (mode === "kind") {
+    // `kind` filter: match on the `update.kind` value, or pass through
+    // `world` messages that match a `schema:N` query, or any message
+    // whose `payload` keys contain the needle (useful for filtering to
+    // `snapshot` payload kinds).
+    if (tag && tag === needle) return true;
+    if (typeof parsed.kind === "string" && parsed.kind === needle) return true;
+    if (parsed.payload && typeof parsed.payload === "object") {
+      if (Object.prototype.hasOwnProperty.call(parsed.payload, needle)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (mode === "schema") {
+    return tag === "schema:" + needle;
+  }
+  return true;
+}
+
 const elLog = document.getElementById("log");
 const elStatus = document.getElementById("status");
 const elConnectBtn = document.getElementById("connect-btn");
@@ -555,6 +632,8 @@ const elAutoscroll = document.getElementById("autoscroll");
 const elShowTypes = document.getElementById("show-types");
 const elClearBtn = document.getElementById("clear-btn");
 const elLogCount = document.getElementById("log-count");
+const elFilterMode = document.getElementById("filter-mode");
+const elFilterValue = document.getElementById("filter-value");
 
 let lastSeq = 0;
 let connected = false;
@@ -599,6 +678,18 @@ function renderMessage(msg) {
       typeSpan.textContent = "[" + t + "]";
     }
     body.appendChild(typeSpan);
+    // T0: surface the `kind` tag (for `update`) and `schemaVersion`
+    // (for `world`) inline so the user can see at a glance which
+    // aspect of the player the message is about, or which schema
+    // version the server is speaking.
+    const tag = metaTag(parsed);
+    if (tag && elShowTypes.checked && META_COLORS[tag]) {
+      const metaSpan = document.createElement("span");
+      metaSpan.className = "msg-meta";
+      metaSpan.style.color = META_COLORS[tag];
+      metaSpan.textContent = "[" + tag + "]";
+      body.appendChild(metaSpan);
+    }
     body.appendChild(document.createTextNode(JSON.stringify(parsed)));
   } else {
     body.textContent = msg.text;
@@ -615,6 +706,7 @@ function appendMessages(messages) {
   if (empty) empty.remove();
   const frag = document.createDocumentFragment();
   for (const m of messages) {
+    if (!messageMatchesFilter(m)) continue;
     frag.appendChild(renderMessage(m));
   }
   elLog.appendChild(frag);
@@ -773,6 +865,28 @@ elDisconnectBtn.addEventListener("click", onDisconnectClick);
 elSendForm.addEventListener("submit", onSendSubmit);
 elSendType.addEventListener("change", renderSendFields);
 elClearBtn.addEventListener("click", onClearClick);
+elFilterMode.addEventListener("change", () => {
+  elFilterValue.disabled = elFilterMode.value === "off";
+  elFilterValue.value = "";
+  onClearClick();
+});
+elFilterValue.addEventListener("input", async () => {
+  // Re-render the log from scratch on every keystroke. The buffer
+  // holds all messages; filtering just hides the ones that don't match.
+  elLog.innerHTML = "";
+  try {
+    const r = await fetch("/messages/all");
+    if (r.ok) {
+      const data = await r.json();
+      if (!data.messages.length) {
+        elLog.innerHTML = '<div class="empty">// no traffic yet - press Connect</div>';
+        elLogCount.textContent = "0 lines";
+        return;
+      }
+      appendMessages(data.messages);
+    }
+  } catch (e) { /* network blip, ignore */ }
+});
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && connected) onDisconnectClick();
 });
@@ -831,6 +945,11 @@ class DebugWebHandler(BaseHTTPRequestHandler):
                 since = 0
             new, next_seq = self.buffer.since(since)
             self._send_json({"messages": new, "next_seq": next_seq})
+            return
+        if path == "/messages/all":
+            # Replay the entire log (used by the JS filter re-render).
+            # Bounded by MAX_MESSAGES, so this is cheap.
+            self._send_json({"messages": self.buffer.all()})
             return
         if path == "/status":
             self._send_json({"connected": self.client.is_connected()})

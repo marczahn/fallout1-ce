@@ -6,8 +6,8 @@
 namespace fallout {
 
 // Which engine surface the player is currently on. Drives which position
-// fields are meaningful in `CompanionPlayerSnapshot` and which appear on
-// the wire in `snapshot.data.player` / `update.data`.
+// kinds are meaningful in `CompanionSnapshot` and which appear on the wire
+// in `snapshot.payload` / `update.payload`.
 //
 // `Local` is a real in-city / dungeon / vault map. The engine stores
 // position as a 1D hex-grid tile number plus elevation, indexed into the
@@ -36,33 +36,46 @@ static constexpr size_t kCompanionLocationSize = 64;
 // strings are 8 chars or fewer.
 static constexpr size_t kCompanionLocationIdSize = 32;
 
-struct CompanionPlayerSnapshot {
+// `player.vitals` payload. HP and max HP. Always meaningful when the
+// player is loaded (real or world map). Wire keys: `hp`, `maxHp`.
+struct CompanionPlayerVitals {
     int hp;
     int maxHp;
-    CompanionPlayerSurface surface;
+};
 
-    // Local-map fields. Meaningful when `surface == Local`.
+// `player.local_location` payload. Meaningful when
+// `surface == CompanionPlayerSurface::Local`. Wire keys: `tile`,
+// `elevation`, `map`, `location`, `locationId`. `location` is the engine's
+// localized short name; `locationId` is a stable identifier from the
+// `kMapLocationIds` table in `companion_snapshot.cc`.
+struct CompanionPlayerLocalLocation {
     int tile;
     int elevation;
     int map;
     char location[kCompanionLocationSize];
     char locationId[kCompanionLocationIdSize];
-
-    // World-map fields. Meaningful when `surface == World`.
-    int worldX;
-    int worldY;
 };
 
+// `player.world_location` payload. Meaningful when
+// `surface == CompanionPlayerSurface::World`. Wire keys: `x`, `y` (the
+// engine's 50-pixel-per-area world coordinates).
+struct CompanionPlayerWorldLocation {
+    int x;
+    int y;
+};
+
+// Aggregator over the three per-kind player payloads. The `surface`
+// field drives which of `localLocation` and `worldLocation` are
+// meaningful at any given sample; `vitals` is always meaningful when
+// `hasPlayer` is true. The protocol emits only the valid kinds on the
+// wire.
 struct CompanionSnapshot {
     bool hasPlayer;
-    CompanionPlayerSnapshot player;
+    CompanionPlayerSurface surface;
+    CompanionPlayerVitals vitals;
+    CompanionPlayerLocalLocation localLocation;
+    CompanionPlayerWorldLocation worldLocation;
 };
-
-// Field-level equality across the synced player state. The protocol's
-// per-field diff uses the same definition; this helper exists so the
-// server can short-circuit the per-tick "did anything change?" check
-// without re-implementing the comparison inline.
-bool companionPlayerSnapshotEquals(const CompanionPlayerSnapshot& a, const CompanionPlayerSnapshot& b);
 
 CompanionSnapshot companionCollectSnapshot();
 

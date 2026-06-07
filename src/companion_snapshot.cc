@@ -110,82 +110,54 @@ bool isSafeJsonString(const char* s)
 
 } // namespace
 
-bool companionPlayerSnapshotEquals(const CompanionPlayerSnapshot& a, const CompanionPlayerSnapshot& b)
-{
-    if (a.hp != b.hp
-        || a.maxHp != b.maxHp
-        || a.surface != b.surface) {
-        return false;
-    }
-    if (a.surface == CompanionPlayerSurface::Local) {
-        if (a.tile != b.tile
-            || a.elevation != b.elevation
-            || a.map != b.map
-            || strcmp(a.location, b.location) != 0
-            || strcmp(a.locationId, b.locationId) != 0) {
-            return false;
-        }
-    } else {
-        if (a.worldX != b.worldX
-            || a.worldY != b.worldY) {
-            return false;
-        }
-    }
-    return true;
-}
-
 CompanionSnapshot companionCollectSnapshot()
 {
     CompanionSnapshot snapshot;
     snapshot.hasPlayer = false;
-    snapshot.player.hp = 0;
-    snapshot.player.maxHp = 0;
-    snapshot.player.surface = CompanionPlayerSurface::Local;
-    snapshot.player.tile = 0;
-    snapshot.player.elevation = 0;
-    snapshot.player.map = 0;
-    snapshot.player.location[0] = '\0';
-    snapshot.player.locationId[0] = '\0';
-    snapshot.player.worldX = 0;
-    snapshot.player.worldY = 0;
+    snapshot.surface = CompanionPlayerSurface::Local;
+    snapshot.vitals = CompanionPlayerVitals{ 0, 0 };
+    snapshot.localLocation = CompanionPlayerLocalLocation{};
+    snapshot.localLocation.location[0] = '\0';
+    snapshot.localLocation.locationId[0] = '\0';
+    snapshot.worldLocation = CompanionPlayerWorldLocation{ 0, 0 };
 
     if (!companionIsPlayerReallyPlaying()) {
         return snapshot;
     }
 
     snapshot.hasPlayer = true;
-    snapshot.player.hp = critter_get_hits(obj_dude);
-    snapshot.player.maxHp = stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS);
+    snapshot.vitals.hp = critter_get_hits(obj_dude);
+    snapshot.vitals.maxHp = stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS);
 
     if (worldMapIsActive()) {
-        snapshot.player.surface = CompanionPlayerSurface::World;
+        snapshot.surface = CompanionPlayerSurface::World;
         int x;
         int y;
         if (worldMapGetPlayerPosition(&x, &y)) {
-            snapshot.player.worldX = x;
-            snapshot.player.worldY = y;
+            snapshot.worldLocation.x = x;
+            snapshot.worldLocation.y = y;
         }
     } else {
-        snapshot.player.surface = CompanionPlayerSurface::Local;
-        snapshot.player.tile = obj_dude->tile;
-        snapshot.player.elevation = obj_dude->elevation;
-        snapshot.player.map = map_get_index_number();
+        snapshot.surface = CompanionPlayerSurface::Local;
+        snapshot.localLocation.tile = obj_dude->tile;
+        snapshot.localLocation.elevation = obj_dude->elevation;
+        snapshot.localLocation.map = map_get_index_number();
 
         // Localized display name. The engine returns a `char*` owned by
         // the message list; copy into our own buffer so the snapshot
         // outlives any subsequent message-list activity.
-        char* shortName = map_get_short_name(snapshot.player.map);
+        char* shortName = map_get_short_name(snapshot.localLocation.map);
         if (isSafeJsonString(shortName)) {
-            strncpy(snapshot.player.location, shortName, kCompanionLocationSize - 1);
-            snapshot.player.location[kCompanionLocationSize - 1] = '\0';
+            strncpy(snapshot.localLocation.location, shortName, kCompanionLocationSize - 1);
+            snapshot.localLocation.location[kCompanionLocationSize - 1] = '\0';
         }
 
         // Stable identifier from our static table. Out-of-range indices
         // (defensive) leave the field empty.
-        int m = snapshot.player.map;
+        int m = snapshot.localLocation.map;
         if (m >= 0 && m < MAP_COUNT) {
-            strncpy(snapshot.player.locationId, kMapLocationIds[m], kCompanionLocationIdSize - 1);
-            snapshot.player.locationId[kCompanionLocationIdSize - 1] = '\0';
+            strncpy(snapshot.localLocation.locationId, kMapLocationIds[m], kCompanionLocationIdSize - 1);
+            snapshot.localLocation.locationId[kCompanionLocationIdSize - 1] = '\0';
         }
     }
 
