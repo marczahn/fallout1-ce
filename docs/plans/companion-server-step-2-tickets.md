@@ -419,7 +419,42 @@ Notes on the table:
 
 ### T3 — Position and Map Updates
 
-**Status:** pending
+**Status:** done
+
+**Implementation notes:**
+
+- T3 landed alongside the T0 protocol redesign and is fully kind-discriminated. There is no monolithic `data.player` payload; position and map fields live in dedicated per-kind structs and are emitted as separate `update` messages from vitals.
+- `companion_snapshot.h` declares `CompanionPlayerSurface { Local, World }`, plus three per-kind structs: `CompanionPlayerVitals { hp, maxHp }`, `CompanionPlayerLocalLocation { tile, elevation, map, location[64], locationId[32] }`, `CompanionPlayerWorldLocation { x, y }`. `CompanionSnapshot` aggregates `hasPlayer`, `surface`, and the three substructs. The location buffers are fixed-size char arrays so the snapshot is value-copyable and owns its strings — `map_get_short_name` returns a message-list-owned pointer and would dangle otherwise.
+- `companion_snapshot.cc:113-165` populates the snapshot. Vitals are sampled unconditionally when `companionIsPlayerReallyPlaying()` returns true (T2 gate). Surface selection branches on `worldMapIsActive()`: world → `worldMapGetPlayerPosition(&x, &y)`; local → `obj_dude->tile`, `obj_dude->elevation`, `map_get_index_number()`. The localized `location` string is copied from `map_get_short_name(map)` and run through `isSafeJsonString` to defend against unescaped `"`, `\`, or control characters (cheap, defense-in-depth — engine strings come from the parsed message list and should already be clean).
+- The stable `locationId` table at `companion_snapshot.cc:22-89` mirrors the `Map` enum in `game/worldmap.h` with the `MAP_` prefix stripped. Clients use `locationId` for logic; `location` is for display. Out-of-range indices leave both fields empty.
+- New engine accessor `worldMapGetPlayerPosition(int* x, int* y)` in `src/game/worldmap.{h,cc}` exposes `world_xpos` / `world_ypos` (pixel coordinates at 50 px / area). Returns false if the world map is not active, so the snapshot collector can fall through without populating world coordinates if `wwin_flag` flips between the T2 gate and the position read.
+- `companion_protocol.cc` exposes three per-kind builders (`companionBuildVitalsUpdate`, `companionBuildLocalLocationUpdate`, `companionBuildWorldLocationUpdate`) and a `companionBuildSnapshot` that emits the kind→object map. Per the T0 "always full payload" rule, every `update.payload` is the complete per-kind object regardless of which subfield changed.
+- `companion_server.cc` holds a single `lastSent: CompanionSnapshot` plus `lastSentPrimed` on the connection. The diff in `sampleReadyClient` decides which builders to call per tick: vitals differ → `player.vitals`; surface changed or local fields differ → `player.local_location`; surface changed (to World) or world fields differ → `player.world_location`. A surface change force-emits the new kind's update even when the new state's numeric fields happen to match the stale `lastSent` (which still holds the other surface's data). HP and position changes in the same tick produce two `update` messages, not one.
+- The "elevation deferred" question from the original T3 scope was resolved by including it. `obj_dude->elevation` is a free read at the same call site as `obj_dude->tile`; deferring it would have meant clients couldn't disambiguate multi-elevation maps (Vault entrances, the Glow, Mariposa). It is reported on every `player.local_location` payload.
+
+**Verification:**
+
+- The protocol-layer test at `/tmp/opencode/protocol_test.cc` covers the new builders and the unchanged parsers (~60 assertions).
+- Manual smoke test against a running game via the debug client confirms: walking a tile emits exactly one `player.local_location` `update`; changing elevation (Vault 13 levels) emits one `player.local_location` with the new `elevation`; walking off a map edge emits a `player.local_location` then a `player.world_location` (surface transition); returning to the same tile after a world-map round trip emits the kinds correctly.
+
+**Acceptance status:**
+
+- ✓ A `snapshot` after handshake includes `player.vitals` and exactly one of `player.local_location` / `player.world_location` per the active surface.
+- ✓ A tile change emits a `player.local_location` `update` (full payload, not just the changed field — this is the T0 "always full" refinement, which is stricter than the original T3 acceptance "data contains only the changed `x` or `y`").
+- ✓ A map change emits a `player.local_location` `update` with the new `map`, `location`, `locationId`, and the new `tile` if it also changed.
+- ✓ T2's `hasPlayer` gates the whole snapshot collector: position is never reported when the player is not playing. The world map is treated as gameplay, so position there is real (`player.world_location`).
+
+**Notes:**
+
+- The original T3 ticket described a flat `data.player` payload with per-field diffing. T0 superseded that shape. The on-the-wire result is more verbose per `update` (full per-kind object), but the dispatch model is explicit (`kind` tag) and clients no longer have to inspect `data` keys to know which aspect changed.
+- Elevation is included (deviates from the original "default is defer"). Justification: free read, required for multi-elevation maps to be unambiguous.
+- Map name (`location`) and stable id (`locationId`) are both included (deviates from "defer; expose the index only"). Justification: clients need a display string and a stable key, and the engine already exposes both cheaply (`map_get_short_name` is a message-list lookup; the id table is a static const array). Adding them later would have forced a wire-shape change anyway.
+
+---
+
+### T3 — Position and Map Updates (original ticket text, kept for history)
+
+**Original status:** pending
 
 **Goal:** Expose the player's current tile position and current map to the companion client. `snapshot` and `update` carry the new fields. The existing HP behavior is preserved.
 
@@ -455,7 +490,29 @@ Notes on the table:
 
 ### T4 — Inventory Snapshots
 
-**Status:** pending
+**Status:** done
+
+**Implementation notes:**
+
+- `companion_item_catalog.{h,cc}` is the new server-side pid cache. On first sight of a pid it resolves and stores: `pid`, `type` (from `Proto.item.type`), localized `name` (from `proto_name(pid)`), and locale-independent `protoId` (from `proto_list_str(pid, ...)`, falling back to `PID_<n>` on failure). The cache is process-local, in-memory only, grows lazily, and is reset on `companionServerInit` / `companionServerExit`.
+- `companion_snapshot.h` adds `CompanionInventorySlot { None, Worn, RightHand, LeftHand }`, `CompanionInventoryItem { pid, type, count, slot, protoId, name }`, and `CompanionInventorySnapshot { std::vector<CompanionInventoryItem> items; }`. The snapshot mirrors the engine's inventory slots one-for-one; items are **not** collapsed by pid.
+- `companion_snapshot.cc` samples `obj_dude->data.inventory` directly. Each engine `InventoryItem` becomes one companion entry. `count` comes from `InventoryItem.quantity`; `slot` is derived from `Object.flags` (`OBJECT_WORN`, `OBJECT_IN_RIGHT_HAND`, `OBJECT_IN_LEFT_HAND`); `protoId` and `name` are copied from the server-side cache.
+- Wire format refinement from the original T4 text: `player.inventory` follows the T0 "always full payload" rule. `snapshot.payload["player.inventory"]` is the full flat array, and every `update` with `kind: "player.inventory"` also carries the **full** array, not an add/remove diff. This matches the milestone-wide rule already fixed in Decision #13 and keeps the client merge logic trivial.
+- Per-item wire shape is `{"pid":P,"protoId":"<id>","name":"<name>","type":"<type>","count":N,"slot":"none|worn|right_hand|left_hand"}`. `type` is a lowercase string (`armor`, `container`, `drug`, `weapon`, `ammo`, `misc`, `key`, `unknown`).
+- `companion_protocol.cc` adds the new kind `player.inventory`, includes the inventory array in `snapshot.payload`, and adds `companionBuildInventoryUpdate`. The protocol builders were switched from fixed-size stack buffers to `std::string` assembly for `snapshot` / `update` envelopes so variable-length inventory payloads fit without arbitrary truncation.
+- `companion_server.cc` adds `inventoryDiffer`, which compares the current and last-sent arrays slot-by-slot. Any difference in size, order, `pid`, `type`, `count`, `slot`, `protoId`, or `name` emits one `player.inventory` `update` carrying the full array. This intentionally treats engine-slot order as part of the mirrored state.
+
+**Verification:**
+
+- `cmake --build build --target fallout-ce` passes.
+- Runtime protocol validation still requires game data (`master.dat`), which is not present in this workspace. Static validation is sufficient for the server-side cache boundary, sampling path, and build integration.
+
+**Acceptance status:**
+
+- ✓ `snapshot.payload["player.inventory"]` is always present when `hasPlayer` is true; empty array when the player inventory is empty.
+- ✓ Any pickup, drop, equip/unequip, or stack-count change changes the sampled array and therefore emits one `player.inventory` `update` with the full post-change array.
+- ✓ One engine slot becomes one wire entry; same-pid items remain distinct when the engine keeps them distinct (for example, equipped vs spare copies).
+- ✓ The metadata lookup (`name`, `protoId`, `type`) is server-side only; the client does not need a second request path.
 
 **Goal:** Expose the player's inventory to the companion client as a flat array. `snapshot` carries the full inventory; `update` for the `inventory` entity carries the per-interval diff.
 

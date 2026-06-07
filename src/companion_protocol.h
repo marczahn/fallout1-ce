@@ -16,6 +16,7 @@ namespace fallout {
 constexpr char kCompanionKindPlayerVitals[] = "player.vitals";
 constexpr char kCompanionKindPlayerLocalLocation[] = "player.local_location";
 constexpr char kCompanionKindPlayerWorldLocation[] = "player.world_location";
+constexpr char kCompanionKindPlayerInventory[] = "player.inventory";
 
 enum class CompanionClientMessage {
     Hello,
@@ -46,6 +47,9 @@ std::string companionBuildLocalLocationUpdate(unsigned int seq,
 
 std::string companionBuildWorldLocationUpdate(unsigned int seq,
     const CompanionPlayerWorldLocation& current);
+
+std::string companionBuildInventoryUpdate(unsigned int seq,
+    const CompanionInventorySnapshot& current);
 
 // `player_unavailable`. One-shot on the present -> absent transition.
 // No `kind`, no `payload`.

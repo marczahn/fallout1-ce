@@ -16,7 +16,9 @@
 //      "player.vitals":          {"hp":H,"maxHp":M},
 //      "player.local_location":  {"tile":T,"elevation":E,"map":M,
 //                                 "location":"<name>","locationId":"<id>"},
-//      "player.world_location":  {"x":X,"y":Y}
+//      "player.world_location":  {"x":X,"y":Y},
+//      "player.inventory":       [{"pid":P,"protoId":"<id>","name":"<name>",
+//                                   "type":"<type>","count":N,"slot":"<slot>"}]
 //   }}
 //   The `payload` of `snapshot` is a kind->object map. Only kinds valid
 //   in the current state are present. `player.local_location` and
@@ -33,6 +35,7 @@
 //     "player.local_location":  payload fields are {tile, elevation,
 //                               map, location, locationId}
 //     "player.world_location":  payload fields are {x, y}
+//     "player.inventory":       payload is the complete inventory array
 //   `playerAvailable` in the envelope is always `true` for an `update`:
 //   the server only emits `update` while the player is loaded. When
 //   the player is not loaded, the server emits `player_unavailable`
@@ -64,6 +67,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "game/proto_types.h"
+
 namespace fallout {
 
 namespace {
@@ -78,6 +83,77 @@ constexpr size_t kAuthPrefixLen = sizeof(kAuthPrefix) - 1;
 constexpr char kVitalsKind[] = "player.vitals";
 constexpr char kLocalLocationKind[] = "player.local_location";
 constexpr char kWorldLocationKind[] = "player.world_location";
+constexpr char kInventoryKind[] = "player.inventory";
+
+const char* inventoryTypeName(int type)
+{
+    switch (type) {
+    case ITEM_TYPE_ARMOR:
+        return "armor";
+    case ITEM_TYPE_CONTAINER:
+        return "container";
+    case ITEM_TYPE_DRUG:
+        return "drug";
+    case ITEM_TYPE_WEAPON:
+        return "weapon";
+    case ITEM_TYPE_AMMO:
+        return "ammo";
+    case ITEM_TYPE_MISC:
+        return "misc";
+    case ITEM_TYPE_KEY:
+        return "key";
+    default:
+        return "unknown";
+    }
+}
+
+const char* inventorySlotName(CompanionInventorySlot slot)
+{
+    switch (slot) {
+    case CompanionInventorySlot::Worn:
+        return "worn";
+    case CompanionInventorySlot::RightHand:
+        return "right_hand";
+    case CompanionInventorySlot::LeftHand:
+        return "left_hand";
+    case CompanionInventorySlot::None:
+    default:
+        return "none";
+    }
+}
+
+std::string buildInventoryPayload(const CompanionInventorySnapshot& inventory)
+{
+    std::string body;
+    body.reserve(2 + inventory.items.size() * 128);
+    body.push_back('[');
+
+    for (size_t index = 0; index < inventory.items.size(); ++index) {
+        const CompanionInventoryItem& item = inventory.items[index];
+        if (index != 0) {
+            body.push_back(',');
+        }
+
+        char entry[320];
+        int n = snprintf(entry,
+            sizeof(entry),
+            R"({"pid":%d,"protoId":"%s","name":"%s","type":"%s","count":%d,"slot":"%s"})",
+            item.pid,
+            item.protoId,
+            item.name,
+            inventoryTypeName(item.type),
+            item.count,
+            inventorySlotName(item.slot));
+        if (n < 0 || static_cast<size_t>(n) >= sizeof(entry)) {
+            return std::string();
+        }
+
+        body.append(entry, static_cast<size_t>(n));
+    }
+
+    body.push_back(']');
+    return body;
+}
 
 } // namespace
 
@@ -100,34 +176,22 @@ std::string companionBuildSnapshot(unsigned int seq, const CompanionSnapshot& sn
 {
     const char* flag = snapshot.hasPlayer ? "true" : "false";
 
-    // Build the inner `payload` (the kind->object map) and the outer
-    // `snapshot` envelope in two snprintf calls. The inner buffer is
-    // sized for the largest possible payload: both per-kind objects plus
-    // the kind-string overhead and the comma separators.
-    char inner[512];
-    int innerLen = 0;
+    std::string inner;
+    inner.reserve(1024);
     bool first = true;
 
     auto appendKind = [&](const char* kind, const char* body) -> bool {
-        // `body` is a complete per-kind object literal, e.g. `{"hp":30,"maxHp":40}`.
-        size_t kindLen = strlen(kind);
-        size_t bodyLen = strlen(body);
-        // kindLen + 2 (quotes) + 1 (colon) + bodyLen + 1 (comma) <= sizeof(inner)
-        if (innerLen + kindLen + 2 + 1 + bodyLen + 1 >= sizeof(inner)) {
+        if (body == nullptr) {
             return false;
         }
-        char* p = inner + innerLen;
+
         if (!first) {
-            *p++ = ',';
+            inner.push_back(',');
         }
-        *p++ = '"';
-        memcpy(p, kind, kindLen);
-        p += kindLen;
-        *p++ = '"';
-        *p++ = ':';
-        memcpy(p, body, bodyLen);
-        p += bodyLen;
-        innerLen = static_cast<int>(p - inner);
+        inner.push_back('"');
+        inner.append(kind);
+        inner.append("\":");
+        inner.append(body);
         first = false;
         return true;
     };
@@ -193,19 +257,32 @@ std::string companionBuildSnapshot(unsigned int seq, const CompanionSnapshot& sn
         }
     }
 
-    char buffer[640];
-    int n = snprintf(buffer,
-        sizeof(buffer),
-        R"({"type":"snapshot","seq":%u,"playerAvailable":%s,"payload":{%.*s}})"
-        "\n",
+    if (snapshot.hasPlayer) {
+        std::string inventoryBody = buildInventoryPayload(snapshot.inventory);
+        if (inventoryBody.empty() && !snapshot.inventory.items.empty()) {
+            return std::string();
+        }
+        if (!appendKind(kInventoryKind, inventoryBody.c_str())) {
+            return std::string();
+        }
+    }
+
+    char prefix[96];
+    int prefixLen = snprintf(prefix,
+        sizeof(prefix),
+        R"({"type":"snapshot","seq":%u,"playerAvailable":%s,"payload":{)",
         seq,
-        flag,
-        innerLen,
-        inner);
-    if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
+        flag);
+    if (prefixLen < 0 || static_cast<size_t>(prefixLen) >= sizeof(prefix)) {
         return std::string();
     }
-    return std::string(buffer, static_cast<size_t>(n));
+
+    std::string message;
+    message.reserve(static_cast<size_t>(prefixLen) + inner.size() + 4);
+    message.append(prefix, static_cast<size_t>(prefixLen));
+    message.append(inner);
+    message.append("}}\n");
+    return message;
 }
 
 namespace {
@@ -224,18 +301,26 @@ std::string wrapUpdate(unsigned int seq,
     const char* kind,
     const char* body)
 {
-    char buffer[384];
-    int n = snprintf(buffer,
-        sizeof(buffer),
-        R"({"type":"update","seq":%u,"playerAvailable":true,"kind":"%s","payload":%s})"
-        "\n",
-        seq,
-        kind,
-        body);
-    if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
+    if (body == nullptr) {
         return std::string();
     }
-    return std::string(buffer, static_cast<size_t>(n));
+
+    char prefix[128];
+    int prefixLen = snprintf(prefix,
+        sizeof(prefix),
+        R"({"type":"update","seq":%u,"playerAvailable":true,"kind":"%s","payload":)",
+        seq,
+        kind);
+    if (prefixLen < 0 || static_cast<size_t>(prefixLen) >= sizeof(prefix)) {
+        return std::string();
+    }
+
+    std::string message;
+    message.reserve(static_cast<size_t>(prefixLen) + strlen(body) + 3);
+    message.append(prefix, static_cast<size_t>(prefixLen));
+    message.append(body);
+    message.append("}\n");
+    return message;
 }
 
 } // namespace
@@ -297,6 +382,16 @@ std::string companionBuildWorldLocationUpdate(unsigned int seq,
         return std::string();
     }
     return wrapUpdate(seq, kWorldLocationKind, body);
+}
+
+std::string companionBuildInventoryUpdate(unsigned int seq,
+    const CompanionInventorySnapshot& current)
+{
+    std::string body = buildInventoryPayload(current);
+    if (body.empty() && !current.items.empty()) {
+        return std::string();
+    }
+    return wrapUpdate(seq, kInventoryKind, body.c_str());
 }
 
 std::string companionBuildPlayerUnavailable(unsigned int seq)

@@ -15,6 +15,7 @@
 #include <string>
 #include <string_view>
 
+#include "companion_item_catalog.h"
 #include "companion_protocol.h"
 #include "companion_snapshot.h"
 #include "game/gconfig.h"
@@ -305,6 +306,31 @@ bool worldLocationDiffer(const CompanionPlayerWorldLocation& a, const CompanionP
     return a.x != b.x || a.y != b.y;
 }
 
+bool inventoryItemDiffer(const CompanionInventoryItem& a, const CompanionInventoryItem& b)
+{
+    return a.pid != b.pid
+        || a.type != b.type
+        || a.count != b.count
+        || a.slot != b.slot
+        || strcmp(a.protoId, b.protoId) != 0
+        || strcmp(a.name, b.name) != 0;
+}
+
+bool inventoryDiffer(const CompanionInventorySnapshot& a, const CompanionInventorySnapshot& b)
+{
+    if (a.items.size() != b.items.size()) {
+        return true;
+    }
+
+    for (size_t index = 0; index < a.items.size(); ++index) {
+        if (inventoryItemDiffer(a.items[index], b.items[index])) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void handleClientMessage(CompanionClientMessage message, const char* line, size_t lineLength)
 {
     if (gConnection.state == ClientState::AwaitingAuth) {
@@ -532,6 +558,15 @@ void sampleReadyClient(unsigned int now)
             debug_printf("companion: update sent (player.world_location)\n");
         }
     }
+
+    if (inventoryDiffer(current.inventory, gConnection.lastSent.inventory)) {
+        if (!queueMessage(companionBuildInventoryUpdate(
+                nextSequence(), current.inventory))) {
+            return;
+        }
+        gConnection.lastSent.inventory = current.inventory;
+        debug_printf("companion: update sent (player.inventory)\n");
+    }
 }
 
 } // namespace
@@ -553,6 +588,7 @@ void companionEnableDebugLog()
 bool companionServerInit()
 {
     companionEnableDebugLog();
+    companionResetItemCatalog();
 
     gServerState = ServerState::Disabled;
     clearConfigBuffers();
@@ -654,6 +690,7 @@ void companionServerExit()
     closeConnection();
     closeFd(&gListenerFd);
     gServerState = ServerState::Disabled;
+    companionResetItemCatalog();
     clearConfigBuffers();
 }
 

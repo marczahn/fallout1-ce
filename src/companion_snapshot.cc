@@ -2,10 +2,13 @@
 
 #include <string.h>
 
+#include "companion_item_catalog.h"
 #include "companion_player_state.h"
 #include "game/critter.h"
+#include "game/inventry.h"
 #include "game/map.h"
 #include "game/object.h"
+#include "game/object_types.h"
 #include "game/stat.h"
 #include "game/stat_defs.h"
 #include "game/worldmap.h"
@@ -108,6 +111,49 @@ bool isSafeJsonString(const char* s)
     return true;
 }
 
+CompanionInventorySlot companionInventorySlotForObject(const Object* item)
+{
+    if ((item->flags & OBJECT_WORN) != 0) {
+        return CompanionInventorySlot::Worn;
+    }
+
+    if ((item->flags & OBJECT_IN_RIGHT_HAND) != 0) {
+        return CompanionInventorySlot::RightHand;
+    }
+
+    if ((item->flags & OBJECT_IN_LEFT_HAND) != 0) {
+        return CompanionInventorySlot::LeftHand;
+    }
+
+    return CompanionInventorySlot::None;
+}
+
+void collectInventorySnapshot(CompanionInventorySnapshot& inventory)
+{
+    inventory.items.clear();
+
+    Inventory* source = &(obj_dude->data.inventory);
+    inventory.items.reserve(source->length);
+
+    for (int index = 0; index < source->length; ++index) {
+        InventoryItem* sourceItem = &(source->items[index]);
+        Object* item = sourceItem->item;
+
+        CompanionItemMetadata metadata = {};
+        companionLookupItemMetadata(item->pid, metadata);
+
+        CompanionInventoryItem snapshotItem = {};
+        snapshotItem.pid = item->pid;
+        snapshotItem.type = metadata.type;
+        snapshotItem.count = sourceItem->quantity;
+        snapshotItem.slot = companionInventorySlotForObject(item);
+        strncpy(snapshotItem.protoId, metadata.protoId, sizeof(snapshotItem.protoId) - 1);
+        strncpy(snapshotItem.name, metadata.name, sizeof(snapshotItem.name) - 1);
+
+        inventory.items.push_back(snapshotItem);
+    }
+}
+
 } // namespace
 
 CompanionSnapshot companionCollectSnapshot()
@@ -120,6 +166,7 @@ CompanionSnapshot companionCollectSnapshot()
     snapshot.localLocation.location[0] = '\0';
     snapshot.localLocation.locationId[0] = '\0';
     snapshot.worldLocation = CompanionPlayerWorldLocation{ 0, 0 };
+    snapshot.inventory.items.clear();
 
     if (!companionIsPlayerReallyPlaying()) {
         return snapshot;
@@ -128,6 +175,7 @@ CompanionSnapshot companionCollectSnapshot()
     snapshot.hasPlayer = true;
     snapshot.vitals.hp = critter_get_hits(obj_dude);
     snapshot.vitals.maxHp = stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS);
+    collectInventorySnapshot(snapshot.inventory);
 
     if (worldMapIsActive()) {
         snapshot.surface = CompanionPlayerSurface::World;

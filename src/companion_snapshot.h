@@ -2,6 +2,9 @@
 #define FALLOUT_COMPANION_SNAPSHOT_H_
 
 #include <cstddef>
+#include <vector>
+
+#include "companion_item_catalog.h"
 
 namespace fallout {
 
@@ -64,6 +67,26 @@ struct CompanionPlayerWorldLocation {
     int y;
 };
 
+enum class CompanionInventorySlot {
+    None,
+    Worn,
+    RightHand,
+    LeftHand,
+};
+
+struct CompanionInventoryItem {
+    int pid;
+    int type;
+    int count;
+    CompanionInventorySlot slot;
+    char protoId[kCompanionItemProtoIdSize];
+    char name[kCompanionItemNameSize];
+};
+
+struct CompanionInventorySnapshot {
+    std::vector<CompanionInventoryItem> items;
+};
+
 // Aggregator over the three per-kind player payloads. The `surface`
 // field drives which of `localLocation` and `worldLocation` are
 // meaningful at any given sample; `vitals` is always meaningful when
@@ -75,6 +98,7 @@ struct CompanionSnapshot {
     CompanionPlayerVitals vitals;
     CompanionPlayerLocalLocation localLocation;
     CompanionPlayerWorldLocation worldLocation;
+    CompanionInventorySnapshot inventory;
 };
 
 CompanionSnapshot companionCollectSnapshot();
