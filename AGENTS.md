@@ -16,6 +16,35 @@ The current extension goal is to add a lightweight companion server that exposes
 
 The detailed plan for the first server milestone lives at [`docs/plans/companion-server-step-1.md`](docs/plans/companion-server-step-1.md).
 
+A separate **companion app** is also planned: a standalone
+Python + pygame application that visually mimics the Pip-Boy 2000
+Mk I screen and consumes data from the companion server over its
+existing TCP / newline-JSON protocol. The companion app is a
+separate codebase concern from the game engine and the server. Its
+concept and milestone plans live under
+[`docs/companion_app/plans/`](docs/companion_app/plans/), starting
+with [`concept.md`](docs/companion_app/plans/concept.md) and
+[`mvp-milestones.md`](docs/companion_app/plans/mvp-milestones.md).
+
+Hard rules for companion-app work:
+
+- The companion app is read-only against the game in the MVP. It
+  does not send commands to the engine.
+- The companion app does not modify the game engine. Any data it
+  needs that the server does not yet expose is a **server-side**
+  task, not a companion-app task.
+- The companion app uses the existing server protocol unchanged
+  (handshake, snapshot, update, schema versioning). Protocol
+  changes go through the server plans, not the app plans.
+- Stack: Python + pygame, single thread, non-blocking socket polled
+  per frame. No threads, no async framework, no web stack.
+- Input vocabulary is fixed: `SectionButton(1..4)`, `EncoderLeft`,
+  `EncoderRight`, `Confirm`, `Back`. Keyboard is dev emulation only.
+
+When working on the companion app, the same persona/workflow rules
+in this file apply. Default to reading the concept and the relevant
+milestone before editing.
+
 ## Collaboration Stance
 
 Be a sparring partner, not a rubber stamp.
@@ -184,6 +213,7 @@ Engineering rules for this repo:
 - do not spread companion logic across unrelated engine modules
 - prefer sampling through existing stable APIs such as `obj_dude`, `critter_get_hits`, and `stat_level`
 - tolerate unavailable game state during startup, menus, and transitions
+- ship unit tests with the implementation diff. Engineer is responsible for tests covering: deterministic logic (parsers, mappers, validators), error paths called out in the ticket's acceptance criteria, and any non-trivial branch the diff introduces. Tests use the project's standard runner (stdlib `unittest` for the Python companion app; the engine's existing test harness for C++ changes). Tests live next to the code or in a sibling `tests/` directory, never inside the production module. "Manual validation only" is a ticket-level exception that must be stated explicitly in the ticket; the default is automated coverage.
 
 ## Code Reviewer Responsibilities
 
@@ -249,13 +279,15 @@ For non-trivial work, produce and align on artifacts in this order:
 
 1. plan or scope note
 2. architecture decision
-3. implementation
-4. code review
-5. validation summary
+3. implementation **with unit tests** (engineer self-checks the suite green before review)
+4. code review (must verify the test suite covers the deterministic logic and the error paths from the ticket)
+5. validation summary (QA records test-suite result alongside manual checks)
 
 Use `docs/plans/` for meaningful multi-step work.
 
 If a discussion changes the protocol or architecture materially, update the relevant plan before implementation continues.
+
+A diff without tests is not ready for review unless the ticket explicitly states "manual validation only". This applies to all personas, including small fixes.
 
 ## Decision Standard
 

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "companion_app"
+version = "0.1.0"
+description = "Fallout 1 CE companion app (Pip-Boy 2000 Mk I screen surface)."
+requires-python = ">=3.11"
+dependencies = [
+    "pygame>=2.5",
+]
+
+[project.optional-dependencies]
+dev = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["companion_app*"]
+
+[tool.setuptools.package-data]
+"companion_app.assets" = ["*.ttf", "*.md"]

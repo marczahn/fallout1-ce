@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: companion_app
+Version: 0.1.0
+Summary: Fallout 1 CE companion app (Pip-Boy 2000 Mk I screen surface).
+Requires-Python: >=3.11
+Requires-Dist: pygame>=2.5
+Provides-Extra: dev

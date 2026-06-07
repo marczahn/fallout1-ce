@@ -392,3 +392,5 @@ FodyWeavers.xsd
 /out
 /build
 .vscode
+companion_app/.venv/lib
+companion_app/.venv/include

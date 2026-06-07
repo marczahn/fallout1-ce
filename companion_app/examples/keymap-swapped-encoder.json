@@ -1,0 +1,9 @@
+{
+  "display": { "scale": 1.5 },
+  "input": {
+    "keymap": {
+      "EncoderLeft":  ["down"],
+      "EncoderRight": ["up"]
+    }
+  }
+}
