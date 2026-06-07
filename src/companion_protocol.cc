@@ -133,6 +133,62 @@ const char* inventorySlotName(CompanionInventorySlot slot)
     }
 }
 
+std::string buildVitalsBody(const CompanionPlayerVitals& vitals)
+{
+    char body[64];
+    int n = snprintf(body,
+        sizeof(body),
+        R"({"hp":%d,"maxHp":%d})",
+        vitals.hp,
+        vitals.maxHp);
+    if (n < 0 || static_cast<size_t>(n) >= sizeof(body)) {
+        return std::string();
+    }
+    return std::string(body, static_cast<size_t>(n));
+}
+
+std::string buildLocalLocationBody(const CompanionPlayerLocalLocation& loc)
+{
+    char body[256];
+    int n;
+    if (loc.location[0] == '\0') {
+        n = snprintf(body,
+            sizeof(body),
+            R"({"tile":%d,"elevation":%d,"map":%d,"location":null,"locationId":"%s"})",
+            loc.tile,
+            loc.elevation,
+            loc.map,
+            loc.locationId);
+    } else {
+        n = snprintf(body,
+            sizeof(body),
+            R"({"tile":%d,"elevation":%d,"map":%d,"location":"%s","locationId":"%s"})",
+            loc.tile,
+            loc.elevation,
+            loc.map,
+            loc.location,
+            loc.locationId);
+    }
+    if (n < 0 || static_cast<size_t>(n) >= sizeof(body)) {
+        return std::string();
+    }
+    return std::string(body, static_cast<size_t>(n));
+}
+
+std::string buildWorldLocationBody(const CompanionPlayerWorldLocation& loc)
+{
+    char body[64];
+    int n = snprintf(body,
+        sizeof(body),
+        R"({"x":%d,"y":%d})",
+        loc.x,
+        loc.y);
+    if (n < 0 || static_cast<size_t>(n) >= sizeof(body)) {
+        return std::string();
+    }
+    return std::string(body, static_cast<size_t>(n));
+}
+
 std::string buildInventoryPayload(const CompanionInventorySnapshot& inventory)
 {
     std::string body;
@@ -339,60 +395,22 @@ std::string companionBuildSnapshotPayload(const CompanionSnapshot& snapshot)
     // Vitals are always present when the player is loaded (real map or
     // world map).
     if (snapshot.hasPlayer) {
-        char vitalsBody[64];
-        int n = snprintf(vitalsBody,
-            sizeof(vitalsBody),
-            R"({"hp":%d,"maxHp":%d})",
-            snapshot.vitals.hp,
-            snapshot.vitals.maxHp);
-        if (n < 0 || static_cast<size_t>(n) >= sizeof(vitalsBody)) {
-            return std::string();
-        }
-        if (!appendKind(kVitalsKind, vitalsBody)) {
+        std::string body = buildVitalsBody(snapshot.vitals);
+        if (body.empty() || !appendKind(kVitalsKind, body.c_str())) {
             return std::string();
         }
     }
 
     if (snapshot.hasPlayer && snapshot.surface == CompanionPlayerSurface::Local) {
-        char locationBody[256];
-        int n;
-        if (snapshot.localLocation.location[0] == '\0') {
-            n = snprintf(locationBody,
-                sizeof(locationBody),
-                R"({"tile":%d,"elevation":%d,"map":%d,"location":null,"locationId":"%s"})",
-                snapshot.localLocation.tile,
-                snapshot.localLocation.elevation,
-                snapshot.localLocation.map,
-                snapshot.localLocation.locationId);
-        } else {
-            n = snprintf(locationBody,
-                sizeof(locationBody),
-                R"({"tile":%d,"elevation":%d,"map":%d,"location":"%s","locationId":"%s"})",
-                snapshot.localLocation.tile,
-                snapshot.localLocation.elevation,
-                snapshot.localLocation.map,
-                snapshot.localLocation.location,
-                snapshot.localLocation.locationId);
-        }
-        if (n < 0 || static_cast<size_t>(n) >= sizeof(locationBody)) {
-            return std::string();
-        }
-        if (!appendKind(kLocalLocationKind, locationBody)) {
+        std::string body = buildLocalLocationBody(snapshot.localLocation);
+        if (body.empty() || !appendKind(kLocalLocationKind, body.c_str())) {
             return std::string();
         }
     }
 
     if (snapshot.hasPlayer && snapshot.surface == CompanionPlayerSurface::World) {
-        char worldBody[96];
-        int n = snprintf(worldBody,
-            sizeof(worldBody),
-            R"({"x":%d,"y":%d})",
-            snapshot.worldLocation.x,
-            snapshot.worldLocation.y);
-        if (n < 0 || static_cast<size_t>(n) >= sizeof(worldBody)) {
-            return std::string();
-        }
-        if (!appendKind(kWorldLocationKind, worldBody)) {
+        std::string body = buildWorldLocationBody(snapshot.worldLocation);
+        if (body.empty() || !appendKind(kWorldLocationKind, body.c_str())) {
             return std::string();
         }
     }
@@ -484,60 +502,31 @@ std::string wrapUpdate(unsigned int seq,
 std::string companionBuildVitalsUpdate(unsigned int seq,
     const CompanionPlayerVitals& current)
 {
-    char body[64];
-    int n = snprintf(body,
-        sizeof(body),
-        R"({"hp":%d,"maxHp":%d})",
-        current.hp,
-        current.maxHp);
-    if (n < 0 || static_cast<size_t>(n) >= sizeof(body)) {
+    std::string body = buildVitalsBody(current);
+    if (body.empty()) {
         return std::string();
     }
-    return wrapUpdate(seq, kVitalsKind, body);
+    return wrapUpdate(seq, kVitalsKind, body.c_str());
 }
 
 std::string companionBuildLocalLocationUpdate(unsigned int seq,
     const CompanionPlayerLocalLocation& current)
 {
-    char body[256];
-    int n;
-    if (current.location[0] == '\0') {
-        n = snprintf(body,
-            sizeof(body),
-            R"({"tile":%d,"elevation":%d,"map":%d,"location":null,"locationId":"%s"})",
-            current.tile,
-            current.elevation,
-            current.map,
-            current.locationId);
-    } else {
-        n = snprintf(body,
-            sizeof(body),
-            R"({"tile":%d,"elevation":%d,"map":%d,"location":"%s","locationId":"%s"})",
-            current.tile,
-            current.elevation,
-            current.map,
-            current.location,
-            current.locationId);
-    }
-    if (n < 0 || static_cast<size_t>(n) >= sizeof(body)) {
+    std::string body = buildLocalLocationBody(current);
+    if (body.empty()) {
         return std::string();
     }
-    return wrapUpdate(seq, kLocalLocationKind, body);
+    return wrapUpdate(seq, kLocalLocationKind, body.c_str());
 }
 
 std::string companionBuildWorldLocationUpdate(unsigned int seq,
     const CompanionPlayerWorldLocation& current)
 {
-    char body[64];
-    int n = snprintf(body,
-        sizeof(body),
-        R"({"x":%d,"y":%d})",
-        current.x,
-        current.y);
-    if (n < 0 || static_cast<size_t>(n) >= sizeof(body)) {
+    std::string body = buildWorldLocationBody(current);
+    if (body.empty()) {
         return std::string();
     }
-    return wrapUpdate(seq, kWorldLocationKind, body);
+    return wrapUpdate(seq, kWorldLocationKind, body.c_str());
 }
 
 std::string companionBuildInventoryUpdate(unsigned int seq,
@@ -676,107 +665,103 @@ CompanionClientMessage companionParseClientMessage(const char* line, size_t leng
 
 bool companionExtractAuthPassword(const char* line, size_t length, std::string_view& outPassword)
 {
-    // Hand-rolled extraction for the exact shape:
-    //   {"type":"auth","password":"<value>"}
-    // with whitespace tolerance around `:` and after `,`. The caller has
-    // already identified the line as an `auth` message via the prefix
-    // match. We do not handle escape sequences in the password value; the
-    // expected password is opaque UTF-8 without `\"` or `\\`.
+    // Walks the `{"type":"auth","password":"..."}` object as generic
+    // JSON key/value pairs, reusing the same parsing primitives as the
+    // `cmd` extractor. Whitespace around `:` and after `,` is tolerated
+    // by `skipWhitespace`. Unknown top-level fields are ignored. We do
+    // not handle escape sequences inside the password string; the
+    // expected password is opaque UTF-8 without `\"` or `\\` and a
+    // literal `"` terminates early. `password` is required.
     if (line == nullptr || length == 0) {
         return false;
     }
 
     const char* p = line;
     const char* end = line + length;
-
-    // Skip past `{"type":"auth"`. Accept the spaced form (`{"type": "auth"`)
-    // emitted by most JSON serializers; the parser already accepts both.
-    static constexpr char kPrefix[] = R"({"type":"auth")";
-    constexpr size_t kPrefixLen = sizeof(kPrefix) - 1;
-    static constexpr char kPrefixSpaced[] = R"({"type": "auth")";
-    constexpr size_t kPrefixSpacedLen = sizeof(kPrefixSpaced) - 1;
-    if (static_cast<size_t>(end - p) >= kPrefixLen
-        && memcmp(p, kPrefix, kPrefixLen) == 0) {
-        p += kPrefixLen;
-    } else if (static_cast<size_t>(end - p) >= kPrefixSpacedLen
-        && memcmp(p, kPrefixSpaced, kPrefixSpacedLen) == 0) {
-        p += kPrefixSpacedLen;
-    } else {
-        return false;
-    }
-
-    // Allow whitespace, then expect `,`.
-    while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) {
-        ++p;
-    }
-    if (p >= end || *p != ',') {
+    skipWhitespace(p, end);
+    if (p >= end || *p != '{') {
         return false;
     }
     ++p;
 
-    // Allow whitespace, then expect `"password"`.
-    while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) {
-        ++p;
-    }
-    static constexpr char kPasswordKey[] = R"("password")";
-    constexpr size_t kPasswordKeyLen = sizeof(kPasswordKey) - 1;
-    if (static_cast<size_t>(end - p) < kPasswordKeyLen) {
-        return false;
-    }
-    if (memcmp(p, kPasswordKey, kPasswordKeyLen) != 0) {
-        return false;
-    }
-    p += kPasswordKeyLen;
+    bool sawType = false;
+    bool sawPassword = false;
 
-    // Allow whitespace, then expect `:`.
-    while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) {
+    while (true) {
+        skipWhitespace(p, end);
+        if (p >= end) {
+            return false;
+        }
+
+        if (*p == '}') {
+            ++p;
+            break;
+        }
+
+        std::string_view key;
+        if (!parseJsonStringView(p, end, key)) {
+            return false;
+        }
+
+        skipWhitespace(p, end);
+        if (p >= end || *p != ':') {
+            return false;
+        }
         ++p;
-    }
-    if (p >= end || *p != ':') {
+
+        if (key == "type") {
+            std::string_view type;
+            if (!parseJsonStringView(p, end, type) || type != "auth") {
+                return false;
+            }
+            sawType = true;
+        } else if (key == "password") {
+            // The password value is treated as opaque bytes between the
+            // opening and closing `"`. Backslashes are NOT escape
+            // sequences here; a literal `"` terminates. This matches
+            // the engine's intent (`fallout.cfg` stores the password
+            // as a raw string) and the pre-refactor behavior.
+            skipWhitespace(p, end);
+            if (p >= end || *p != '"') {
+                return false;
+            }
+            const char* valueStart = ++p;
+            while (p < end && *p != '"') {
+                ++p;
+            }
+            if (p >= end) {
+                return false;
+            }
+            outPassword = std::string_view(valueStart, static_cast<size_t>(p - valueStart));
+            ++p;
+            sawPassword = true;
+        } else {
+            if (!skipJsonValue(p, end)) {
+                return false;
+            }
+        }
+
+        skipWhitespace(p, end);
+        if (p >= end) {
+            return false;
+        }
+        if (*p == ',') {
+            ++p;
+            continue;
+        }
+        if (*p == '}') {
+            ++p;
+            break;
+        }
         return false;
     }
-    ++p;
 
-    // Allow whitespace, then expect opening `"`.
-    while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) {
-        ++p;
-    }
-    if (p >= end || *p != '"') {
-        return false;
-    }
-    const char* valueStart = ++p;
-
-    // Scan to the closing `"`. The password is opaque; we do not handle
-    // `\"` escapes. A literal `"` in the value terminates early, which
-    // matches the engine's intent of "the password is what is between
-    // the quotes."
-    while (p < end && *p != '"') {
-        ++p;
-    }
-    if (p >= end) {
-        return false;
-    }
-    outPassword = std::string_view(valueStart, static_cast<size_t>(p - valueStart));
-    ++p;
-
-    // Allow whitespace, then expect `}`.
-    while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) {
-        ++p;
-    }
-    if (p >= end || *p != '}') {
-        return false;
-    }
-    ++p;
-
-    // Reject trailing garbage.
-    while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) {
-        ++p;
-    }
+    skipWhitespace(p, end);
     if (p != end) {
         return false;
     }
 
-    return true;
+    return sawType && sawPassword;
 }
 
 bool companionExtractCommandRequest(const char* line,

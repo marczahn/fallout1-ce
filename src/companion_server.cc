@@ -40,11 +40,6 @@ constexpr size_t kInboundBufferSize = 4096;
 constexpr size_t kOutboundCap = 256 * 1024;
 constexpr unsigned int kSampleIntervalMs = 500;
 
-enum class ServerState {
-    Disabled,
-    Listening,
-};
-
 enum class ClientState {
     AwaitingAuth,
     AwaitingHello,
@@ -78,7 +73,6 @@ struct CompanionConnection {
     std::string outbound;
 };
 
-ServerState gServerState = ServerState::Disabled;
 int gListenerFd = -1;
 int gDiscoveryFd = -1;
 
@@ -741,44 +735,59 @@ void handleDiscoveryRequests()
     }
 }
 
-// Bind a UDP listener on the same address:port as the TCP listener. TCP
-// and UDP coexist on the same port number; the kernel routes by protocol.
-// SO_REUSEADDR is set to survive quick restarts. On any failure the TCP
-// listener is left untouched; discovery is a non-essential feature.
-void initDiscoverySocket()
+// Creates a socket of `type` (SOCK_STREAM or SOCK_DGRAM), sets
+// SO_REUSEADDR and non-blocking, parses `host` as IPv4, and binds to
+// `host:port`. On any failure logs with `label` as a prefix, closes the
+// fd, and returns -1. On success returns the bound fd; the caller is
+// responsible for `listen` (TCP) and closing the fd on shutdown.
+int bindIPv4Socket(int type, const std::string& host, int port, const char* label)
 {
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    int fd = socket(AF_INET, type, 0);
     if (fd < 0) {
-        debug_printf("companion: discovery socket() failed: %d\n", errno);
-        return;
+        debug_printf("companion: %s socket() failed: %d\n", label, errno);
+        return -1;
     }
 
     int yes = 1;
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0) {
-        debug_printf("companion: discovery setsockopt SO_REUSEADDR failed: %d\n", errno);
+        debug_printf("companion: %s setsockopt SO_REUSEADDR failed: %d\n", label, errno);
         close(fd);
-        return;
+        return -1;
     }
 
     if (!setNonBlocking(fd)) {
-        debug_printf("companion: discovery set non-blocking failed: %d\n", errno);
+        debug_printf("companion: %s set non-blocking failed: %d\n", label, errno);
         close(fd);
-        return;
+        return -1;
     }
 
     sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(kListenPort);
-    if (inet_pton(AF_INET, gBindHost.c_str(), &addr.sin_addr) != 1) {
-        debug_printf("companion: discovery bind parse failed: %s\n", gBindHost.c_str());
+    addr.sin_port = htons(port);
+    if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
+        debug_printf("companion: %s bind parse failed: %s\n", label, host.c_str());
         close(fd);
-        return;
+        return -1;
     }
+
     if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-        debug_printf("companion: discovery bind %s:%d failed: %d\n",
-            gBindHost.c_str(), kListenPort, errno);
+        debug_printf("companion: %s bind %s:%d failed: %d\n", label, host.c_str(), port, errno);
         close(fd);
+        return -1;
+    }
+
+    return fd;
+}
+
+// Bind a UDP listener on the same address:port as the TCP listener. TCP
+// and UDP coexist on the same port number; the kernel routes by protocol.
+// On any failure the TCP listener is left untouched; discovery is a
+// non-essential feature.
+void initDiscoverySocket()
+{
+    int fd = bindIPv4Socket(SOCK_DGRAM, gBindHost, kListenPort, "discovery");
+    if (fd < 0) {
         return;
     }
 
@@ -808,7 +817,6 @@ bool companionServerInit()
     companionEnableDebugLog();
     companionResetItemCatalog();
 
-    gServerState = ServerState::Disabled;
     clearConfigBuffers();
 
     if (!gconfig_file_loaded()) {
@@ -836,42 +844,8 @@ bool companionServerInit()
     }
     gPassword = passwordPtr;
 
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    int fd = bindIPv4Socket(SOCK_STREAM, gBindHost, kListenPort, "listener");
     if (fd < 0) {
-        debug_printf("companion: socket() failed: %d\n", errno);
-        clearConfigBuffers();
-        return true;
-    }
-
-    int yes = 1;
-    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0) {
-        debug_printf("companion: setsockopt SO_REUSEADDR failed: %d\n", errno);
-        close(fd);
-        clearConfigBuffers();
-        return true;
-    }
-
-    if (!setNonBlocking(fd)) {
-        debug_printf("companion: set non-blocking failed: %d\n", errno);
-        close(fd);
-        clearConfigBuffers();
-        return true;
-    }
-
-    sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(kListenPort);
-    if (inet_pton(AF_INET, gBindHost.c_str(), &addr.sin_addr) != 1) {
-        debug_printf("companion: disabled (bind parse failed: %s)\n", gBindHost.c_str());
-        close(fd);
-        clearConfigBuffers();
-        return true;
-    }
-
-    if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-        debug_printf("companion: bind %s:%d failed: %d\n", gBindHost.c_str(), kListenPort, errno);
-        close(fd);
         clearConfigBuffers();
         return true;
     }
@@ -886,7 +860,6 @@ bool companionServerInit()
     gListenerFd = fd;
     initDiscoverySocket();
     resetConnectionState();
-    gServerState = ServerState::Listening;
     debug_printf("companion: enabled (bind=%s, port=%d)\n", gBindHost.c_str(), kListenPort);
 
     if (!gIdleHookInstalled) {
@@ -912,14 +885,13 @@ void companionServerExit()
     }
     closeFd(&gDiscoveryFd);
     closeFd(&gListenerFd);
-    gServerState = ServerState::Disabled;
     companionResetItemCatalog();
     clearConfigBuffers();
 }
 
 void companionServerTick(unsigned int now)
 {
-    if (gServerState == ServerState::Disabled) {
+    if (gListenerFd < 0) {
         return;
     }
 
@@ -945,7 +917,7 @@ void companionServerTick(unsigned int now)
 
 bool companionServerIsActive()
 {
-    return gServerState == ServerState::Listening;
+    return gListenerFd >= 0;
 }
 
 #else // _WIN32

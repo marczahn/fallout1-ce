@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "companion_item_catalog.h"
+#include "companion_json_util.h"
 #include "companion_player_state.h"
 #include "game/critter.h"
 #include "game/inventry.h"
@@ -91,26 +92,6 @@ const char* const kMapLocationIds[MAP_COUNT] = {
     /* HUBMIS1   */ "HUBMIS1",
 };
 
-// Returns true if `s` is safe to emit as a JSON string literal (no
-// unescaped `"` or `\\`, no control characters). Used to defend against
-// engine strings that might contain characters which would break the
-// JSON wire format. The engine's `map_get_short_name` returns text from
-// a parsed message list and should not contain such characters, but the
-// defense is cheap.
-bool isSafeJsonString(const char* s)
-{
-    if (s == nullptr) {
-        return false;
-    }
-    for (const char* p = s; *p != '\0'; ++p) {
-        unsigned char c = static_cast<unsigned char>(*p);
-        if (c == '"' || c == '\\' || c < 0x20) {
-            return false;
-        }
-    }
-    return true;
-}
-
 CompanionInventorySlot companionInventorySlotForObject(const Object* item)
 {
     if ((item->flags & OBJECT_WORN) != 0) {
@@ -195,7 +176,7 @@ CompanionSnapshot companionCollectSnapshot()
         // the message list; copy into our own buffer so the snapshot
         // outlives any subsequent message-list activity.
         char* shortName = map_get_short_name(snapshot.localLocation.map);
-        if (isSafeJsonString(shortName)) {
+        if (companionIsSafeJsonString(shortName)) {
             strncpy(snapshot.localLocation.location, shortName, kCompanionLocationSize - 1);
             snapshot.localLocation.location[kCompanionLocationSize - 1] = '\0';
         }

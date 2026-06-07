@@ -5,6 +5,7 @@
 
 #include <unordered_map>
 
+#include "companion_json_util.h"
 #include "game/proto.h"
 
 namespace fallout {
@@ -13,29 +14,13 @@ namespace {
 
 std::unordered_map<int, CompanionItemMetadata> gItemCatalog;
 
-bool isSafeJsonString(const char* s)
-{
-    if (s == nullptr) {
-        return false;
-    }
-
-    for (const char* p = s; *p != '\0'; ++p) {
-        unsigned char c = static_cast<unsigned char>(*p);
-        if (c == '"' || c == '\\' || c < 0x20) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
 void copyOrFallback(char* dest, size_t destSize, const char* src, const char* fallbackPrefix, int pid)
 {
     if (destSize == 0) {
         return;
     }
 
-    if (isSafeJsonString(src) && src[0] != '\0') {
+    if (companionIsSafeJsonString(src) && src[0] != '\0') {
         strncpy(dest, src, destSize - 1);
         dest[destSize - 1] = '\0';
         return;
