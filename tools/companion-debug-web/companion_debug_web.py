@@ -7,8 +7,12 @@ but exposes send and receive in a browser UI with a Fallout-flavored CRT
 look, so you do not have to keep typing into netcat.
 
 Supports the current step-2 / T0 protocol surface:
+  - UDP autodiscovery (T7): broadcast `{"type":"discover"}` to the LAN
+    on port 28080; the game replies with a single `announce` datagram
+    carrying its TCP host/port and whether auth is required.
   - auth (constant-time compared by the server, with the configured
-    companion_password from fallout.cfg)
+    companion_password from fallout.cfg). auth is unconditional: the
+    server is only enabled when a password is configured.
   - hello
   - get_snapshot
   - cmd (T6: id, name, args)
@@ -26,9 +30,16 @@ T0 protocol awareness (visible in the log and the toolbar):
     prints whatever the server emits, so the new shape just shows up
     as a different JSON object.
 
-If a password is provided, connect() sends auth then hello automatically.
-If no password is provided, connect() sends hello directly (step-1 mode).
-The full traffic log is preserved so you can copy lines for bug reports.
+Discovery flow:
+  - Click "Discover" to UDP-broadcast `{"type":"discover"}` to
+    255.255.255.255:28080. Each running game replies with its
+    `announce`. The first reply pre-fills host and port; multi-host
+    setups get a picker.
+  - The password is NEVER broadcast; the user pastes it from
+    `fallout.cfg` once host/port are known.
+
+Connect() always sends auth then hello. The full traffic log is
+preserved so you can copy lines for bug reports.
 
 Dependencies: Python 3.7+ stdlib only.
 
@@ -57,6 +68,70 @@ POLL_HINT_MS = 250
 MAX_MESSAGES = 2000
 RECV_CHUNK = 4096
 SOCKET_CONNECT_TIMEOUT = 5.0
+
+# UDP discovery (T7). The game listens for `{"type":"discover"}` on the
+# same address:port as the TCP server and unicasts an `announce` reply.
+# The default target is the IPv4 limited broadcast address so a single
+# request fans out to every game on the LAN.
+DEFAULT_DISCOVER_TARGET = "255.255.255.255"
+DEFAULT_DISCOVER_PORT = 28080
+DISCOVER_DEFAULT_TIMEOUT = 1.5
+DISCOVER_RECV_CHUNK = 2048
+
+
+def udp_discover(target, port, timeout):
+    """Send a UDP `discover` to target:port and collect `announce` replies.
+
+    `target` may be a unicast host or the IPv4 limited broadcast address.
+    Returns a list of dicts: `{"addr": "<ip>", "message": {...}}`.
+    Malformed replies are dropped silently. Duplicates from the same
+    source address are kept; the caller decides what to do with them.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    except OSError:
+        # Setting SO_BROADCAST is required for 255.255.255.255 sends but
+        # is harmless for unicast. If it fails we still try the send;
+        # the OS will reject a broadcast destination if it must.
+        pass
+    sock.settimeout(timeout)
+    request = json.dumps({"type": "discover"}, separators=(",", ":")).encode("utf-8") + b"\n"
+
+    try:
+        sock.sendto(request, (target, port))
+    except OSError as e:
+        sock.close()
+        return [], f"sendto failed: {e}"
+
+    deadline = time.monotonic() + timeout
+    results = []
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        sock.settimeout(remaining)
+        try:
+            data, addr = sock.recvfrom(DISCOVER_RECV_CHUNK)
+        except socket.timeout:
+            break
+        except OSError:
+            break
+        if not data:
+            continue
+        try:
+            text = data.decode("utf-8").strip()
+            parsed = json.loads(text)
+        except (UnicodeDecodeError, ValueError):
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        if parsed.get("type") != "announce":
+            continue
+        results.append({"addr": addr[0], "port": addr[1], "message": parsed})
+
+    sock.close()
+    return results, None
 
 
 class MessageBuffer:
@@ -484,21 +559,23 @@ textarea {
     <h2>// Connection</h2>
     <div class="panel-body">
       <form id="connect-form" class="row">
-        <div class="field"><label>Host</label><input name="host" value="127.0.0.1" required></div>
-        <div class="field"><label>Port</label><input name="port" value="28080" type="number" min="1" max="65535" required></div>
-        <div class="field wide"><label>Password (step-2; leave blank for step-1)</label><input name="password" type="password" autocomplete="off" placeholder="companion_password from fallout.cfg"></div>
+        <div class="field"><label>Host</label><input name="host" id="host-input" value="127.0.0.1" required></div>
+        <div class="field"><label>Port</label><input name="port" id="port-input" value="28080" type="number" min="1" max="65535" required></div>
+        <div class="field wide"><label>Password</label><input name="password" type="password" autocomplete="off" value="your-secret" placeholder="companion_password from fallout.cfg" required></div>
         <div class="field grow">
           <label><input type="checkbox" name="send_hello" checked> Auto-send <code>hello</code> after connect</label>
         </div>
         <div class="field grow">
           <button type="submit" class="primary" id="connect-btn">Connect</button>
+          <button type="button" id="discover-btn" style="margin-top:6px">Discover</button>
           <button type="button" id="disconnect-btn" disabled style="margin-top:6px">Disconnect</button>
         </div>
       </form>
       <div class="help">
-        Connect opens a TCP socket to the game. If a password is set, it sends
-        <code>auth</code> first, then (if checked) <code>hello</code>. Without a password
-        it sends <code>hello</code> directly (step-1 server). <span class="kbd">Esc</span> to disconnect.
+        Discover broadcasts a UDP <code>discover</code> to <code>255.255.255.255:28080</code>;
+        each running game replies with its <code>announce</code> (host, port, schemaVersion, authRequired).
+        Connect opens TCP and sends <code>auth</code> then <code>hello</code>. The server
+        requires a password; auth is unconditional. <span class="kbd">Esc</span> to disconnect.
       </div>
     </div>
   </section>
@@ -622,6 +699,7 @@ function messageMatchesFilter(msg) {
 const elLog = document.getElementById("log");
 const elStatus = document.getElementById("status");
 const elConnectBtn = document.getElementById("connect-btn");
+const elDiscoverBtn = document.getElementById("discover-btn");
 const elDisconnectBtn = document.getElementById("disconnect-btn");
 const elSendBtn = document.getElementById("send-btn");
 const elConnectForm = document.getElementById("connect-form");
@@ -634,6 +712,8 @@ const elClearBtn = document.getElementById("clear-btn");
 const elLogCount = document.getElementById("log-count");
 const elFilterMode = document.getElementById("filter-mode");
 const elFilterValue = document.getElementById("filter-value");
+const elHostInput = document.getElementById("host-input");
+const elPortInput = document.getElementById("port-input");
 
 let lastSeq = 0;
 let connected = false;
@@ -820,6 +900,58 @@ async function onDisconnectClick() {
   await postJson("/disconnect", {});
 }
 
+async function onDiscoverClick() {
+  elDiscoverBtn.disabled = true;
+  const originalLabel = elDiscoverBtn.textContent;
+  elDiscoverBtn.textContent = "Discovering...";
+  try {
+    const resp = await postJson("/discover", {});
+    if (!resp.ok) {
+      alert("Discover failed: " + (resp.error || "unknown"));
+      return;
+    }
+    const results = resp.results || [];
+    if (!results.length) {
+      alert("No game answered the discover broadcast.\n\nMake sure the game is running with the companion server enabled in fallout.cfg.");
+      return;
+    }
+    let pick;
+    if (results.length === 1) {
+      pick = results[0];
+    } else {
+      const lines = results.map((r, i) =>
+        `${i + 1}) ${r.message.host || r.addr}:${r.message.port}` +
+        ` schema=${r.message.schemaVersion}` +
+        ` authRequired=${r.message.authRequired}`
+      );
+      const choice = prompt(
+        "Multiple games answered the discover broadcast. Pick one (number):\n\n" + lines.join("\n"),
+        "1"
+      );
+      const idx = parseInt(choice, 10) - 1;
+      if (isNaN(idx) || idx < 0 || idx >= results.length) {
+        return;
+      }
+      pick = results[idx];
+    }
+    const announce = pick.message || {};
+    // Prefer the announce's `host` field (the server's configured
+    // bind host); fall back to the datagram source address if it is
+    // a loopback or unspecified marker.
+    let host = announce.host;
+    if (!host || host === "0.0.0.0") {
+      host = pick.addr;
+    }
+    if (host) elHostInput.value = host;
+    if (announce.port) elPortInput.value = String(announce.port);
+  } catch (e) {
+    alert("Discover error: " + e.message);
+  } finally {
+    elDiscoverBtn.textContent = originalLabel;
+    elDiscoverBtn.disabled = false;
+  }
+}
+
 async function onSendSubmit(e) {
   e.preventDefault();
   const t = elSendType.value;
@@ -861,6 +993,7 @@ async function onClearClick() {
 }
 
 elConnectForm.addEventListener("submit", onConnectSubmit);
+elDiscoverBtn.addEventListener("click", onDiscoverClick);
 elDisconnectBtn.addEventListener("click", onDisconnectClick);
 elSendForm.addEventListener("submit", onSendSubmit);
 elSendType.addEventListener("change", renderSendFields);
@@ -977,6 +1110,41 @@ class DebugWebHandler(BaseHTTPRequestHandler):
         if path == "/disconnect":
             self.client.disconnect()
             self._send_json({"ok": True})
+            return
+        if path == "/discover":
+            target = body.get("target") or DEFAULT_DISCOVER_TARGET
+            try:
+                port = int(body.get("port") or DEFAULT_DISCOVER_PORT)
+            except (TypeError, ValueError):
+                self._send_json({"ok": False, "error": "invalid port"})
+                return
+            try:
+                timeout = float(body.get("timeout") or DISCOVER_DEFAULT_TIMEOUT)
+            except (TypeError, ValueError):
+                timeout = DISCOVER_DEFAULT_TIMEOUT
+            timeout = max(0.1, min(timeout, 10.0))
+            results, err = udp_discover(target, port, timeout)
+            if err is not None and not results:
+                self._send_json({"ok": False, "error": err})
+                return
+            # Append a system log entry so the user sees discovery
+            # results alongside TCP traffic without having to dig
+            # through the alert dialog.
+            self.buffer.append(
+                "system",
+                f"discover -> {target}:{port} (timeout={timeout:.1f}s): "
+                f"{len(results)} answer(s)"
+            )
+            for r in results:
+                try:
+                    self.buffer.append(
+                        "in",
+                        json.dumps(r["message"], separators=(",", ":")),
+                        meta={"source": r["addr"], "transport": "udp"}
+                    )
+                except (TypeError, ValueError):
+                    pass
+            self._send_json({"ok": True, "results": results, "error": err})
             return
         if path == "/send":
             if not self.client.is_connected():

@@ -34,6 +34,7 @@ namespace {
 
 constexpr int kListenPort = 28080;
 constexpr int kListenBacklog = 1;
+constexpr size_t kDiscoveryRequestBufferSize = 256;
 
 constexpr size_t kInboundBufferSize = 4096;
 constexpr size_t kOutboundCap = 256 * 1024;
@@ -79,6 +80,7 @@ struct CompanionConnection {
 
 ServerState gServerState = ServerState::Disabled;
 int gListenerFd = -1;
+int gDiscoveryFd = -1;
 
 // Server-owned copies of the bind host and password read from
 // `fallout.cfg` at init time. The pointers returned by `config_get_string`
@@ -174,6 +176,18 @@ void closeConnection()
     resetConnectionState();
 }
 
+void disableDiscoverySocket(const char* reason)
+{
+    if (gDiscoveryFd < 0) {
+        return;
+    }
+
+    if (reason != nullptr) {
+        debug_printf("companion: discovery disabled: %s\n", reason);
+    }
+    closeFd(&gDiscoveryFd);
+}
+
 void disconnectClient(const char* reason)
 {
     if (reason != nullptr) {
@@ -267,15 +281,19 @@ void queueWorldMessage()
     debug_printf("companion: hello accepted\n");
 }
 
-void queueSnapshotMessage()
+void queueSnapshotMessage(const CompanionSnapshot& snapshot)
 {
-    CompanionSnapshot snapshot = companionCollectSnapshot();
     if (!queueMessage(companionBuildSnapshot(nextSequence(), snapshot))) {
         return;
     }
 
     primeLastSentState(snapshot);
     debug_printf("companion: snapshot sent\n");
+}
+
+void queueSnapshotMessage()
+{
+    queueSnapshotMessage(companionCollectSnapshot());
 }
 
 void queuePlayerUnavailableMessage()
@@ -331,6 +349,62 @@ bool inventoryDiffer(const CompanionInventorySnapshot& a, const CompanionInvento
     return false;
 }
 
+void rejectCommand(int id, const std::string_view& name, const char* error)
+{
+    if (!queueMessage(companionBuildCmdAck(id, false, error))) {
+        return;
+    }
+
+    debug_printf("companion: cmd rejected (%.*s id=%d error=%s)\n",
+        static_cast<int>(name.size()),
+        name.data(),
+        id,
+        error);
+}
+
+void handleCommandMessage(const char* line, size_t lineLength)
+{
+    CompanionCommandRequest request = {};
+    if (!companionExtractCommandRequest(line, lineLength, request)) {
+        disconnectClient("invalid cmd");
+        return;
+    }
+
+    if (request.name == "ping") {
+        if (!queueMessage(companionBuildCmdAck(request.id, true))) {
+            return;
+        }
+        debug_printf("companion: cmd accepted (%.*s id=%d)\n",
+            static_cast<int>(request.name.size()),
+            request.name.data(),
+            request.id);
+        return;
+    }
+
+    if (request.name == "get_snapshot") {
+        CompanionSnapshot snapshot = companionCollectSnapshot();
+        std::string payload = companionBuildSnapshotPayload(snapshot);
+        if (payload.empty()) {
+            disconnectClient("snapshot formatting failure");
+            return;
+        }
+
+        if (!queueMessage(companionBuildCmdAck(request.id, true, nullptr, payload))) {
+            return;
+        }
+
+        debug_printf("companion: cmd accepted (%.*s id=%d)\n",
+            static_cast<int>(request.name.size()),
+            request.name.data(),
+            request.id);
+
+        queueSnapshotMessage(snapshot);
+        return;
+    }
+
+    rejectCommand(request.id, request.name, "unknown_command");
+}
+
 void handleClientMessage(CompanionClientMessage message, const char* line, size_t lineLength)
 {
     if (gConnection.state == ClientState::AwaitingAuth) {
@@ -369,6 +443,11 @@ void handleClientMessage(CompanionClientMessage message, const char* line, size_
 
     if (message == CompanionClientMessage::GetSnapshot) {
         queueSnapshotMessage();
+        return;
+    }
+
+    if (message == CompanionClientMessage::Cmd) {
+        handleCommandMessage(line, lineLength);
         return;
     }
 
@@ -569,6 +648,145 @@ void sampleReadyClient(unsigned int now)
     }
 }
 
+// Returns true when `buffer` looks like a `{"type":"discover"}` request.
+// Whitespace-tolerant in the same minimal way the TCP parser is. Anything
+// else is silently ignored (UDP is fire-and-forget; bad packets are
+// dropped without a reply, so the server is not a useful reflector for
+// arbitrary payloads).
+bool isDiscoveryRequest(const char* buffer, size_t length)
+{
+    static constexpr char kDiscover[] = R"({"type":"discover"})";
+    static constexpr char kDiscoverSpaced[] = R"({"type": "discover"})";
+    constexpr size_t kDiscoverLen = sizeof(kDiscover) - 1;
+    constexpr size_t kDiscoverSpacedLen = sizeof(kDiscoverSpaced) - 1;
+
+    size_t start = 0;
+    while (start < length
+        && (buffer[start] == ' ' || buffer[start] == '\t'
+            || buffer[start] == '\n' || buffer[start] == '\r')) {
+        ++start;
+    }
+    size_t end = length;
+    while (end > start
+        && (buffer[end - 1] == ' ' || buffer[end - 1] == '\t'
+            || buffer[end - 1] == '\n' || buffer[end - 1] == '\r')) {
+        --end;
+    }
+    size_t trimmed = end - start;
+
+    if (trimmed == kDiscoverLen
+        && memcmp(buffer + start, kDiscover, kDiscoverLen) == 0) {
+        return true;
+    }
+    if (trimmed == kDiscoverSpacedLen
+        && memcmp(buffer + start, kDiscoverSpaced, kDiscoverSpacedLen) == 0) {
+        return true;
+    }
+    return false;
+}
+
+void handleDiscoveryRequests()
+{
+    while (gDiscoveryFd >= 0) {
+        char buffer[kDiscoveryRequestBufferSize];
+        sockaddr_in sender;
+        socklen_t senderLen = sizeof(sender);
+
+        ssize_t bytesReceived = recvfrom(gDiscoveryFd,
+            buffer,
+            sizeof(buffer),
+            MSG_DONTWAIT,
+            reinterpret_cast<sockaddr*>(&sender),
+            &senderLen);
+        if (bytesReceived < 0) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                debug_printf("companion: discovery recv error: %d\n", errno);
+                disableDiscoverySocket("recv error");
+            }
+            return;
+        }
+
+        if (bytesReceived == 0) {
+            // Zero-length UDP datagram. Nothing to parse; drop it.
+            continue;
+        }
+
+        if (!isDiscoveryRequest(buffer, static_cast<size_t>(bytesReceived))) {
+            // Drop silently. Replying to arbitrary UDP traffic would
+            // turn the server into a reflector.
+            continue;
+        }
+
+        std::string reply = companionBuildAnnounce(gBindHost);
+        if (reply.empty()) {
+            disableDiscoverySocket("announce formatting failure");
+            return;
+        }
+
+        ssize_t bytesSent = sendto(gDiscoveryFd,
+            reply.data(),
+            reply.size(),
+            0,
+            reinterpret_cast<sockaddr*>(&sender),
+            senderLen);
+        if (bytesSent < 0 || static_cast<size_t>(bytesSent) != reply.size()) {
+            debug_printf("companion: discovery send failed: %d\n", errno);
+            // Don't tear down on a single failed reply; the next request
+            // may succeed. Tear down only on a hard error path.
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                disableDiscoverySocket("send failed");
+                return;
+            }
+        }
+    }
+}
+
+// Bind a UDP listener on the same address:port as the TCP listener. TCP
+// and UDP coexist on the same port number; the kernel routes by protocol.
+// SO_REUSEADDR is set to survive quick restarts. On any failure the TCP
+// listener is left untouched; discovery is a non-essential feature.
+void initDiscoverySocket()
+{
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        debug_printf("companion: discovery socket() failed: %d\n", errno);
+        return;
+    }
+
+    int yes = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0) {
+        debug_printf("companion: discovery setsockopt SO_REUSEADDR failed: %d\n", errno);
+        close(fd);
+        return;
+    }
+
+    if (!setNonBlocking(fd)) {
+        debug_printf("companion: discovery set non-blocking failed: %d\n", errno);
+        close(fd);
+        return;
+    }
+
+    sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(kListenPort);
+    if (inet_pton(AF_INET, gBindHost.c_str(), &addr.sin_addr) != 1) {
+        debug_printf("companion: discovery bind parse failed: %s\n", gBindHost.c_str());
+        close(fd);
+        return;
+    }
+    if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+        debug_printf("companion: discovery bind %s:%d failed: %d\n",
+            gBindHost.c_str(), kListenPort, errno);
+        close(fd);
+        return;
+    }
+
+    gDiscoveryFd = fd;
+    debug_printf("companion: discovery enabled (bind=%s, port=%d)\n",
+        gBindHost.c_str(), kListenPort);
+}
+
 } // namespace
 
 // debug_register_env() is never called from anywhere in this engine's init
@@ -666,6 +884,7 @@ bool companionServerInit()
     }
 
     gListenerFd = fd;
+    initDiscoverySocket();
     resetConnectionState();
     gServerState = ServerState::Listening;
     debug_printf("companion: enabled (bind=%s, port=%d)\n", gBindHost.c_str(), kListenPort);
@@ -688,6 +907,10 @@ void companionServerExit()
     }
 
     closeConnection();
+    if (gDiscoveryFd >= 0) {
+        debug_printf("companion: discovery closed\n");
+    }
+    closeFd(&gDiscoveryFd);
     closeFd(&gListenerFd);
     gServerState = ServerState::Disabled;
     companionResetItemCatalog();
@@ -699,6 +922,8 @@ void companionServerTick(unsigned int now)
     if (gServerState == ServerState::Disabled) {
         return;
     }
+
+    handleDiscoveryRequests();
 
     acceptPendingClients();
     if (!hasClient()) {

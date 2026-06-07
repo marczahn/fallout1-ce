@@ -2,12 +2,20 @@
 // All field names use camelCase; type identifiers and kind strings are
 // lowercase or dot-namespaced.
 //
-// Client -> server:
+// Client -> server (TCP):
 //   {"type":"auth","password":"<string>"}   handshake; must be the first message
 //   {"type":"hello"}              post-auth handshake; second message
 //   {"type":"get_snapshot"}       request a full snapshot
 //   {"type":"cmd","id":N,"name":"X","args":{...}}
 //                                          step-2 command channel (T6)
+//
+// Client -> server (UDP, autodiscovery, T7):
+//   {"type":"discover"}           sent to the configured discovery port
+//                                 (28080); the server replies with one
+//                                 `announce` datagram to the sender. The
+//                                 client uses the announce's host/port
+//                                 to open the TCP session, then runs the
+//                                 normal auth/hello handshake.
 //
 // Server -> client:
 //   {"type":"world","schemaVersion":3,"game":"fallout1-ce","playerAvailable":bool}
@@ -63,6 +71,7 @@
 #include "companion_protocol.h"
 
 #include <stdarg.h>
+#include <limits.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -76,9 +85,11 @@ namespace {
 constexpr char kHello[] = R"({"type":"hello"})";
 constexpr char kGetSnapshot[] = R"({"type":"get_snapshot"})";
 constexpr char kAuthPrefix[] = R"({"type":"auth")";
+constexpr char kCmdPrefix[] = R"({"type":"cmd")";
 constexpr size_t kHelloLen = sizeof(kHello) - 1;
 constexpr size_t kGetSnapshotLen = sizeof(kGetSnapshot) - 1;
 constexpr size_t kAuthPrefixLen = sizeof(kAuthPrefix) - 1;
+constexpr size_t kCmdPrefixLen = sizeof(kCmdPrefix) - 1;
 
 constexpr char kVitalsKind[] = "player.vitals";
 constexpr char kLocalLocationKind[] = "player.local_location";
@@ -155,6 +166,137 @@ std::string buildInventoryPayload(const CompanionInventorySnapshot& inventory)
     return body;
 }
 
+void skipWhitespace(const char*& p, const char* end)
+{
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
+        ++p;
+    }
+}
+
+bool parseJsonStringView(const char*& p, const char* end, std::string_view& out)
+{
+    skipWhitespace(p, end);
+    if (p >= end || *p != '"') {
+        return false;
+    }
+
+    const char* valueStart = ++p;
+    while (p < end) {
+        if (*p == '\\') {
+            return false;
+        }
+        if (*p == '"') {
+            out = std::string_view(valueStart, static_cast<size_t>(p - valueStart));
+            ++p;
+            return true;
+        }
+        ++p;
+    }
+
+    return false;
+}
+
+bool parseJsonInt32(const char*& p, const char* end, int& out)
+{
+    skipWhitespace(p, end);
+    if (p >= end) {
+        return false;
+    }
+
+    bool negative = false;
+    if (*p == '-') {
+        negative = true;
+        ++p;
+    }
+
+    if (p >= end || *p < '0' || *p > '9') {
+        return false;
+    }
+
+    long long value = 0;
+    while (p < end && *p >= '0' && *p <= '9') {
+        value = value * 10 + (*p - '0');
+        long long signedValue = negative ? -value : value;
+        if (signedValue < INT_MIN || signedValue > INT_MAX) {
+            return false;
+        }
+        ++p;
+    }
+
+    out = negative ? -static_cast<int>(value) : static_cast<int>(value);
+    return true;
+}
+
+bool skipJsonValue(const char*& p, const char* end)
+{
+    skipWhitespace(p, end);
+    if (p >= end) {
+        return false;
+    }
+
+    if (*p == '"') {
+        std::string_view ignored;
+        return parseJsonStringView(p, end, ignored);
+    }
+
+    if (*p == '{' || *p == '[') {
+        char open = *p;
+        char close = open == '{' ? '}' : ']';
+        int depth = 0;
+
+        while (p < end) {
+            if (*p == '"') {
+                std::string_view ignored;
+                if (!parseJsonStringView(p, end, ignored)) {
+                    return false;
+                }
+                continue;
+            }
+
+            if (*p == open) {
+                ++depth;
+            } else if (*p == close) {
+                --depth;
+                ++p;
+                if (depth == 0) {
+                    return true;
+                }
+                continue;
+            }
+
+            ++p;
+        }
+
+        return false;
+    }
+
+    if ((*p >= '0' && *p <= '9') || *p == '-') {
+        int ignored;
+        return parseJsonInt32(p, end, ignored);
+    }
+
+    static constexpr char kTrue[] = "true";
+    static constexpr char kFalse[] = "false";
+    static constexpr char kNull[] = "null";
+    if (static_cast<size_t>(end - p) >= sizeof(kTrue) - 1
+        && memcmp(p, kTrue, sizeof(kTrue) - 1) == 0) {
+        p += sizeof(kTrue) - 1;
+        return true;
+    }
+    if (static_cast<size_t>(end - p) >= sizeof(kFalse) - 1
+        && memcmp(p, kFalse, sizeof(kFalse) - 1) == 0) {
+        p += sizeof(kFalse) - 1;
+        return true;
+    }
+    if (static_cast<size_t>(end - p) >= sizeof(kNull) - 1
+        && memcmp(p, kNull, sizeof(kNull) - 1) == 0) {
+        p += sizeof(kNull) - 1;
+        return true;
+    }
+
+    return false;
+}
+
 } // namespace
 
 std::string companionBuildWorld(bool playerAvailable)
@@ -172,10 +314,8 @@ std::string companionBuildWorld(bool playerAvailable)
     return std::string(buffer, static_cast<size_t>(n));
 }
 
-std::string companionBuildSnapshot(unsigned int seq, const CompanionSnapshot& snapshot)
+std::string companionBuildSnapshotPayload(const CompanionSnapshot& snapshot)
 {
-    const char* flag = snapshot.hasPlayer ? "true" : "false";
-
     std::string inner;
     inner.reserve(1024);
     bool first = true;
@@ -267,6 +407,22 @@ std::string companionBuildSnapshot(unsigned int seq, const CompanionSnapshot& sn
         }
     }
 
+    std::string payload;
+    payload.reserve(inner.size() + 2);
+    payload.push_back('{');
+    payload.append(inner);
+    payload.push_back('}');
+    return payload;
+}
+
+std::string companionBuildSnapshot(unsigned int seq, const CompanionSnapshot& snapshot)
+{
+    const char* flag = snapshot.hasPlayer ? "true" : "false";
+    std::string payload = companionBuildSnapshotPayload(snapshot);
+    if (payload.empty()) {
+        return std::string();
+    }
+
     char prefix[96];
     int prefixLen = snprintf(prefix,
         sizeof(prefix),
@@ -278,9 +434,9 @@ std::string companionBuildSnapshot(unsigned int seq, const CompanionSnapshot& sn
     }
 
     std::string message;
-    message.reserve(static_cast<size_t>(prefixLen) + inner.size() + 4);
+    message.reserve(static_cast<size_t>(prefixLen) + payload.size() + 3);
     message.append(prefix, static_cast<size_t>(prefixLen));
-    message.append(inner);
+    message.append(payload.data() + 1, payload.size() - 2);
     message.append("}}\n");
     return message;
 }
@@ -408,6 +564,48 @@ std::string companionBuildPlayerUnavailable(unsigned int seq)
     return std::string(buffer, static_cast<size_t>(n));
 }
 
+std::string companionBuildCmdAck(int id,
+    bool ok,
+    const char* error,
+    std::string_view data)
+{
+    char prefix[96];
+    int prefixLen = snprintf(prefix,
+        sizeof(prefix),
+        R"({"type":"cmd_ack","id":%d,"ok":%s)",
+        id,
+        ok ? "true" : "false");
+    if (prefixLen < 0 || static_cast<size_t>(prefixLen) >= sizeof(prefix)) {
+        return std::string();
+    }
+
+    std::string message;
+    message.reserve(static_cast<size_t>(prefixLen) + data.size() + 64);
+    message.append(prefix, static_cast<size_t>(prefixLen));
+    if (error != nullptr) {
+        message.append(R"(,"error":")");
+        message.append(error);
+        message.push_back('"');
+    }
+    if (!data.empty()) {
+        message.append(R"(,"data":)");
+        message.append(data);
+    }
+    message.append("}\n");
+    return message;
+}
+
+std::string companionBuildAnnounce(std::string_view host)
+{
+    std::string message;
+    message.reserve(host.size() + 96);
+    message.append(R"({"type":"announce","game":"fallout1-ce","schemaVersion":3,"host":")");
+    message.append(host);
+    message.append(R"(","port":28080,"authRequired":true})"
+                   "\n");
+    return message;
+}
+
 CompanionClientMessage companionParseClientMessage(const char* line, size_t length)
 {
     if (line == nullptr || length == 0) {
@@ -442,6 +640,16 @@ CompanionClientMessage companionParseClientMessage(const char* line, size_t leng
     if (length - start >= kAuthPrefixSpacedLen
         && memcmp(line + start, kAuthPrefixSpaced, kAuthPrefixSpacedLen) == 0) {
         return CompanionClientMessage::Auth;
+    }
+    if (length - start >= kCmdPrefixLen
+        && memcmp(line + start, kCmdPrefix, kCmdPrefixLen) == 0) {
+        return CompanionClientMessage::Cmd;
+    }
+    static constexpr char kCmdPrefixSpaced[] = R"({"type": "cmd")";
+    constexpr size_t kCmdPrefixSpacedLen = sizeof(kCmdPrefixSpaced) - 1;
+    if (length - start >= kCmdPrefixSpacedLen
+        && memcmp(line + start, kCmdPrefixSpaced, kCmdPrefixSpacedLen) == 0) {
+        return CompanionClientMessage::Cmd;
     }
 
     char stripped[64];
@@ -569,6 +777,103 @@ bool companionExtractAuthPassword(const char* line, size_t length, std::string_v
     }
 
     return true;
+}
+
+bool companionExtractCommandRequest(const char* line,
+    size_t length,
+    CompanionCommandRequest& outRequest)
+{
+    if (line == nullptr || length == 0) {
+        return false;
+    }
+
+    const char* p = line;
+    const char* end = line + length;
+    skipWhitespace(p, end);
+    if (p >= end || *p != '{') {
+        return false;
+    }
+    ++p;
+
+    bool sawType = false;
+    bool sawId = false;
+    bool sawName = false;
+
+    while (true) {
+        skipWhitespace(p, end);
+        if (p >= end) {
+            return false;
+        }
+
+        if (*p == '}') {
+            ++p;
+            break;
+        }
+
+        std::string_view key;
+        if (!parseJsonStringView(p, end, key)) {
+            return false;
+        }
+
+        skipWhitespace(p, end);
+        if (p >= end || *p != ':') {
+            return false;
+        }
+        ++p;
+
+        if (key == "type") {
+            std::string_view type;
+            if (!parseJsonStringView(p, end, type) || type != "cmd") {
+                return false;
+            }
+            sawType = true;
+        } else if (key == "id") {
+            if (!parseJsonInt32(p, end, outRequest.id)) {
+                return false;
+            }
+            sawId = true;
+        } else if (key == "name") {
+            if (!parseJsonStringView(p, end, outRequest.name)) {
+                return false;
+            }
+            sawName = true;
+        } else if (key == "args") {
+            const char* valueStart = p;
+            skipWhitespace(valueStart, end);
+            if (valueStart >= end || *valueStart != '{') {
+                return false;
+            }
+            p = valueStart;
+            if (!skipJsonValue(p, end)) {
+                return false;
+            }
+        } else {
+            if (!skipJsonValue(p, end)) {
+                return false;
+            }
+        }
+
+        skipWhitespace(p, end);
+        if (p >= end) {
+            return false;
+        }
+        if (*p == ',') {
+            ++p;
+            continue;
+        }
+        if (*p == '}') {
+            ++p;
+            break;
+        }
+        return false;
+    }
+
+    skipWhitespace(p, end);
+    if (p != end) {
+        return false;
+    }
+
+    return sawType && sawId && sawName;
 }
 
 } // namespace fallout

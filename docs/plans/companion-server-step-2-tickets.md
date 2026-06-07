@@ -51,7 +51,7 @@ These are the facts each ticket depends on. Step 1's verified facts (`obj_dude`,
 8. **Inventory model (T4 contract).** Flat array of `{id, count, equipped}`. No slots, no weight, no condition, no ordering beyond "as returned by the engine iterator." The array is the full inventory on every `snapshot` and on every `update` (T0 "always full" principle applies to T4 as well; see Decision #13).
 9. **Inventory change detection.** T5 emits one `update` per kind (`player.inventory`) whose `payload` is the full inventory array. The server's diff against its `lastSent` decides whether to call the builder; the protocol layer is pure formatting. If the inventory iterator is not stable across calls, T5 falls back to comparing the full arrays per slot and emitting on any change, and the ticket is marked partial.
 10. **Commands (T6 contract).** Server accepts `{"type":"cmd","id":N,"name":"X","args":{...}}` and replies with `{"type":"cmd_ack","id":N,"ok":true|false,"error":"..."}`. The initial allowlist is exactly two commands: `ping` (no args, always ok) and `get_snapshot` (no args, behaves like the step-1 client message). This validates the command channel end-to-end without inventing new engine behavior.
-11. **UDP discovery (T7 contract).** Server broadcasts `{"type":"announce","game":"fallout1-ce","schemaVersion":2,"host":"<bind host>","port":28080,"authRequired":true}\n` to `255.255.255.255:28080` once per second, only when a client is **not** currently connected. The `host` field is the value of `companion_bind`. `authRequired` is unconditionally `true` (the only enabled mode is auth-required). The password is **never** broadcast; clients must obtain the password through a separate channel (today: read it from the host's `fallout.cfg`). Discovery is a hint, not a substitute for the password.
+11. **UDP discovery (T7 contract).** Server listens for UDP `{"type":"discover"}` datagrams on `<bind host>:28080` (same address/port as the TCP listener). On each valid `discover` it replies with one `{"type":"announce","game":"fallout1-ce","schemaVersion":3,"host":"<bind host>","port":28080,"authRequired":true}\n` datagram to the sender. Anything else received on the UDP socket is silently dropped (no reflector behavior). The `host` field is the value of `companion_bind`. `authRequired` is unconditionally `true` (the only enabled mode is auth-required). The password is **never** sent in the announce; clients must obtain the password through a separate channel (today: read it from the host's `fallout.cfg`). Discovery is a hint, not a substitute for the password.
 12. **Slow-consumer policy.** Unchanged from step 1. The 256 KiB outbound cap applies to all new message types. UDP is a separate concern: T7 uses fire-and-forget `sendto` and does not maintain a per-client outbound buffer for discovery.
 13. **T0 protocol shape (the design this milestone implements).** Every server-to-client message except `world`, `player_unavailable`, `cmd_ack`, and `announce` carries a `payload` object whose schema is determined by a `kind` string. `update` adds a top-level `kind`; `snapshot` is a `payload` that is itself a kind→object map. The `entity` field is removed. Kinds are namespaced as `player.<aspect>`. The current set: `player.vitals`, `player.local_location`, `player.world_location`; `player.inventory` is added by T4. `world.schemaVersion` is `3`. **Every `update.payload` is the complete per-kind object (T0 refinement).** The server compares each tick's sample to a `lastSent: CompanionSnapshot` and calls a builder only when a kind's fields (or, for location kinds, the current surface) differ. A surface change force-emits the new kind's update even if its numeric fields match the stale `lastSent` (which holds the other surface's data). Future kinds follow the same pattern: one builder per kind, one `lastSent` slot, server-side diff.
 
@@ -622,41 +622,41 @@ Notes on the table:
 
 ---
 
-### T7 — UDP Discovery Broadcast
+### T7 — UDP Discovery (Request/Reply)
 
-**Status:** pending
+**Status:** implemented
 
-**Goal:** The server periodically broadcasts a small JSON announce packet over UDP so a companion client on the same LAN can find it. The packet tells the client whether auth is required. The password is **never** broadcast.
+**Goal:** The server passively listens for UDP `{"type":"discover"}` datagrams on the same address:port as the TCP listener and replies with a single `announce` datagram so a companion client on the same LAN can find it. The exchange is request/reply, not broadcast. The password is **never** sent over UDP.
 
 **Scope:**
 - New code path in `src/companion_server.cc`:
-  - Create a UDP socket in `companionServerInit`, set `SO_BROADCAST`, bind to an ephemeral port. On any failure, log and continue with the discovery socket in a `disabled` state — TCP behavior is unaffected.
-  - In `companionServerTick`, when the server is `listening` (no client currently connected), broadcast the announce packet to `255.255.255.255:28080` at most once per second. Stop broadcasting while a client is connected.
+  - Create a UDP socket in `companionServerInit`, set `SO_REUSEADDR`, set non-blocking, and bind to `<companion_bind>:28080`. On any failure, log and continue with the discovery socket disabled — TCP behavior is unaffected.
+  - In `companionServerTick`, drain the UDP socket with non-blocking `recvfrom` calls before handling TCP. For each datagram that exactly matches `{"type":"discover"}` (whitespace-tolerant), reply with one `announce` datagram via `sendto` to the sender. Anything else is silently dropped to avoid reflector behavior.
   - Close the UDP socket in `companionServerExit`.
-- `companion_protocol` adds a new builder for the announce payload:
-  - `{"type":"announce","game":"fallout1-ce","schemaVersion":2,"host":"<bind host>","port":28080,"authRequired":true}\n`
-  - `host` is the value of `companion_bind` from `fallout.cfg` (e.g., `0.0.0.0`, `127.0.0.1`, a LAN address). The client uses this to know which interface to connect to.
+- `companion_protocol` exposes the announce builder:
+  - `{"type":"announce","game":"fallout1-ce","schemaVersion":3,"host":"<bind host>","port":28080,"authRequired":true}\n`
+  - `host` is the value of `companion_bind` from `fallout.cfg`.
   - `authRequired` is unconditionally `true`. The server is enabled only with a password, so the auth path is always on.
   - No password field, ever. Clients must obtain the password through a separate channel (today: read it from the host's `fallout.cfg`).
-- The broadcast is fire-and-forget. No receive loop, no per-client buffer, no error recovery beyond "log and disable the UDP socket."
-- The broadcast is rate-limited at the source: one packet per second while idle. The `companionServerTick` is the natural place to do this without a timer thread.
+- The reply is fire-and-forget. No per-client buffer.
+- No fixed cadence; the server only emits an announce in response to a valid request.
 - Logging: one log line when the discovery socket is created, one when it is closed. No per-packet log.
 
 **Acceptance:**
-- `nc -u -l 28080` on the same machine as the game receives the announce packet within 1 second of game launch (with no client connected).
-- The announce packet is a single line of valid JSON matching the schema above.
-- `authRequired` is `true` whenever the server is in `Listening`. The server is never in `Listening` without a configured password, so the field is effectively unconditional. The packet is not sent when the server is in `disabled`.
-- The packet does not contain a password field. (Verified by grep.)
-- When a TCP client connects, the announce broadcast stops. When the client disconnects, the broadcast resumes within 1 second.
-- The discovery socket can be disabled (by, e.g., a `SO_BROADCAST` permission failure) without affecting the TCP server. The game still starts and runs.
-- `nc -u -l 28080` on a different host on the same LAN receives the announce.
+- With the game running, sending `{"type":"discover"}` via UDP to `<bind host>:28080` (e.g., `echo '{"type":"discover"}' | nc -u -w1 <bind host> 28080`) returns one valid `announce` JSON line.
+- The announce reply matches the schema above and contains no password field.
+- A non-discover UDP payload sent to the same port produces no reply.
+- The exchange works whether or not a TCP client is currently connected.
+- The discovery socket can fail to bind (e.g., port in use) without affecting the TCP server. The game still starts and runs.
+- An attempt to broadcast the request to the LAN (e.g., `255.255.255.255:28080`) gets a unicast reply from each server that received it.
 
 **Notes:**
 - This is the only piece of milestone 2 that adds a new transport. The justification is that the bind host is now user-configured, which makes the server harder to find from a LAN peer without discovery; the announce lets a client learn the host, port, and auth requirement without trial-and-error.
-- No client→server UDP. UDP is one-way.
-- The broadcast address (`255.255.255.255`) and port (`28080`) are hardcoded. Multicast is out of scope. A future step can add a configurable discovery port if needed.
+- TCP cannot do broadcast/multicast (no defined semantics for broadcast SYN). UDP is the only practical LAN-discovery transport without external infra.
+- The request/reply shape was chosen over periodic broadcast because it avoids idle LAN noise and keeps the server passive: no announce goes out unless asked for. The cost is that the companion app needs an outbound UDP send and an inbound UDP recv.
+- The discovery port (`28080`) is shared with TCP. Different protocols on the same port number is well-defined; the kernel routes by protocol.
 - The `host` field in the announce is the bind host, not the resolved client-visible address. A client receiving the announce on a multi-homed host still does not know which interface to use; that is a client problem, not a server one.
-- A client that connects in the wrong mode (e.g., sends `hello` first when the server is in `awaiting_auth`) is dropped per T1's contract. The client should use the announce to pick the right mode.
+- A client that connects in the wrong mode (e.g., sends `hello` first when the server is in `awaiting_auth`) is dropped per T1's contract. The client should use the announce to confirm `authRequired` and run the auth path.
 
 ---
 
