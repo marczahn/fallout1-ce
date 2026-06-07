@@ -123,8 +123,7 @@ void resetConnectionState()
     gConnection.nextSeq = 1;
     gConnection.lastSampleMs = 0;
     gConnection.playerWasAvailable = false;
-    gConnection.lastSentPlayer.hp = 0;
-    gConnection.lastSentPlayer.maxHp = 0;
+    gConnection.lastSentPlayer = CompanionPlayerSnapshot{};
     gConnection.inboundLen = 0;
     gConnection.outbound.clear();
 }
@@ -268,9 +267,7 @@ void queuePlayerUnavailableMessage()
 
 void queuePlayerUpdateIfNeeded(const CompanionSnapshot& snapshot)
 {
-    const CompanionPlayerSnapshot& lastSent = gConnection.lastSentPlayer;
-    if (snapshot.player.hp == lastSent.hp
-        && snapshot.player.maxHp == lastSent.maxHp) {
+    if (companionPlayerSnapshotEquals(snapshot.player, gConnection.lastSentPlayer)) {
         return;
     }
 
@@ -278,7 +275,7 @@ void queuePlayerUpdateIfNeeded(const CompanionSnapshot& snapshot)
             nextSequence(),
             snapshot.hasPlayer,
             snapshot.player,
-            lastSent))) {
+            gConnection.lastSentPlayer))) {
         return;
     }
 

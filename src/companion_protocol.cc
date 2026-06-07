@@ -8,8 +8,12 @@
 //
 // Server -> client:
 //   {"type":"world","schemaVersion":2,"game":"fallout1-ce","playerAvailable":bool}
-//   {"type":"snapshot","seq":N,"playerAvailable":bool,"data":{"player":{"hp":H,"maxHp":M}}}
-//   {"type":"update","entity":"player","seq":N,"playerAvailable":bool,"data":{"hp":H} | {"hp":H,"maxHp":M}}
+//   {"type":"snapshot","seq":N,"playerAvailable":bool,
+//      "data":{"player":{"hp":H,"maxHp":M,"surface":"local|world",
+//                         <local fields: tile,elevation,map,location,locationId>
+//                         <world fields: x,y>}}}
+//   {"type":"update","entity":"player","seq":N,"playerAvailable":bool,
+//      "data":{<union of changed fields>}}
 //   {"type":"player_unavailable","seq":N,"playerAvailable":false}
 //
 // `world` has no `seq`. `snapshot` has no `entity`. `update` always
@@ -20,9 +24,30 @@
 // Step 2 adds `auth` as the new first message and bumps `world.schemaVersion`
 // from 1 to 2. A step-1 client that does not know `auth` is dropped at the
 // auth step (the "unknown first message" path).
+//
+// Step 3 adds surface-typed position and a localized location string.
+// The player is on exactly one of two engine surfaces:
+//   - "local": a real in-city / dungeon / vault map. Position is the
+//     engine's 1D hex-grid tile number plus elevation and map index.
+//     `location` is the localized display name from the engine's
+//     `map_get_short_name` (or JSON null when the engine has no name
+//     loaded). `locationId` is a stable, locale-independent identifier
+//     from a static table, e.g. "VAULT13" / "HUBWATER".
+//   - "world": the overland world map (including the in-world-map town
+//     picker). Position is the engine's pixel coordinates at the
+//     50-pixel-per-area scale (world_xpos, world_ypos).
+// The `data.player` object in `snapshot` includes the surface-typed
+// position fields. The `data` object in `update` is a field-level diff:
+// a surface transition emits `surface` plus the new surface's full
+// position fields; otherwise only the position fields that actually
+// changed are included. `map`, `location`, and `locationId` are
+// co-emitted on a single map transition. A step-1 / step-2 client that
+// ignores `surface`, `tile`, `elevation`, `map`, `location`,
+// `locationId`, `x`, `y` continues to work.
 
 #include "companion_protocol.h"
 
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -58,15 +83,52 @@ std::string companionBuildWorld(bool playerAvailable)
 std::string companionBuildSnapshot(unsigned int seq, const CompanionSnapshot& snapshot)
 {
     const char* flag = snapshot.hasPlayer ? "true" : "false";
-    char buffer[160];
-    int n = snprintf(buffer,
-        sizeof(buffer),
-        R"({"type":"snapshot","seq":%u,"playerAvailable":%s,"data":{"player":{"hp":%d,"maxHp":%d}}})"
-        "\n",
-        seq,
-        flag,
-        snapshot.player.hp,
-        snapshot.player.maxHp);
+    const CompanionPlayerSnapshot& p = snapshot.player;
+    char buffer[320];
+    int n;
+    if (snapshot.hasPlayer && p.surface == CompanionPlayerSurface::World) {
+        n = snprintf(buffer,
+            sizeof(buffer),
+            R"({"type":"snapshot","seq":%u,"playerAvailable":%s,"data":{"player":{"hp":%d,"maxHp":%d,"surface":"world","x":%d,"y":%d}}})"
+            "\n",
+            seq,
+            flag,
+            p.hp,
+            p.maxHp,
+            p.worldX,
+            p.worldY);
+    } else if (p.location[0] == '\0') {
+        // Local surface, no localized name available. `location` is JSON
+        // null. `locationId` is empty (no player loaded) or the stable
+        // identifier (player loaded, just no name string).
+        n = snprintf(buffer,
+            sizeof(buffer),
+            R"({"type":"snapshot","seq":%u,"playerAvailable":%s,"data":{"player":{"hp":%d,"maxHp":%d,"surface":"local","tile":%d,"elevation":%d,"map":%d,"location":null,"locationId":"%s"}}})"
+            "\n",
+            seq,
+            flag,
+            p.hp,
+            p.maxHp,
+            p.tile,
+            p.elevation,
+            p.map,
+            p.locationId);
+    } else {
+        // Local surface with a localized name.
+        n = snprintf(buffer,
+            sizeof(buffer),
+            R"({"type":"snapshot","seq":%u,"playerAvailable":%s,"data":{"player":{"hp":%d,"maxHp":%d,"surface":"local","tile":%d,"elevation":%d,"map":%d,"location":"%s","locationId":"%s"}}})"
+            "\n",
+            seq,
+            flag,
+            p.hp,
+            p.maxHp,
+            p.tile,
+            p.elevation,
+            p.map,
+            p.location,
+            p.locationId);
+    }
     if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
         return std::string();
     }
@@ -79,28 +141,117 @@ std::string companionBuildPlayerUpdate(unsigned int seq,
     const CompanionPlayerSnapshot& lastSent)
 {
     const char* flag = playerAvailable ? "true" : "false";
-    char buffer[160];
-    int n = 0;
+
+    // Build the inner `data` object as a flat field-level diff. The buffer
+    // is sized for the worst case (surface transition plus HP plus both
+    // maxHp plus both world coords, plus a couple of commas).
+    char dataBuf[256];
+    int dataLen = 0;
+    bool first = true;
+
+    auto appendField = [&](const char* fmt, ...) -> bool {
+        char tmp[96];
+        va_list args;
+        va_start(args, fmt);
+        int n = vsnprintf(tmp, sizeof(tmp), fmt, args);
+        va_end(args);
+        if (n < 0) {
+            return false;
+        }
+        if (dataLen + n + 2 >= static_cast<int>(sizeof(dataBuf))) {
+            return false;
+        }
+        if (!first) {
+            dataBuf[dataLen++] = ',';
+        }
+        memcpy(dataBuf + dataLen, tmp, static_cast<size_t>(n));
+        dataLen += n;
+        first = false;
+        return true;
+    };
+
+    // HP / maxHp diff. Match the step-1 rule: emit both only when maxHp
+    // changed; emit hp alone otherwise.
     if (current.maxHp != lastSent.maxHp) {
-        n = snprintf(buffer,
-            sizeof(buffer),
-            R"({"type":"update","entity":"player","seq":%u,"playerAvailable":%s,"data":{"hp":%d,"maxHp":%d}})"
-            "\n",
-            seq,
-            flag,
-            current.hp,
-            current.maxHp);
+        if (!appendField(R"("hp":%d,"maxHp":%d)", current.hp, current.maxHp)) {
+            return std::string();
+        }
     } else if (current.hp != lastSent.hp) {
-        n = snprintf(buffer,
-            sizeof(buffer),
-            R"({"type":"update","entity":"player","seq":%u,"playerAvailable":%s,"data":{"hp":%d}})"
-            "\n",
-            seq,
-            flag,
-            current.hp);
+        if (!appendField(R"("hp":%d)", current.hp)) {
+            return std::string();
+        }
+    }
+
+    if (current.surface != lastSent.surface) {
+        // Surface transition: emit `surface` and the new surface's full
+        // position fields. The old surface's fields are no longer
+        // meaningful on the wire.
+        if (current.surface == CompanionPlayerSurface::World) {
+            if (!appendField(R"("surface":"world","x":%d,"y":%d)",
+                    current.worldX, current.worldY)) {
+                return std::string();
+            }
+        } else {
+            if (!appendField(R"("surface":"local","tile":%d,"elevation":%d,"map":%d)",
+                    current.tile, current.elevation, current.map)) {
+                return std::string();
+            }
+        }
+    } else if (current.surface == CompanionPlayerSurface::Local) {
+        if (current.tile != lastSent.tile) {
+            if (!appendField(R"("tile":%d)", current.tile)) {
+                return std::string();
+            }
+        }
+        if (current.elevation != lastSent.elevation) {
+            if (!appendField(R"("elevation":%d)", current.elevation)) {
+                return std::string();
+            }
+        }
+        if (current.map != lastSent.map) {
+            // `map` only changes on map transitions. Co-emit `location`
+            // and `locationId` because they are derived from the same
+            // transition. `location` is JSON null when the engine has no
+            // name (e.g. map.msg not loaded); `locationId` is always a
+            // quoted string from our static table.
+            if (current.location[0] == '\0') {
+                if (!appendField(R"("map":%d,"location":null,"locationId":"%s")",
+                        current.map, current.locationId)) {
+                    return std::string();
+                }
+            } else {
+                if (!appendField(R"("map":%d,"location":"%s","locationId":"%s")",
+                        current.map, current.location, current.locationId)) {
+                    return std::string();
+                }
+            }
+        }
     } else {
+        if (current.worldX != lastSent.worldX) {
+            if (!appendField(R"("x":%d)", current.worldX)) {
+                return std::string();
+            }
+        }
+        if (current.worldY != lastSent.worldY) {
+            if (!appendField(R"("y":%d)", current.worldY)) {
+                return std::string();
+            }
+        }
+    }
+
+    if (first) {
         return std::string();
     }
+
+    char buffer[320];
+    int n = snprintf(buffer,
+        sizeof(buffer),
+        R"({"type":"update","entity":"player","seq":%u,"playerAvailable":%s,"data":{%.*s}})"
+        "\n",
+        seq,
+        flag,
+        dataLen,
+        dataBuf);
     if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
         return std::string();
     }

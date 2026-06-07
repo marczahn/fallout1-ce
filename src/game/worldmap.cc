@@ -3773,4 +3773,14 @@ bool worldMapIsActive()
     return wwin_flag != 0;
 }
 
+bool worldMapGetPlayerPosition(int* x, int* y)
+{
+    if (x == nullptr || y == nullptr) {
+        return false;
+    }
+    *x = world_xpos;
+    *y = world_ypos;
+    return true;
+}
+
 } // namespace fallout

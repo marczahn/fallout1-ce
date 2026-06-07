@@ -168,6 +168,14 @@ int PlayCityMapMusic();
 // periods the town map picker is shown.
 bool worldMapIsActive();
 
+// Reads the player's current world map position into `*x` and `*y`.
+// Returns true on success, false if either pointer is null. The values
+// are pixel coordinates at the 50-pixel-per-area scale used internally
+// by the world map; clients typically divide by 50 to get the area
+// (hex cell) the player is in. Backed by the file-static `world_xpos`
+// and `world_ypos` in `worldmap.cc`.
+bool worldMapGetPlayerPosition(int* x, int* y);
+
 } // namespace fallout
 
 #endif /* FALLOUT_GAME_WORLDMAP_H_ */
