@@ -12,11 +12,17 @@ from companion_app.render import background
 BOOT_CURSOR_HOLD_MS: int = 3000
 REDIRECT_HOLD_MS: int = 1200
 BOOT_TRANSCRIPT: tuple[str, ...] = (
-    'ROBCO TERM BIOS V1.3',
-    'PIP-BOY 2000 MK I.....OK',
-    'CRT MATRIX............OK',
-    'MEMORY BANKS..........64K',
-    'LINK INTERFACE........READY',
+    '********** PIP-05 (R) V7.1.0.8 **********',
+    '',
+    '',
+    '',
+    'COPYRIGHT 2075 ROBCO (R)',
+    'LOADER 1.1',
+    'EXEC VERSION 41.10',
+    '64KB RAM SYSTEM',
+    '38911 BYTES FREE',
+    'NO HOLOTAPE FOUND',
+    'LOAD ROM(1): DEITRIX 303'
 )
 REDIRECT_LINE = 'REDIRECTING TO STATUS PAGE'
 
