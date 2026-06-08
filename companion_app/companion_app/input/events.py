@@ -19,7 +19,7 @@ are allowed to flow through this surface.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Union
+from typing import Callable, Union
 
 
 @dataclass(frozen=True)
@@ -58,7 +58,7 @@ InputEvent = Union[
 
 # Map event-name strings (as used in the config keymap) to the
 # factory that produces the corresponding InputEvent instance.
-_EVENT_FACTORIES = {
+_EVENT_FACTORIES: dict[str, Callable[[], InputEvent]] = {
     "PageButton1": lambda: PageButtonEvent(1),
     "PageButton2": lambda: PageButtonEvent(2),
     "PageButton3": lambda: PageButtonEvent(3),

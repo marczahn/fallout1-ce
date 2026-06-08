@@ -15,7 +15,7 @@ from companion_app.config import (
     ConfigError,
     load_and_resolve_config,
 )
-from companion_app.debug.console import TypewriterConsole
+from companion_app.debug.console import CONSOLE_FONT_SIZE, TypewriterConsole
 from companion_app.debug.event_log import EventLogOverlay
 from companion_app.input.keyboard import KeyboardInput
 from companion_app.net import NetworkClient
@@ -27,12 +27,16 @@ from companion_app.render.crt import (
 from companion_app.render.font import FontLoadError, load_font
 from companion_app.state import AppState, ConnectionState
 from companion_app.ui.layout import Layout
-from companion_app.ui.pages import Page
+from companion_app.ui.pages import Page, PageRenderer
 from companion_app.ui.pages.data import DataPage
 from companion_app.ui.pages.inventory import InventoryPage
 from companion_app.ui.pages.map import MapPage
-from companion_app.ui.pages.status import StatusPage
-from companion_app.ui.shell import BODY_SIZE, HEADER_SIZE
+from companion_app.ui.pages.status import (
+    STATUS_HP_LABEL_SIZE,
+    STATUS_HP_VALUE_SIZE,
+    StatusPage,
+)
+from companion_app.ui.shell import BODY_SIZE, HEADER_SIZE, STATUS_SIZE
 
 VIRTUAL_WIDTH = 480
 VIRTUAL_HEIGHT = 800
@@ -57,7 +61,7 @@ def _body_text(state: AppState) -> str:
     empty string so the active page can draw its own content.
     """
     if state.connection is not ConnectionState.READY:
-        return "CONNECTING\u2026"
+        return "CONNECTING…"
     if not state.player.available:
         return "NO SIGNAL"
     return ""
@@ -77,7 +81,6 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 def _run_loop(config: Config) -> int:
     import pygame
 
-    # pygame is already initialized by load_and_resolve_config().
     pygame.key.set_repeat(0)
 
     scale = config.display_scale
@@ -93,13 +96,15 @@ def _run_loop(config: Config) -> int:
 
     pygame.font.init()
 
-    # Preload the Fallout webfont at all sizes used by the shell and
-    # sections, so a missing/unreadable asset aborts here (caught by
-    # main()) instead of mid-frame inside the main loop.
-    load_font(HEADER_SIZE)
-    load_font(BODY_SIZE)
-    load_font(28)
-    load_font(48)
+    for size in {
+        HEADER_SIZE,
+        BODY_SIZE,
+        STATUS_SIZE,
+        STATUS_HP_LABEL_SIZE,
+        STATUS_HP_VALUE_SIZE,
+        CONSOLE_FONT_SIZE,
+    }:
+        load_font(size)
 
     keyboard = KeyboardInput(config.keymap)
 
@@ -135,7 +140,7 @@ def _run_loop(config: Config) -> int:
 
     layout = Layout((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
 
-    _pages = {
+    _pages: dict[Page, PageRenderer] = {
         Page.STATUS: StatusPage(),
         Page.DATA: DataPage(),
         Page.INVENTORY: InventoryPage(),
@@ -146,6 +151,7 @@ def _run_loop(config: Config) -> int:
 
     running = True
     while running:
+        dt_ms = clock.tick(TARGET_FPS)
         pygame_events = pygame.event.get()
         for event in pygame_events:
             if event.type == pygame.QUIT:
@@ -164,16 +170,19 @@ def _run_loop(config: Config) -> int:
                 current_page = Page(input_event.index)
 
         net.poll()
-        typewriter.tick()
+        typewriter.tick(dt_ms)
         connection_status = _connection_status(state)
         body = _body_text(state)
-        page_name = current_page.name
 
-        layout.draw(virtual, page_name, connection_status)
+        layout.draw(virtual, current_page, connection_status)
         if state.connection is ConnectionState.READY and state.player.available:
             _pages[current_page].render(virtual, layout.content_rect, state)
         else:
             layout.draw_placeholder(virtual, body)
+
+        show_console = current_page is Page.STATUS or state.connection is not ConnectionState.READY
+        if show_console:
+            typewriter.draw(virtual, layout.console_rect)
         if vignette is not None:
             vignette.draw(virtual)
         if scanlines is not None:
@@ -182,7 +191,6 @@ def _run_loop(config: Config) -> int:
             rounded_crt.draw(virtual)
         if debug_overlay is not None:
             debug_overlay.draw(virtual)
-        typewriter.draw(virtual)
 
         if window_size == (VIRTUAL_WIDTH, VIRTUAL_HEIGHT):
             window.blit(virtual, (0, 0))
@@ -190,7 +198,6 @@ def _run_loop(config: Config) -> int:
             pygame.transform.scale(virtual, window_size, window)
 
         pygame.display.flip()
-        clock.tick(TARGET_FPS)
 
     net.cleanup()
     pygame.quit()
@@ -209,9 +216,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return _run_loop(config)
     except FontLoadError as e:
-        # Per M2 Resolved Decision 12 + acceptance criterion 9: missing
-        # font asset aborts with a one-line message and a non-zero exit,
-        # with pygame shut down cleanly.
         import pygame
         if pygame.get_init():
             pygame.quit()

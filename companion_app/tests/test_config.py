@@ -54,7 +54,7 @@ class LoadConfigTests(unittest.TestCase):
     def tearDownClass(cls) -> None:
         pygame.quit()
 
-    def _write(self, path: Path, data) -> Path:
+    def _write(self, path: Path, data: str | dict) -> Path:
         if isinstance(data, str):
             path.write_text(data, encoding="utf-8")
         else:

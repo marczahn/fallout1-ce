@@ -6,9 +6,10 @@ dispatch of inbound messages into ``AppState``.
 from __future__ import annotations
 
 import errno
+import os
 import socket
 import sys
-from typing import Any
+from typing import Any, Callable
 
 from companion_app.net.framing import encode_line, read_line
 from companion_app.state import AppState, ConnectionState
@@ -33,7 +34,7 @@ class NetworkClient:
         port: int,
         password: str,
         state: AppState,
-        log_fn: Any = None,
+        log_fn: Callable[[str], None] | None = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -112,7 +113,7 @@ class NetworkClient:
         try:
             self._sock.getpeername()
         except OSError as e:
-            err = e.args[0] if e.args else 0
+            err: int = e.args[0] if e.args else 0
             if err == errno.ENOTCONN:
                 # Still connecting — try again next frame.
                 return
@@ -155,7 +156,7 @@ class NetworkClient:
         except BlockingIOError:
             return
         except OSError as e:
-            err = e.args[0] if e.args else 0
+            err: int = e.args[0] if e.args else 0
             if err in (errno.ENOTCONN, errno.EAGAIN):
                 return
             self._on_error(f"send failed: {e}")
@@ -173,7 +174,7 @@ class NetworkClient:
         except BlockingIOError:
             return
         except OSError as e:
-            err = e.args[0] if e.args else 0
+            err: int = e.args[0] if e.args else 0
             if err in (errno.ENOTCONN, errno.EAGAIN):
                 return
             self._on_error(f"recv failed: {e}")

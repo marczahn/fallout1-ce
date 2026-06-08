@@ -28,7 +28,12 @@ class StatusPageTests(unittest.TestCase):
         self.layout = Layout((480, 800))
         self.page = StatusPage()
 
-    def _make_state(self, hp=50, max_hp=100, available=True) -> AppState:
+    def _make_state(
+        self,
+        hp: int = 50,
+        max_hp: int = 100,
+        available: bool = True,
+    ) -> AppState:
         return AppState(
             connection=ConnectionState.READY,
             player=PlayerState(available=available, hp=hp, max_hp=max_hp),

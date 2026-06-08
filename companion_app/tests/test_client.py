@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import socket
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from companion_app.net.client import NetworkClient
 from companion_app.state import AppState, ConnectionState, WorldInfo
@@ -94,7 +94,7 @@ class NetworkClientTest(unittest.TestCase):
     # ── connection lifecycle ──────────────────────────────────────
 
     @patch("companion_app.net.client.socket")
-    def test_connect_success(self, mock_socket_module) -> None:
+    def test_connect_success(self, mock_socket_module: MagicMock) -> None:
         fake = _FakeSocket()
         mock_socket_module.socket.return_value = fake
         mock_socket_module.AF_INET = socket.AF_INET
@@ -104,7 +104,7 @@ class NetworkClientTest(unittest.TestCase):
         self.assert_connection(ConnectionState.CONNECTING)
 
     @patch("companion_app.net.client.socket")
-    def test_full_handshake(self, mock_socket_module) -> None:
+    def test_full_handshake(self, mock_socket_module: MagicMock) -> None:
         fake = _FakeSocket()
         mock_socket_module.socket.return_value = fake
         mock_socket_module.AF_INET = socket.AF_INET
@@ -228,7 +228,7 @@ class NetworkClientTest(unittest.TestCase):
     # ── cleanup ───────────────────────────────────────────────────
 
     @patch("companion_app.net.client.socket")
-    def test_cleanup_resets_state(self, mock_socket_module) -> None:
+    def test_cleanup_resets_state(self, mock_socket_module: MagicMock) -> None:
         fake = _FakeSocket()
         mock_socket_module.socket.return_value = fake
         mock_socket_module.AF_INET = socket.AF_INET
