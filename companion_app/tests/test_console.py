@@ -11,6 +11,7 @@ from companion_app.debug.console import (
     ConsoleLine,
     TypewriterConsole,
 )
+from companion_app.render import palette
 
 
 class TypewriterConsoleTests(unittest.TestCase):
@@ -91,6 +92,15 @@ class TypewriterConsoleTests(unittest.TestCase):
         surface = pygame.Surface((480, 220))
         c.draw(surface)
         self.assertFalse(c.visible)
+
+    def test_draw_does_not_add_header_or_border_lines(self) -> None:
+        c = TypewriterConsole()
+        c.log("hello")
+        c.tick(CONSOLE_CHAR_INTERVAL_MS * len("hello") + 1)
+        surface = pygame.Surface((480, 220))
+        surface.fill(palette.BACKGROUND)
+        c.draw(surface, pygame.Rect(20, 20, 200, 80))
+        self.assertEqual(tuple(surface.get_at((19, 19)))[:3], palette.BACKGROUND)
 
     def test_console_line_dataclass(self) -> None:
         ln = ConsoleLine(text="test", typed_chars=2, typing_complete=False)

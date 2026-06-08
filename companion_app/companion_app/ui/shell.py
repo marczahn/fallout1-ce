@@ -1,28 +1,28 @@
 """Pip-Boy shell geometry constants.
 
-The shell now uses a compact title row plus a four-tab strip inspired
-by the Fallout 4 companion app while staying inside the monochrome
-Fallout 1 screen treatment.
+The shell uses a minimal title treatment while keeping the monochrome
+Fallout screen language.
 """
 from __future__ import annotations
 
 import pygame
 
-HEADER_HEIGHT: int = 86
+HEADER_HEIGHT: int = 56
 SEPARATOR_Y: int = HEADER_HEIGHT - 1
 
 HEADER_SIZE: int = 16
 BODY_SIZE: int = 24
 STATUS_SIZE: int = 14
+TITLE_SIZE: int = 14
 
-HEADER_LEFT_POS: tuple[int, int] = (18, 8)
-HEADER_RIGHT_POS: tuple[int, int] = (462, 8)
+HEADER_LEFT_POS: tuple[int, int] = (28, 10)
 
-TAB_START_X: int = 18
-TAB_TOP: int = 28
-TAB_WIDTH: int = 94
-TAB_HEIGHT: int = 34
-TAB_GAP: int = 8
+TAB_START_X: int = 98
+TAB_TOP: int = 10
+TAB_WIDTH: int = 56
+TAB_HEIGHT: int = 20
+TAB_GAP: int = 22
+TAB_BASELINE_Y: int = 30
 
 VIRTUAL_WIDTH: int = 480
 VIRTUAL_HEIGHT: int = 800

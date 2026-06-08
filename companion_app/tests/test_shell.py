@@ -12,13 +12,8 @@ from companion_app.ui.shell import (
     BODY_SIZE,
     HEADER_HEIGHT,
     HEADER_LEFT_POS,
-    HEADER_RIGHT_POS,
-    HEADER_SIZE,
     SEPARATOR_Y,
-    STATUS_SIZE,
-    TAB_START_X,
-    TAB_TOP,
-    TAB_WIDTH,
+    TITLE_SIZE,
     VIRTUAL_HEIGHT,
     VIRTUAL_WIDTH,
 )
@@ -37,12 +32,7 @@ class LayoutTest(unittest.TestCase):
         px = tuple(self.surface.get_at((1, 1)))[:3]
         self.assertEqual(px, palette.BACKGROUND)
 
-    def test_separator_pixel_is_dim(self) -> None:
-        self.layout.draw(self.surface, Page.STATUS, "--")
-        px = tuple(self.surface.get_at((VIRTUAL_WIDTH // 2, SEPARATOR_Y)))[:3]
-        self.assertEqual(px, palette.DIM)
-
-    def test_content_rect_starts_after_separator(self) -> None:
+    def test_content_rect_starts_after_header_band(self) -> None:
         r = self.layout.content_rect
         self.assertEqual(r.top, SEPARATOR_Y + 1)
         self.assertEqual(r.width, VIRTUAL_WIDTH)
@@ -59,31 +49,20 @@ class LayoutTest(unittest.TestCase):
         self.assertNotIn("companion_app.config", src)
         self.assertNotIn("companion_app.debug", src)
 
-    def test_header_text_rects_fall_inside_header_band(self) -> None:
+    def test_title_rect_falls_inside_header_band(self) -> None:
         from companion_app.render.font import _get_font
 
-        label_font = _get_font(STATUS_SIZE)
-        title_rect = label_font.get_rect("PIP-BOY 2000", size=STATUS_SIZE)
+        title_font = _get_font(TITLE_SIZE)
+        title_rect = title_font.get_rect("PIP-BOY 2000 Mk. 1", size=TITLE_SIZE)
         title_rect.topleft = HEADER_LEFT_POS
-        status_rect = label_font.get_rect("--", size=STATUS_SIZE)
-        status_rect.topright = HEADER_RIGHT_POS
 
         self.assertGreaterEqual(title_rect.top, 0)
         self.assertLess(title_rect.bottom, HEADER_HEIGHT)
-        self.assertGreaterEqual(status_rect.top, 0)
-        self.assertLess(status_rect.bottom, HEADER_HEIGHT)
-        self.assertEqual(status_rect.right, HEADER_RIGHT_POS[0])
 
-    def test_active_tab_border_is_bright(self) -> None:
+    def test_header_area_away_from_title_stays_background(self) -> None:
         self.layout.draw(self.surface, Page.STATUS, "OK")
-        px = tuple(self.surface.get_at((TAB_START_X, TAB_TOP)))[:3]
-        self.assertEqual(px, palette.FOREGROUND)
-
-    def test_inactive_tab_area_is_not_active_fill(self) -> None:
-        self.layout.draw(self.surface, Page.STATUS, "OK")
-        sample_x = TAB_START_X + TAB_WIDTH + 10
-        px = tuple(self.surface.get_at((sample_x, TAB_TOP + 4)))[:3]
-        self.assertNotEqual(px, palette.FOREGROUND)
+        px = tuple(self.surface.get_at((VIRTUAL_WIDTH - 40, HEADER_HEIGHT // 2)))[:3]
+        self.assertEqual(px, palette.BACKGROUND)
 
     def test_draw_placeholder_centers_text_in_content_rect(self) -> None:
         from companion_app.render.font import _get_font
@@ -92,10 +71,7 @@ class LayoutTest(unittest.TestCase):
         text_rect = body_font.get_rect("CONNECTING…", size=BODY_SIZE)
         text_rect.center = self.layout.content_rect.center
         cr = self.layout.content_rect
-        self.assertTrue(
-            cr.contains(text_rect),
-            f"placeholder text rect {text_rect} not inside content rect {cr}",
-        )
+        self.assertTrue(cr.contains(text_rect), f"placeholder text rect {text_rect} not inside content rect {cr}")
 
     def test_draw_placeholder_does_not_crash_with_empty_string(self) -> None:
         self.layout.draw_placeholder(self.surface, "")
