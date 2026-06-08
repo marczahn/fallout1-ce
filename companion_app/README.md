@@ -4,10 +4,8 @@ Python + pygame companion app for Fallout 1 CE. Renders the contents
 of a Pip-Boy 2000 Mk I-style CRT screen and consumes data from the
 in-game companion server via TCP / newline-delimited JSON.
 
-This package implements milestones **M1–M3** of
-`docs/companion_app/plans/mvp-milestones.md`: app skeleton, CRT
-screen shell, dev keyboard input, and real-time network client with
-auth handshake and auto-reconnect.
+This package implements milestones **M1–M5** of
+`docs/companion_app/plans/mvp-milestones.md`: app skeleton, CRT screen shell, dev keyboard input, network handshake, live STATUS rendering, and full MVP section navigation with placeholder DATA/INVENTORY/MAP pages.
 
 ## Requirements
 
@@ -114,14 +112,19 @@ Honored keys:
 
 ## Tests
 
-Stdlib `unittest`, no extra deps. Run from `companion_app/`:
+Stdlib `unittest`, no extra deps beyond the project dependency on `pygame`. Run from `companion_app/` with the project virtualenv:
 
 ```sh
 .venv/bin/python -m unittest discover -s tests
 ```
 
-Tests force pygame's dummy SDL drivers via `tests/__init__.py`, so
-they run headless on CI and on machines without a display.
+The page-render smoke tests are included in the suite. To run just those:
+
+```sh
+.venv/bin/python -m unittest tests.test_pages
+```
+
+Tests force pygame's dummy SDL drivers via `tests/__init__.py`, so they run headless on CI and on machines without a display.
 
 ## Fallout webfont (M2)
 

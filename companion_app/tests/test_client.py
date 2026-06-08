@@ -73,6 +73,9 @@ class NetworkClientTest(unittest.TestCase):
             state=self.state,
         )
 
+    def tearDown(self) -> None:
+        self.client.cleanup()
+
     def assert_connection(self, expected: ConnectionState) -> None:
         self.assertEqual(self.state.connection, expected)
 
