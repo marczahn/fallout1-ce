@@ -36,6 +36,7 @@ from companion_app.render.font import FontLoadError, load_font
 from companion_app.state import AppState, ConnectionState
 from companion_app.ui.layout import Layout
 from companion_app.ui.pages import Page
+from companion_app.ui.pages.boot import BootPage, BootSequence
 from companion_app.ui.pages.data import (
     DataPage,
     DataPageUiState,
@@ -59,27 +60,21 @@ TARGET_FPS = 60
 
 
 def _connection_status(state: AppState) -> str:
-    """Map the current app state to a short header status string."""
     if state.connection is ConnectionState.READY:
-        return "OK" if state.player.available else "NO SIGNAL"
+        return 'OK' if state.player.available else 'NO SIGNAL'
     if state.connection is ConnectionState.RECONNECTING:
-        return "RECONNECTING"
+        return 'RECONNECTING'
     if state.connection is not ConnectionState.DISCONNECTED:
-        return "CONNECTING"
-    return "--"
+        return 'CONNECTING'
+    return '--'
 
 
 def _body_text(state: AppState) -> str:
-    """Return the body placeholder text for the current connection state.
-
-    When the connection is READY and a player is available, returns an
-    empty string so the active page can draw its own content.
-    """
     if state.connection is not ConnectionState.READY:
-        return "CONNECTING…"
+        return 'CONNECTING…'
     if not state.player.available:
-        return "NO SIGNAL"
-    return ""
+        return 'NO SIGNAL'
+    return ''
 
 
 def _handle_data_input(
@@ -114,13 +109,29 @@ def _route_input(
     return current_page, data_ui
 
 
+def _start_network_client(
+    config: Config,
+    state: AppState,
+    typewriter: TypewriterConsole,
+) -> NetworkClient:
+    typewriter.log('UPLINK TARGET.........%s:%s' % (config.server_host, config.server_port))
+    typewriter.log('OPENING MAINTENANCE LINK')
+    return NetworkClient(
+        host=config.server_host,
+        port=config.server_port,
+        password=config.server_password,
+        state=state,
+        log_fn=typewriter.log,
+    )
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="companion_app")
+    parser = argparse.ArgumentParser(prog='companion_app')
     parser.add_argument(
-        "--config",
-        dest="config",
+        '--config',
+        dest='config',
         default=None,
-        help="Path to a JSON config file. Overrides ./companion_app.config.json.",
+        help='Path to a JSON config file. Overrides ./companion_app.config.json.',
     )
     return parser.parse_args(argv)
 
@@ -136,7 +147,7 @@ def _run_loop(config: Config) -> int:
         max(1, int(VIRTUAL_HEIGHT * scale)),
     )
     window = pygame.display.set_mode(window_size)
-    pygame.display.set_caption("Fallout CE Companion")
+    pygame.display.set_caption('Fallout CE Companion')
 
     virtual = pygame.Surface((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
     clock = pygame.time.Clock()
@@ -154,20 +165,11 @@ def _run_loop(config: Config) -> int:
         load_font(size)
 
     keyboard = KeyboardInput(config.keymap)
-
     state = AppState()
-
     typewriter = TypewriterConsole()
-    typewriter.log("companion app starting")
-    typewriter.log(f"server: {config.server_host}:{config.server_port}")
-
-    net = NetworkClient(
-        host=config.server_host,
-        port=config.server_port,
-        password=config.server_password,
-        state=state,
-        log_fn=typewriter.log,
-    )
+    boot_sequence = BootSequence()
+    boot_sequence.begin(typewriter)
+    net: NetworkClient | None = None
 
     vignette: VignetteOverlay | None = None
     if config.display_vignette:
@@ -185,6 +187,7 @@ def _run_loop(config: Config) -> int:
     if config.debug_event_log:
         debug_overlay = EventLogOverlay()
 
+    boot_page = BootPage((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
     layout = Layout((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
 
     status_page = StatusPage()
@@ -209,31 +212,49 @@ def _run_loop(config: Config) -> int:
                     typewriter.visible = not typewriter.visible
 
         input_events = keyboard.poll(pygame_events)
-        for input_event in input_events:
-            if debug_overlay is not None:
+        if boot_sequence.show_main_ui:
+            for input_event in input_events:
+                if debug_overlay is not None:
+                    debug_overlay.record(input_event)
+                current_page, data_ui = _route_input(current_page, data_ui, input_event)
+        elif debug_overlay is not None:
+            for input_event in input_events:
                 debug_overlay.record(input_event)
-            current_page, data_ui = _route_input(current_page, data_ui, input_event)
 
-        net.poll()
+        if net is not None:
+            net.poll()
         typewriter.tick(dt_ms)
+        boot_tick = boot_sequence.tick(dt_ms, typewriter)
+        if boot_tick.clear_console:
+            typewriter.clear()
+        if boot_tick.start_connect and net is None:
+            net = _start_network_client(config, state, typewriter)
+        if boot_tick.log_redirect:
+            typewriter.log('REDIRECTING TO STATUS PAGE')
+
         connection_status = _connection_status(state)
         body = _body_text(state)
 
-        layout.draw(virtual, current_page, connection_status)
-        if body:
-            layout.draw_placeholder(virtual, body)
-        elif current_page is Page.STATUS:
-            status_page.render(virtual, layout.content_rect, state)
-        elif current_page is Page.DATA:
-            data_page.render(virtual, layout.content_rect, state, data_ui)
-        elif current_page is Page.INVENTORY:
-            inventory_page.render(virtual, layout.content_rect, state)
-        else:
-            map_page.render(virtual, layout.content_rect, state)
+        if boot_sequence.show_main_ui:
+            layout.draw(virtual, current_page, connection_status)
+            if body:
+                layout.draw_placeholder(virtual, body)
+            elif current_page is Page.STATUS:
+                status_page.render(virtual, layout.content_rect, state)
+            elif current_page is Page.DATA:
+                data_page.render(virtual, layout.content_rect, state, data_ui)
+            elif current_page is Page.INVENTORY:
+                inventory_page.render(virtual, layout.content_rect, state)
+            else:
+                map_page.render(virtual, layout.content_rect, state)
 
-        show_console = current_page is Page.STATUS or state.connection is not ConnectionState.READY
-        if show_console:
-            typewriter.draw(virtual, layout.console_rect)
+            show_console = current_page is Page.STATUS or state.connection is not ConnectionState.READY
+            if show_console:
+                typewriter.draw(virtual, layout.console_rect)
+        else:
+            boot_page.render(virtual)
+            typewriter.draw(virtual, boot_page.console_rect)
+
         if vignette is not None:
             vignette.draw(virtual)
         if scanlines is not None:
@@ -250,7 +271,8 @@ def _run_loop(config: Config) -> int:
 
         pygame.display.flip()
 
-    net.cleanup()
+    if net is not None:
+        net.cleanup()
     pygame.quit()
     return 0
 
@@ -261,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_and_resolve_config(args.config)
     except ConfigError as e:
-        print(f"companion_app: config error: {e}", file=sys.stderr)
+        print(f'companion_app: config error: {e}', file=sys.stderr)
         return 2
 
     try:
@@ -270,5 +292,5 @@ def main(argv: list[str] | None = None) -> int:
         import pygame
         if pygame.get_init():
             pygame.quit()
-        print(f"companion_app: font error: {e}", file=sys.stderr)
+        print(f'companion_app: font error: {e}', file=sys.stderr)
         return 3

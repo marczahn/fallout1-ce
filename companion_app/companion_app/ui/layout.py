@@ -17,6 +17,9 @@ _CONSOLE_MARGIN_TOP = 22
 _CONSOLE_HEIGHT = 170
 _HEADER_RIGHT_MARGIN = 28
 _UNDERLINE_GAP = 4
+_CONSOLE_LABEL_GAP = 10
+_CONSOLE_RULE_PADDING = 12
+_CONSOLE_FRAME_BOTTOM_GAP = 12
 
 
 class Layout:
@@ -67,7 +70,7 @@ class Layout:
             HEADER_SIZE,
             palette.FOREGROUND,
         )
-        if connection_status and connection_status != "OK":
+        if connection_status and connection_status != 'OK':
             font.draw_text_right(
                 surface,
                 connection_status,
@@ -80,6 +83,32 @@ class Layout:
             palette.DIM,
             (title_rect.left, title_rect.bottom + _UNDERLINE_GAP),
             (title_rect.right, title_rect.bottom + _UNDERLINE_GAP),
+            1,
+        )
+        self.draw_console_frame(surface)
+
+    def draw_console_frame(self, surface: pygame.Surface) -> None:
+        label_rect = font.draw_text_left(
+            surface,
+            'CONSOLE',
+            (self._console_rect.left, self._console_rect.top),
+            HEADER_SIZE,
+            palette.DIM,
+        )
+        rule_y = label_rect.bottom + _CONSOLE_LABEL_GAP
+        pygame.draw.line(
+            surface,
+            palette.DIM,
+            (self._console_rect.left, rule_y),
+            (self._console_rect.right - _CONSOLE_RULE_PADDING, rule_y),
+            1,
+        )
+        bottom_y = self._console_rect.bottom + _CONSOLE_FRAME_BOTTOM_GAP
+        pygame.draw.line(
+            surface,
+            palette.DIM,
+            (self._console_rect.left, bottom_y),
+            (self._console_rect.right - _CONSOLE_RULE_PADDING, bottom_y),
             1,
         )
 
