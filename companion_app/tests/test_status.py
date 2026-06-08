@@ -1,4 +1,4 @@
-"""Smoke tests for the STATUS section renderer (M4).
+"""Smoke tests for the STATUS page (UI refactoring).
 
 Uses a real (offscreen) pygame Surface. No display needed.
 """
@@ -8,10 +8,12 @@ import unittest
 
 import pygame
 
-from companion_app.ui.status import draw_status
+from companion_app.state import AppState, ConnectionState, PlayerState
+from companion_app.ui.layout import Layout
+from companion_app.ui.pages.status import StatusPage
 
 
-class DrawStatusTests(unittest.TestCase):
+class StatusPageTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         pygame.init()
@@ -23,27 +25,39 @@ class DrawStatusTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.surface = pygame.Surface((480, 800))
+        self.layout = Layout((480, 800))
+        self.page = StatusPage()
 
-    def test_draws_no_signal_when_unavailable(self) -> None:
-        draw_status(self.surface, player_available=False, hp=50, max_hp=100)
-        # No crash — no assertion needed beyond not raising.
+    def _make_state(self, hp=50, max_hp=100, available=True) -> AppState:
+        return AppState(
+            connection=ConnectionState.READY,
+            player=PlayerState(available=available, hp=hp, max_hp=max_hp),
+        )
 
     def test_draws_hp_when_available(self) -> None:
-        draw_status(self.surface, player_available=True, hp=73, max_hp=100)
-        # Smoke test — verifies the function does not raise.
+        self.page.render(
+            self.surface, self.layout.content_rect, self._make_state(hp=73, max_hp=100),
+        )
 
     def test_draws_hp_with_zero_values(self) -> None:
-        draw_status(self.surface, player_available=True, hp=0, max_hp=0)
-        # Edge case: dead character.
+        self.page.render(
+            self.surface, self.layout.content_rect, self._make_state(hp=0, max_hp=0),
+        )
 
-    def test_draws_hp_max_hp_zero_still_renders(self) -> None:
-        draw_status(self.surface, player_available=True, hp=100, max_hp=100)
-        # Full health.
+    def test_draws_hp_full_health(self) -> None:
+        self.page.render(
+            self.surface,
+            self.layout.content_rect,
+            self._make_state(hp=100, max_hp=100),
+        )
 
-    def test_draws_no_signal_called_multiple_times(self) -> None:
+    def test_render_called_multiple_times(self) -> None:
         for _ in range(10):
-            draw_status(self.surface, player_available=False, hp=0, max_hp=0)
-            draw_status(self.surface, player_available=True, hp=50, max_hp=50)
+            self.page.render(
+                self.surface,
+                self.layout.content_rect,
+                self._make_state(hp=50, max_hp=50),
+            )
 
 
 if __name__ == "__main__":

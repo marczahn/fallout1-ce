@@ -11,7 +11,7 @@ from companion_app.input.events import (
     BackEvent,
     ConfirmEvent,
     EncoderLeftEvent,
-    SectionButtonEvent,
+    PageButtonEvent,
 )
 
 
@@ -32,14 +32,14 @@ class EventLogOverlayTests(unittest.TestCase):
 
     def test_records_appear_in_fifo_order(self) -> None:
         overlay = EventLogOverlay()
-        a, b, c = SectionButtonEvent(1), EncoderLeftEvent(), ConfirmEvent()
+        a, b, c = PageButtonEvent(1), EncoderLeftEvent(), ConfirmEvent()
         for e in (a, b, c):
             overlay.record(e)
         self.assertEqual(list(overlay._events), [a, b, c])
 
     def test_capacity_caps_at_ten_and_drops_oldest(self) -> None:
         overlay = EventLogOverlay()
-        events = [SectionButtonEvent(index=(i % 4) + 1) for i in range(15)]
+        events = [PageButtonEvent(index=(i % 4) + 1) for i in range(15)]
         for e in events:
             overlay.record(e)
         kept = list(overlay._events)

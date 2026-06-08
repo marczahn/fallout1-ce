@@ -1,4 +1,4 @@
-"""Pygame keyboard backend for the locked input vocabulary.
+"""Pygame keyboard backend for the locked input vocabulary (M1).
 
 Translates ``KEYDOWN`` events into ``InputEvent`` instances using the
 keymap resolved by :mod:`companion_app.config`. ``KEYUP`` is ignored.

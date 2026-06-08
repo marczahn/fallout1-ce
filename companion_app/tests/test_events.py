@@ -9,16 +9,16 @@ from companion_app.input.events import (
     ConfirmEvent,
     EncoderLeftEvent,
     EncoderRightEvent,
-    SectionButtonEvent,
+    PageButtonEvent,
     make_event,
 )
 
 
 class MakeEventTests(unittest.TestCase):
-    def test_section_buttons_carry_correct_index(self) -> None:
+    def test_page_buttons_carry_correct_index(self) -> None:
         for i in (1, 2, 3, 4):
-            ev = make_event(f"SectionButton{i}")
-            self.assertIsInstance(ev, SectionButtonEvent)
+            ev = make_event(f"PageButton{i}")
+            self.assertIsInstance(ev, PageButtonEvent)
             self.assertEqual(ev.index, i)
 
     def test_encoder_left_right(self) -> None:
@@ -33,12 +33,12 @@ class MakeEventTests(unittest.TestCase):
         # Config layer is the public guard; make_event is internal and
         # treats unknown names as a programmer error.
         with self.assertRaises(KeyError):
-            make_event("SectionButton5")
+            make_event("PageButton5")
         with self.assertRaises(KeyError):
             make_event("Submit")
 
     def test_events_are_frozen_dataclasses(self) -> None:
-        ev = SectionButtonEvent(index=1)
+        ev = PageButtonEvent(index=1)
         with self.assertRaises(Exception):
             ev.index = 2  # type: ignore[misc]
 

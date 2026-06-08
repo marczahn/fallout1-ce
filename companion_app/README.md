@@ -56,10 +56,10 @@ Config resolution order:
   },
   "input": {
     "keymap": {
-      "SectionButton1": ["1"],
-      "SectionButton2": ["2"],
-      "SectionButton3": ["3"],
-      "SectionButton4": ["4"],
+      "PageButton1": ["1"],
+      "PageButton2": ["2"],
+      "PageButton3": ["3"],
+      "PageButton4": ["4"],
       "EncoderLeft":    ["up"],
       "EncoderRight":   ["down"],
       "Confirm":        ["return"],

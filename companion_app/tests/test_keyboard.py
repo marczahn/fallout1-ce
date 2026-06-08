@@ -11,7 +11,7 @@ from companion_app.input.events import (
     ConfirmEvent,
     EncoderLeftEvent,
     EncoderRightEvent,
-    SectionButtonEvent,
+    PageButtonEvent,
 )
 from companion_app.input.keyboard import KeyboardInput
 
@@ -35,10 +35,10 @@ class KeyboardInputTests(unittest.TestCase):
 
     def test_default_keymap_dispatch(self) -> None:
         keymap = {
-            "SectionButton1": [pygame.K_1],
-            "SectionButton2": [pygame.K_2],
-            "SectionButton3": [pygame.K_3],
-            "SectionButton4": [pygame.K_4],
+            "PageButton1": [pygame.K_1],
+            "PageButton2": [pygame.K_2],
+            "PageButton3": [pygame.K_3],
+            "PageButton4": [pygame.K_4],
             "EncoderLeft":    [pygame.K_UP],
             "EncoderRight":   [pygame.K_DOWN],
             "Confirm":        [pygame.K_RETURN],
@@ -53,14 +53,14 @@ class KeyboardInputTests(unittest.TestCase):
         self.assertEqual(
             [type(e).__name__ for e in out],
             [
-                "SectionButtonEvent", "SectionButtonEvent",
-                "SectionButtonEvent", "SectionButtonEvent",
+                "PageButtonEvent", "PageButtonEvent",
+                "PageButtonEvent", "PageButtonEvent",
                 "EncoderLeftEvent", "EncoderRightEvent",
                 "ConfirmEvent", "BackEvent",
             ],
         )
-        section_indices = [e.index for e in out if isinstance(e, SectionButtonEvent)]
-        self.assertEqual(section_indices, [1, 2, 3, 4])
+        page_indices = [e.index for e in out if isinstance(e, PageButtonEvent)]
+        self.assertEqual(page_indices, [1, 2, 3, 4])
 
     def test_keyup_is_ignored(self) -> None:
         kb = KeyboardInput({"Confirm": [pygame.K_RETURN]})
@@ -74,9 +74,9 @@ class KeyboardInputTests(unittest.TestCase):
 
     def test_mixed_events_preserve_order(self) -> None:
         kb = KeyboardInput({
-            "SectionButton1": [pygame.K_1],
-            "Confirm":        [pygame.K_RETURN],
-            "Back":           [pygame.K_BACKSPACE],
+            "PageButton1": [pygame.K_1],
+            "Confirm":     [pygame.K_RETURN],
+            "Back":        [pygame.K_BACKSPACE],
         })
         out = kb.poll([
             _kd(pygame.K_RETURN),
@@ -87,7 +87,7 @@ class KeyboardInputTests(unittest.TestCase):
         ])
         self.assertEqual(
             [type(e).__name__ for e in out],
-            ["ConfirmEvent", "SectionButtonEvent", "BackEvent"],
+            ["ConfirmEvent", "PageButtonEvent", "BackEvent"],
         )
         self.assertEqual(out[1].index, 1)  # type: ignore[union-attr]
 

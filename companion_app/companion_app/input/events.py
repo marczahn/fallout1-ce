@@ -2,7 +2,7 @@
 
 The companion app has exactly five logical input events:
 
-- ``SectionButtonEvent(index)`` with ``index`` in ``{1, 2, 3, 4}``
+- ``PageButtonEvent(index)`` with ``index`` in ``{1, 2, 3, 4}``
 - ``EncoderLeftEvent``
 - ``EncoderRightEvent``
 - ``ConfirmEvent``
@@ -23,7 +23,7 @@ from typing import Union
 
 
 @dataclass(frozen=True)
-class SectionButtonEvent:
+class PageButtonEvent:
     index: int
 
 
@@ -48,7 +48,7 @@ class BackEvent:
 
 
 InputEvent = Union[
-    SectionButtonEvent,
+    PageButtonEvent,
     EncoderLeftEvent,
     EncoderRightEvent,
     ConfirmEvent,
@@ -59,10 +59,10 @@ InputEvent = Union[
 # Map event-name strings (as used in the config keymap) to the
 # factory that produces the corresponding InputEvent instance.
 _EVENT_FACTORIES = {
-    "SectionButton1": lambda: SectionButtonEvent(1),
-    "SectionButton2": lambda: SectionButtonEvent(2),
-    "SectionButton3": lambda: SectionButtonEvent(3),
-    "SectionButton4": lambda: SectionButtonEvent(4),
+    "PageButton1": lambda: PageButtonEvent(1),
+    "PageButton2": lambda: PageButtonEvent(2),
+    "PageButton3": lambda: PageButtonEvent(3),
+    "PageButton4": lambda: PageButtonEvent(4),
     "EncoderLeft":    EncoderLeftEvent,
     "EncoderRight":   EncoderRightEvent,
     "Confirm":        ConfirmEvent,

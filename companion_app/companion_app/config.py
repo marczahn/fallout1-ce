@@ -33,10 +33,10 @@ from pathlib import Path
 from typing import Any
 
 VALID_EVENT_NAMES: tuple[str, ...] = (
-    "SectionButton1",
-    "SectionButton2",
-    "SectionButton3",
-    "SectionButton4",
+    "PageButton1",
+    "PageButton2",
+    "PageButton3",
+    "PageButton4",
     "EncoderLeft",
     "EncoderRight",
     "Confirm",
@@ -51,10 +51,10 @@ DEFAULT_DEBUG_EVENT_LOG: bool = False
 
 # Default keymap uses pygame key *names* (resolved later to codes).
 DEFAULT_KEYMAP_NAMES: dict[str, list[str]] = {
-    "SectionButton1": ["1"],
-    "SectionButton2": ["2"],
-    "SectionButton3": ["3"],
-    "SectionButton4": ["4"],
+    "PageButton1": ["1"],
+    "PageButton2": ["2"],
+    "PageButton3": ["3"],
+    "PageButton4": ["4"],
     "EncoderLeft":    ["up"],
     "EncoderRight":   ["down"],
     "Confirm":        ["return"],

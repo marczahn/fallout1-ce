@@ -73,7 +73,7 @@ class LoadConfigTests(unittest.TestCase):
         self.assertEqual(cfg.display_scale, DEFAULT_DISPLAY_SCALE)
         # All eight events present with at least one resolved key code.
         for name in (
-            "SectionButton1", "SectionButton2", "SectionButton3", "SectionButton4",
+            "PageButton1", "PageButton2", "PageButton3", "PageButton4",
             "EncoderLeft", "EncoderRight", "Confirm", "Back",
         ):
             self.assertIn(name, cfg.keymap)
@@ -115,10 +115,10 @@ class LoadConfigTests(unittest.TestCase):
 
     def test_unknown_event_name_aborts(self) -> None:
         with _Tempdir() as td:
-            p = self._write_pw(td, {"input": {"keymap": {"SectionButton5": ["1"]}}})
+            p = self._write_pw(td, {"input": {"keymap": {"PageButton5": ["1"]}}})
             with self.assertRaises(ConfigError) as ctx:
                 load_and_resolve_config(str(p))
-            self.assertIn("SectionButton5", str(ctx.exception))
+            self.assertIn("PageButton5", str(ctx.exception))
 
     def test_unknown_key_name_aborts(self) -> None:
         with _Tempdir() as td:
@@ -220,7 +220,7 @@ class LoadConfigTests(unittest.TestCase):
         # Override applied:
         self.assertEqual(cfg.keymap["Confirm"], [pygame.K_SPACE])
         # Other defaults still present:
-        self.assertEqual(cfg.keymap["SectionButton1"], [pygame.K_1])
+        self.assertEqual(cfg.keymap["PageButton1"], [pygame.K_1])
         self.assertEqual(cfg.keymap["EncoderLeft"], [pygame.K_UP])
 
     def test_display_vignette_default_is_true(self) -> None:

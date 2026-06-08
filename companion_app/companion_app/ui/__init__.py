@@ -1,6 +1,6 @@
-"""Screen-composition layer for the companion app (M2).
+"""Screen-composition layer for the companion app.
 
-`shell.py` composes the static Pip-Boy screen: header line plus body
-placeholder. Section-specific bodies and live state arrive in later
-milestones.
+``layout.py`` owns the screen chrome (header + content area + footer).
+``pages/`` contains the top-level pages (STATUS, DATA, INVENTORY, MAP)
+that render into the layout's content area.
 """

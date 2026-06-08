@@ -1,13 +1,13 @@
 """Companion app entry point.
 
 Owns the pygame main loop, the virtual surface, the quit handling,
-the per-frame call into the screen shell (M2), network client (M3),
-and section routing (M4+).
+the per-frame call into the screen layout (UI refactoring), network
+client (M3), and page dispatch (STATUS placeholder in M4; full
+dispatch in the UI refactoring).
 """
 from __future__ import annotations
 
 import argparse
-from enum import Enum
 import sys
 
 from companion_app.config import (
@@ -26,19 +26,17 @@ from companion_app.render.crt import (
 )
 from companion_app.render.font import FontLoadError, load_font
 from companion_app.state import AppState, ConnectionState
-from companion_app.ui.shell import BODY_SIZE, HEADER_SIZE, draw_shell
-from companion_app.ui.status import draw_status
+from companion_app.ui.layout import Layout
+from companion_app.ui.pages import Page
+from companion_app.ui.pages.data import DataPage
+from companion_app.ui.pages.inventory import InventoryPage
+from companion_app.ui.pages.map import MapPage
+from companion_app.ui.pages.status import StatusPage
+from companion_app.ui.shell import BODY_SIZE, HEADER_SIZE
 
 VIRTUAL_WIDTH = 480
 VIRTUAL_HEIGHT = 800
 TARGET_FPS = 60
-
-
-class Section(Enum):
-    STATUS = 1
-    DATA = 2
-    INVENTORY = 3
-    MAP = 4
 
 
 def _connection_status(state: AppState) -> str:
@@ -56,7 +54,7 @@ def _body_text(state: AppState) -> str:
     """Return the body placeholder text for the current connection state.
 
     When the connection is READY and a player is available, returns an
-    empty string so the active section can draw its own content (M4+).
+    empty string so the active page can draw its own content.
     """
     if state.connection is not ConnectionState.READY:
         return "CONNECTING\u2026"
@@ -135,7 +133,16 @@ def _run_loop(config: Config) -> int:
     if config.debug_event_log:
         debug_overlay = EventLogOverlay()
 
-    current_section: Section = Section.STATUS
+    layout = Layout((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
+
+    _pages = {
+        Page.STATUS: StatusPage(),
+        Page.DATA: DataPage(),
+        Page.INVENTORY: InventoryPage(),
+        Page.MAP: MapPage(),
+    }
+
+    current_page: Page = Page.STATUS
 
     running = True
     while running:
@@ -154,23 +161,19 @@ def _run_loop(config: Config) -> int:
             if debug_overlay is not None:
                 debug_overlay.record(input_event)
             if hasattr(input_event, "index"):
-                current_section = Section(input_event.index)
+                current_page = Page(input_event.index)
 
         net.poll()
         typewriter.tick()
-        status = _connection_status(state)
+        connection_status = _connection_status(state)
         body = _body_text(state)
-        section_name = current_section.name
+        page_name = current_page.name
 
-        draw_shell(virtual, section_name, status, body)
+        layout.draw(virtual, page_name, connection_status)
         if state.connection is ConnectionState.READY and state.player.available:
-            if current_section is Section.STATUS:
-                draw_status(
-                    virtual,
-                    player_available=state.player.available,
-                    hp=state.player.hp,
-                    max_hp=state.player.max_hp,
-                )
+            _pages[current_page].render(virtual, layout.content_rect, state)
+        else:
+            layout.draw_placeholder(virtual, body)
         if vignette is not None:
             vignette.draw(virtual)
         if scanlines is not None:
