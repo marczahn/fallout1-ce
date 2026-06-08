@@ -3,7 +3,7 @@
 Owns the pygame main loop, the virtual surface, the quit handling,
 the per-frame call into the screen layout (UI refactoring), network
 client (M3), and page dispatch (STATUS placeholder in M4; full
-dispatch in the UI refactoring).
+navigation shell in M5).
 """
 from __future__ import annotations
 
@@ -17,6 +17,14 @@ from companion_app.config import (
 )
 from companion_app.debug.console import CONSOLE_FONT_SIZE, TypewriterConsole
 from companion_app.debug.event_log import EventLogOverlay
+from companion_app.input.events import (
+    BackEvent,
+    ConfirmEvent,
+    EncoderLeftEvent,
+    EncoderRightEvent,
+    InputEvent,
+    PageButtonEvent,
+)
 from companion_app.input.keyboard import KeyboardInput
 from companion_app.net import NetworkClient
 from companion_app.render.crt import (
@@ -27,8 +35,15 @@ from companion_app.render.crt import (
 from companion_app.render.font import FontLoadError, load_font
 from companion_app.state import AppState, ConnectionState
 from companion_app.ui.layout import Layout
-from companion_app.ui.pages import Page, PageRenderer
-from companion_app.ui.pages.data import DataPage
+from companion_app.ui.pages import Page
+from companion_app.ui.pages.data import (
+    DataPage,
+    DataPageUiState,
+    enter_selected_tab,
+    move_selection_left,
+    move_selection_right,
+    return_to_root,
+)
 from companion_app.ui.pages.inventory import InventoryPage
 from companion_app.ui.pages.map import MapPage
 from companion_app.ui.pages.status import (
@@ -65,6 +80,38 @@ def _body_text(state: AppState) -> str:
     if not state.player.available:
         return "NO SIGNAL"
     return ""
+
+
+def _handle_data_input(
+    ui_state: DataPageUiState,
+    input_event: InputEvent,
+) -> DataPageUiState:
+    if isinstance(input_event, EncoderLeftEvent):
+        return move_selection_left(ui_state)
+    if isinstance(input_event, EncoderRightEvent):
+        return move_selection_right(ui_state)
+    if isinstance(input_event, ConfirmEvent):
+        return enter_selected_tab(ui_state)
+    if isinstance(input_event, BackEvent):
+        return return_to_root(ui_state)
+    return ui_state
+
+
+def _route_input(
+    current_page: Page,
+    data_ui: DataPageUiState,
+    input_event: InputEvent,
+) -> tuple[Page, DataPageUiState]:
+    if isinstance(input_event, PageButtonEvent):
+        target_page = Page(input_event.index)
+        if target_page is Page.DATA:
+            return target_page, DataPageUiState()
+        return target_page, data_ui
+
+    if current_page is Page.DATA:
+        return current_page, _handle_data_input(data_ui, input_event)
+
+    return current_page, data_ui
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -140,14 +187,13 @@ def _run_loop(config: Config) -> int:
 
     layout = Layout((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
 
-    _pages: dict[Page, PageRenderer] = {
-        Page.STATUS: StatusPage(),
-        Page.DATA: DataPage(),
-        Page.INVENTORY: InventoryPage(),
-        Page.MAP: MapPage(),
-    }
+    status_page = StatusPage()
+    data_page = DataPage()
+    inventory_page = InventoryPage()
+    map_page = MapPage()
 
     current_page: Page = Page.STATUS
+    data_ui = DataPageUiState()
 
     running = True
     while running:
@@ -166,8 +212,7 @@ def _run_loop(config: Config) -> int:
         for input_event in input_events:
             if debug_overlay is not None:
                 debug_overlay.record(input_event)
-            if hasattr(input_event, "index"):
-                current_page = Page(input_event.index)
+            current_page, data_ui = _route_input(current_page, data_ui, input_event)
 
         net.poll()
         typewriter.tick(dt_ms)
@@ -175,10 +220,16 @@ def _run_loop(config: Config) -> int:
         body = _body_text(state)
 
         layout.draw(virtual, current_page, connection_status)
-        if state.connection is ConnectionState.READY and state.player.available:
-            _pages[current_page].render(virtual, layout.content_rect, state)
-        else:
+        if body:
             layout.draw_placeholder(virtual, body)
+        elif current_page is Page.STATUS:
+            status_page.render(virtual, layout.content_rect, state)
+        elif current_page is Page.DATA:
+            data_page.render(virtual, layout.content_rect, state, data_ui)
+        elif current_page is Page.INVENTORY:
+            inventory_page.render(virtual, layout.content_rect, state)
+        else:
+            map_page.render(virtual, layout.content_rect, state)
 
         show_console = current_page is Page.STATUS or state.connection is not ConnectionState.READY
         if show_console:

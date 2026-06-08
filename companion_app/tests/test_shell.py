@@ -11,9 +11,7 @@ from companion_app.ui.pages import Page
 from companion_app.ui.shell import (
     BODY_SIZE,
     HEADER_HEIGHT,
-    HEADER_LEFT_POS,
-    SEPARATOR_Y,
-    TITLE_SIZE,
+    HEADER_SIZE,
     VIRTUAL_HEIGHT,
     VIRTUAL_WIDTH,
 )
@@ -34,9 +32,9 @@ class LayoutTest(unittest.TestCase):
 
     def test_content_rect_starts_after_header_band(self) -> None:
         r = self.layout.content_rect
-        self.assertEqual(r.top, SEPARATOR_Y + 1)
+        self.assertEqual(r.top, 56)
         self.assertEqual(r.width, VIRTUAL_WIDTH)
-        self.assertEqual(r.height, VIRTUAL_HEIGHT - (SEPARATOR_Y + 1))
+        self.assertEqual(r.height, VIRTUAL_HEIGHT - 56)
 
     def test_console_rect_sits_inside_content_rect(self) -> None:
         self.assertTrue(self.layout.content_rect.contains(self.layout.console_rect))
@@ -49,20 +47,26 @@ class LayoutTest(unittest.TestCase):
         self.assertNotIn("companion_app.config", src)
         self.assertNotIn("companion_app.debug", src)
 
-    def test_title_rect_falls_inside_header_band(self) -> None:
+    def test_header_page_label_falls_inside_header_band(self) -> None:
         from companion_app.render.font import _get_font
 
-        title_font = _get_font(TITLE_SIZE)
-        title_rect = title_font.get_rect("PIP-BOY 2000 Mk. 1", size=TITLE_SIZE)
-        title_rect.topleft = HEADER_LEFT_POS
+        header_font = _get_font(HEADER_SIZE)
+        title_rect = header_font.get_rect("STATUS", size=HEADER_SIZE)
+        title_rect.center = (VIRTUAL_WIDTH // 2, HEADER_HEIGHT // 2)
 
         self.assertGreaterEqual(title_rect.top, 0)
         self.assertLess(title_rect.bottom, HEADER_HEIGHT)
 
-    def test_header_area_away_from_title_stays_background(self) -> None:
+    def test_draw_renders_underlined_header(self) -> None:
+        from companion_app.render.font import _get_font
+
         self.layout.draw(self.surface, Page.STATUS, "OK")
-        px = tuple(self.surface.get_at((VIRTUAL_WIDTH - 40, HEADER_HEIGHT // 2)))[:3]
-        self.assertEqual(px, palette.BACKGROUND)
+        header_font = _get_font(HEADER_SIZE)
+        title_rect = header_font.get_rect("STATUS", size=HEADER_SIZE)
+        title_rect.center = (VIRTUAL_WIDTH // 2, HEADER_HEIGHT // 2)
+        underline_y = title_rect.bottom + 4
+        px = tuple(self.surface.get_at((VIRTUAL_WIDTH // 2, underline_y)))[:3]
+        self.assertEqual(px, palette.DIM)
 
     def test_draw_placeholder_centers_text_in_content_rect(self) -> None:
         from companion_app.render.font import _get_font

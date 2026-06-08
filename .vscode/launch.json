@@ -1,0 +1,32 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "Debug fallout-ce (install folder)",
+        "type": "cppdbg",
+        "request": "launch",
+        "program": "/home/marczahn/Downloads/fallout_folder/fallout-ce",
+        "args": [],
+        "cwd": "/home/marczahn/Downloads/fallout_folder",
+        "MIMode": "gdb",
+        "stopAtEntry": false,
+        "externalConsole": false,
+        "preLaunchTask": "build fallout-ce",
+        "environment": [
+          { "name": "DEBUGACTIVE", "value": "log" }
+        ],
+        "setupCommands": [
+          {
+            "description": "Set inferior cwd",
+            "text": "-environment-cd /home/marczahn/Downloads/fallout_folder",
+            "ignoreFailures": false
+          },
+          {
+            "description": "Enable pretty-printing",
+            "text": "-enable-pretty-printing",
+            "ignoreFailures": true
+          }
+        ]
+      }
+    ]
+  }

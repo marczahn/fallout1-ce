@@ -391,6 +391,5 @@ FodyWeavers.xsd
 # CMake
 /out
 /build
-.vscode
 companion_app/.venv/lib
 companion_app/.venv/include

@@ -1,4 +1,4 @@
-"""Screen layout: minimal title header + content area + footer."""
+"""Screen layout: header + content area + footer."""
 from __future__ import annotations
 
 import pygame
@@ -7,19 +7,20 @@ from companion_app.render import background, font, palette
 from companion_app.ui.pages import Page
 from companion_app.ui.shell import (
     BODY_SIZE,
-    HEADER_LEFT_POS,
+    HEADER_HEIGHT,
+    HEADER_SIZE,
     SEPARATOR_Y,
-    TITLE_SIZE,
 )
 
 _CONSOLE_MARGIN_X = 44
 _CONSOLE_MARGIN_TOP = 22
 _CONSOLE_HEIGHT = 170
-_TITLE = "PIP-BOY 2000 Mk. 1"
+_HEADER_RIGHT_MARGIN = 28
+_UNDERLINE_GAP = 4
 
 
 class Layout:
-    """Pip-Boy screen layout with minimal header chrome."""
+    """Pip-Boy screen layout with a live section/status header."""
 
     def __init__(self, virtual_size: tuple[int, int]) -> None:
         self._width, self._height = virtual_size
@@ -55,17 +56,31 @@ class Layout:
         current_page: Page,
         connection_status: str,
     ) -> None:
-        """Render background and title only."""
-        _ = current_page
-        _ = connection_status
+        """Render background and the top header."""
         background.fill_background(surface)
 
-        font.draw_text_left(
+        page_rect = pygame.Rect(0, 0, self._width, HEADER_HEIGHT)
+        title_rect = font.draw_text_centered(
             surface,
-            _TITLE,
-            HEADER_LEFT_POS,
-            TITLE_SIZE,
+            current_page.name,
+            page_rect,
+            HEADER_SIZE,
+            palette.FOREGROUND,
+        )
+        if connection_status and connection_status != "OK":
+            font.draw_text_right(
+                surface,
+                connection_status,
+                (self._width - _HEADER_RIGHT_MARGIN, title_rect.top),
+                HEADER_SIZE,
+                palette.DIM,
+            )
+        pygame.draw.line(
+            surface,
             palette.DIM,
+            (title_rect.left, title_rect.bottom + _UNDERLINE_GAP),
+            (title_rect.right, title_rect.bottom + _UNDERLINE_GAP),
+            1,
         )
 
     def draw_placeholder(self, surface: pygame.Surface, text: str) -> None:
