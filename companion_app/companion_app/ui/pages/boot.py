@@ -6,7 +6,7 @@ from enum import Enum, auto
 
 import pygame
 
-from companion_app.debug.console import TypewriterConsole
+from companion_app.ui.console import TypewriterConsole
 from companion_app.render import background
 
 BOOT_CURSOR_HOLD_MS: int = 3000

@@ -15,7 +15,7 @@ from companion_app.app import (
     _start_network_client,
 )
 from companion_app.config import Config
-from companion_app.debug.console import TypewriterConsole
+from companion_app.ui.console import TypewriterConsole
 from companion_app.input.events import (
     BackEvent,
     ConfirmEvent,

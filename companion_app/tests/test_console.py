@@ -5,7 +5,7 @@ import unittest
 
 import pygame
 
-from companion_app.debug.console import (
+from companion_app.ui.console import (
     CONSOLE_CHAR_INTERVAL_MS,
     CONSOLE_CURSOR_GLYPH,
     CONSOLE_LINE_DELAY_MS,

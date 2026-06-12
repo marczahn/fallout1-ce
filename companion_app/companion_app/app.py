@@ -15,7 +15,7 @@ from companion_app.config import (
     ConfigError,
     load_and_resolve_config,
 )
-from companion_app.debug.console import CONSOLE_FONT_SIZE, TypewriterConsole
+from companion_app.ui.console import CONSOLE_FONT_SIZE, TypewriterConsole
 from companion_app.debug.event_log import EventLogOverlay
 from companion_app.input.events import (
     BackEvent,

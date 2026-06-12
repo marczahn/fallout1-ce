@@ -5,7 +5,7 @@ import unittest
 
 import pygame
 
-from companion_app.debug.console import CONSOLE_CHAR_INTERVAL_MS, TypewriterConsole
+from companion_app.ui.console import CONSOLE_CHAR_INTERVAL_MS, TypewriterConsole
 from companion_app.render import palette
 from companion_app.ui.pages.boot import (
     BOOT_CONSOLE_MAX_LINES,
