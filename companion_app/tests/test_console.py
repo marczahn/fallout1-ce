@@ -75,6 +75,18 @@ class TypewriterConsoleTests(unittest.TestCase):
             c.tick(CONSOLE_LINE_DELAY_MS)
         self.assertLessEqual(len(c.lines), 10)
 
+    def test_custom_max_lines_capped(self) -> None:
+        c = TypewriterConsole(max_lines=20)
+        for i in range(25):
+            c.log(f'line {i}')
+            c.tick(CONSOLE_CHAR_INTERVAL_MS * 20)
+            c.tick(CONSOLE_LINE_DELAY_MS)
+        self.assertLessEqual(len(c.lines), 20)
+
+    def test_custom_max_lines_must_be_positive(self) -> None:
+        with self.assertRaises(ValueError):
+            TypewriterConsole(max_lines=0)
+
     def test_lines_keep_order(self) -> None:
         c = TypewriterConsole()
         c.log('first')

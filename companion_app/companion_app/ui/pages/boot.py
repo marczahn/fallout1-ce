@@ -10,7 +10,8 @@ from companion_app.debug.console import TypewriterConsole
 from companion_app.render import background
 
 BOOT_CURSOR_HOLD_MS: int = 3000
-REDIRECT_HOLD_MS: int = 1200
+BOOT_READY_HOLD_MS: int = 1000
+BOOT_CONSOLE_MAX_LINES: int = 48
 BOOT_TRANSCRIPT: tuple[str, ...] = (
     '********** PIP-05 (R) V7.1.0.8 **********',
     '',
@@ -22,29 +23,27 @@ BOOT_TRANSCRIPT: tuple[str, ...] = (
     '64KB RAM SYSTEM',
     '38911 BYTES FREE',
     'NO HOLOTAPE FOUND',
-    'LOAD ROM(1): DEITRIX 303'
+    'LOAD ROM(1): DEITRIX 303',
+    '',
+    '',
 )
-REDIRECT_LINE = 'REDIRECTING TO STATUS PAGE'
 
 _BOOT_MARGIN_X = 36
-_BOOT_MARGIN_TOP = 64
-_BOOT_MARGIN_BOTTOM = 56
+_BOOT_MARGIN_TOP = 36
+_BOOT_MARGIN_BOTTOM = 36
 
 
 class BootPhase(Enum):
     BOOTING = auto()
-    CLEARING = auto()
+    CURSOR_HOLD = auto()
     CONNECTING = auto()
-    REDIRECTING = auto()
+    READY_HOLD = auto()
     COMPLETE = auto()
 
 
 @dataclass(frozen=True)
 class BootTickResult:
     start_connect: bool = False
-    show_main_ui: bool = False
-    clear_console: bool = False
-    log_redirect: bool = False
 
 
 @dataclass
@@ -60,21 +59,26 @@ class BootSequence:
         for line in BOOT_TRANSCRIPT:
             console.log(line)
 
-    def tick(self, dt_ms: int, console: TypewriterConsole) -> BootTickResult:
+    def tick(
+        self,
+        dt_ms: int,
+        console: TypewriterConsole,
+        *,
+        connection_ready: bool = False,
+    ) -> BootTickResult:
         dt_ms = max(0, dt_ms)
 
         if self.phase is BootPhase.BOOTING:
             if console.is_idle():
-                self.phase = BootPhase.CLEARING
+                self.phase = BootPhase.CURSOR_HOLD
                 self._phase_elapsed_ms = 0
-                console.clear()
                 console.show_idle_cursor = True
-                return BootTickResult(clear_console=True)
+                return BootTickResult()
             return BootTickResult()
 
         self._phase_elapsed_ms += dt_ms
 
-        if self.phase is BootPhase.CLEARING:
+        if self.phase is BootPhase.CURSOR_HOLD:
             if self._phase_elapsed_ms < BOOT_CURSOR_HOLD_MS:
                 return BootTickResult()
             self.phase = BootPhase.CONNECTING
@@ -83,19 +87,21 @@ class BootSequence:
             return BootTickResult(start_connect=True)
 
         if self.phase is BootPhase.CONNECTING:
-            if not console.is_idle():
+            if not connection_ready or not console.is_idle():
                 return BootTickResult()
-            self.phase = BootPhase.REDIRECTING
+            self.phase = BootPhase.READY_HOLD
             self._phase_elapsed_ms = 0
-            return BootTickResult(log_redirect=True)
+            console.show_idle_cursor = False
+            return BootTickResult()
 
-        if self.phase is BootPhase.REDIRECTING:
+        if self.phase is BootPhase.READY_HOLD:
             if not console.is_idle():
+                self._phase_elapsed_ms = 0
                 return BootTickResult()
-            if self._phase_elapsed_ms < REDIRECT_HOLD_MS:
+            if self._phase_elapsed_ms < BOOT_READY_HOLD_MS:
                 return BootTickResult()
             self.phase = BootPhase.COMPLETE
-            return BootTickResult(show_main_ui=True)
+            return BootTickResult()
 
         return BootTickResult()
 

@@ -12,7 +12,10 @@ from companion_app.app import (
     _connection_status,
     _handle_data_input,
     _route_input,
+    _start_network_client,
 )
+from companion_app.config import Config
+from companion_app.debug.console import TypewriterConsole
 from companion_app.input.events import (
     BackEvent,
     ConfirmEvent,
@@ -96,6 +99,24 @@ class BodyTextTests(unittest.TestCase):
     def test_reconnecting(self) -> None:
         state = AppState(connection=ConnectionState.RECONNECTING)
         self.assertEqual(_body_text(state), "CONNECTING…")
+
+
+class StartupNetworkClientTests(unittest.TestCase):
+    def test_start_network_client_logs_target_and_leaves_idle_cursor(self) -> None:
+        state = AppState()
+        console = TypewriterConsole()
+        config = Config(
+            server_host="127.0.0.1",
+            server_port=28080,
+            server_password="testpw",
+        )
+
+        client = _start_network_client(config, state, console)
+
+        self.assertIsNotNone(client)
+        self.assertEqual(len(console.lines), 1)
+        self.assertEqual(console.lines[0].text, "UPLINK TARGET.........127.0.0.1:28080")
+        self.assertTrue(console.show_idle_cursor)
 
 
 class DataInputRoutingTests(unittest.TestCase):

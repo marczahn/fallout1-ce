@@ -36,7 +36,7 @@ from companion_app.render.font import FontLoadError, load_font
 from companion_app.state import AppState, ConnectionState
 from companion_app.ui.layout import Layout
 from companion_app.ui.pages import Page
-from companion_app.ui.pages.boot import BootPage, BootSequence
+from companion_app.ui.pages.boot import BOOT_CONSOLE_MAX_LINES, BootPage, BootSequence
 from companion_app.ui.pages.data import (
     DataPage,
     DataPageUiState,
@@ -115,7 +115,9 @@ def _start_network_client(
     typewriter: TypewriterConsole,
 ) -> NetworkClient:
     typewriter.log('UPLINK TARGET.........%s:%s' % (config.server_host, config.server_port))
-    typewriter.log('OPENING MAINTENANCE LINK')
+    typewriter.log('')
+    typewriter.log('')
+    typewriter.show_idle_cursor = True
     return NetworkClient(
         host=config.server_host,
         port=config.server_port,
@@ -166,7 +168,7 @@ def _run_loop(config: Config) -> int:
 
     keyboard = KeyboardInput(config.keymap)
     state = AppState()
-    typewriter = TypewriterConsole()
+    typewriter = TypewriterConsole(max_lines=BOOT_CONSOLE_MAX_LINES)
     boot_sequence = BootSequence()
     boot_sequence.begin(typewriter)
     net: NetworkClient | None = None
@@ -224,13 +226,13 @@ def _run_loop(config: Config) -> int:
         if net is not None:
             net.poll()
         typewriter.tick(dt_ms)
-        boot_tick = boot_sequence.tick(dt_ms, typewriter)
-        if boot_tick.clear_console:
-            typewriter.clear()
+        boot_tick = boot_sequence.tick(
+            dt_ms,
+            typewriter,
+            connection_ready=state.connection is ConnectionState.READY,
+        )
         if boot_tick.start_connect and net is None:
             net = _start_network_client(config, state, typewriter)
-        if boot_tick.log_redirect:
-            typewriter.log('REDIRECTING TO STATUS PAGE')
 
         connection_status = _connection_status(state)
         body = _body_text(state)
@@ -247,10 +249,6 @@ def _run_loop(config: Config) -> int:
                 inventory_page.render(virtual, layout.content_rect, state)
             else:
                 map_page.render(virtual, layout.content_rect, state)
-
-            show_console = current_page is Page.STATUS or state.connection is not ConnectionState.READY
-            if show_console:
-                typewriter.draw(virtual, layout.console_rect)
         else:
             boot_page.render(virtual)
             typewriter.draw(virtual, boot_page.console_rect)

@@ -9,11 +9,14 @@ import errno
 import os
 import socket
 import sys
+import time
 from typing import Any, Callable
 
 from companion_app.net.framing import encode_line, read_line
 from companion_app.state import AppState, ConnectionState
 
+
+RECONNECT_DELAY_SECONDS: float = 1.0
 
 
 
@@ -47,7 +50,8 @@ class NetworkClient:
         self._write_buf: bytearray = bytearray()
 
         self._state.connection = ConnectionState.DISCONNECTED
-        self._active: bool = True  # False = terminal error, no reconnect
+        self._active: bool = True
+        self._next_connect_at: float = 0.0
 
     # ── public API ────────────────────────────────────────────────
 
@@ -61,7 +65,9 @@ class NetworkClient:
 
         st = self._state.connection
 
-        if st is ConnectionState.DISCONNECTED:
+        if st in (ConnectionState.DISCONNECTED, ConnectionState.RECONNECTING):
+            if time.monotonic() < self._next_connect_at:
+                return
             self._connect()
             return
 
@@ -84,6 +90,7 @@ class NetworkClient:
         """Close the socket and reset the state to DISCONNECTED."""
         self._close_socket()
         self._state.connection = ConnectionState.DISCONNECTED
+        self._next_connect_at = 0.0
 
     # ── connection lifecycle ──────────────────────────────────────
 
@@ -93,6 +100,7 @@ class NetworkClient:
         self._read_buf.clear()
         self._write_buf.clear()
 
+        sock: socket.socket | None = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.setblocking(False)
@@ -101,15 +109,32 @@ class NetworkClient:
                 raise OSError(err, os.strerror(err))
             self._sock = sock
             self._state.connection = ConnectionState.CONNECTING
-            self._log(f"connecting to {self._host}:{self._port}")
+            self._log(f"connecting to {self._host}:{self._port}", visible=False)
         except OSError as e:
-            sock.close()
-            self._log(f"connect failed: {e}")
-            self._on_error(f"connect failed: {e}")
+            if sock is not None:
+                sock.close()
+            self._log(f"connect failed: {e}", visible=False)
+            self._schedule_reconnect(f"connect failed: {e}")
 
     def _check_connected(self) -> None:
         """Check if the non-blocking connect completed."""
         assert self._sock is not None
+        try:
+            socket_error = self._sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+        except AttributeError:
+            socket_error = 0
+        except OSError as e:
+            self._schedule_reconnect(f"connect failed (getsockopt): {e}")
+            return
+
+        if socket_error in (errno.EINPROGRESS, errno.EALREADY, errno.EWOULDBLOCK, errno.ENOTCONN):
+            return
+        if socket_error != 0:
+            self._schedule_reconnect(
+                f"connect failed: {OSError(socket_error, os.strerror(socket_error))}"
+            )
+            return
+
         try:
             self._sock.getpeername()
         except OSError as e:
@@ -117,7 +142,7 @@ class NetworkClient:
             if err == errno.ENOTCONN:
                 # Still connecting — try again next frame.
                 return
-            self._on_error(f"connect failed (getpeername): {e}")
+            self._schedule_reconnect(f"connect failed (getpeername): {e}")
             return
 
         # Connected. Queue auth+hello together and flush immediately
@@ -281,22 +306,20 @@ class NetworkClient:
         self._state.player.available = False
         self._log("player unavailable")
 
-    # ── reconnection (disabled for now) ────────────────────────────
+    # ── reconnection ───────────────────────────────────────────────
 
-    def _schedule_reconnect(self) -> None:
+    def _schedule_reconnect(self, reason: str) -> None:
+        self._log(f"error: {reason}", visible=False)
         self._close_socket()
-        self._state.connection = ConnectionState.DISCONNECTED
-        self._log("reconnect disabled, giving up")
+        self._state.connection = ConnectionState.RECONNECTING
+        self._next_connect_at = time.monotonic() + RECONNECT_DELAY_SECONDS
 
     def _on_error(self, reason: str) -> None:
-        self._log(f"error: {reason}")
-        self._close_socket()
-        self._state.connection = ConnectionState.DISCONNECTED
-        self._active = False
+        self._schedule_reconnect(reason)
 
-    def _log(self, msg: str) -> None:
+    def _log(self, msg: str, *, visible: bool = True) -> None:
         print(f"companion_app: {msg}", file=sys.stderr)
-        if self._log_fn is not None:
+        if visible and self._log_fn is not None:
             self._log_fn(msg)
 
     # ── helpers ───────────────────────────────────────────────────

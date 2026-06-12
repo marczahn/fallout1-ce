@@ -5,6 +5,7 @@ and reconnection logic in isolation.
 """
 from __future__ import annotations
 
+import errno
 import socket
 import unittest
 from unittest.mock import MagicMock, patch
@@ -63,6 +64,21 @@ class _FakeSocket:
         return -1
 
 
+class _RefusedSocket(_FakeSocket):
+    def connect_ex(self, address: tuple[str, int]) -> int:
+        self._connected = False
+        return errno.ECONNREFUSED
+
+
+class _PendingRefusedSocket(_FakeSocket):
+    def connect_ex(self, address: tuple[str, int]) -> int:
+        self._connected = False
+        return errno.EINPROGRESS
+
+    def getsockopt(self, level: int, optname: int) -> int:
+        return errno.ECONNREFUSED
+
+
 class NetworkClientTest(unittest.TestCase):
     def setUp(self) -> None:
         self.state = AppState()
@@ -105,6 +121,73 @@ class NetworkClientTest(unittest.TestCase):
 
         self.client._connect()
         self.assert_connection(ConnectionState.CONNECTING)
+
+    @patch("companion_app.net.client.time.monotonic")
+    @patch("companion_app.net.client.socket")
+    def test_pending_connect_refusal_schedules_retry(
+        self,
+        mock_socket_module: MagicMock,
+        mock_monotonic: MagicMock,
+    ) -> None:
+        mock_socket_module.socket.return_value = _PendingRefusedSocket()
+        mock_socket_module.AF_INET = socket.AF_INET
+        mock_socket_module.SOCK_STREAM = socket.SOCK_STREAM
+        mock_socket_module.SOL_SOCKET = socket.SOL_SOCKET
+        mock_socket_module.SO_ERROR = socket.SO_ERROR
+        mock_monotonic.return_value = 100.0
+
+        self.client._connect()
+        self.assert_connection(ConnectionState.CONNECTING)
+        self.client._check_connected()
+
+        self.assert_connection(ConnectionState.RECONNECTING)
+
+    @patch("companion_app.net.client.time.monotonic")
+    @patch("companion_app.net.client.socket")
+    def test_connect_refused_retries_after_one_second(
+        self,
+        mock_socket_module: MagicMock,
+        mock_monotonic: MagicMock,
+    ) -> None:
+        mock_socket_module.socket.return_value = _RefusedSocket()
+        mock_socket_module.AF_INET = socket.AF_INET
+        mock_socket_module.SOCK_STREAM = socket.SOCK_STREAM
+        mock_monotonic.side_effect = [100.0, 100.5, 101.0, 101.0]
+
+        self.client._connect()
+        self.assert_connection(ConnectionState.RECONNECTING)
+        self.assertEqual(mock_socket_module.socket.call_count, 1)
+
+        self.client.poll()
+        self.assertEqual(mock_socket_module.socket.call_count, 1)
+
+        self.client.poll()
+        self.assertEqual(mock_socket_module.socket.call_count, 2)
+        self.assert_connection(ConnectionState.RECONNECTING)
+
+    @patch("companion_app.net.client.time.monotonic")
+    @patch("companion_app.net.client.socket")
+    def test_connect_attempts_are_not_forwarded_to_visible_log(
+        self,
+        mock_socket_module: MagicMock,
+        mock_monotonic: MagicMock,
+    ) -> None:
+        visible: list[str] = []
+        client = NetworkClient(
+            host="127.0.0.1",
+            port=28080,
+            password="testpw",
+            state=AppState(),
+            log_fn=visible.append,
+        )
+        mock_socket_module.socket.return_value = _RefusedSocket()
+        mock_socket_module.AF_INET = socket.AF_INET
+        mock_socket_module.SOCK_STREAM = socket.SOCK_STREAM
+        mock_monotonic.return_value = 100.0
+
+        client._connect()
+
+        self.assertEqual(visible, [])
 
     @patch("companion_app.net.client.socket")
     def test_full_handshake(self, mock_socket_module: MagicMock) -> None:

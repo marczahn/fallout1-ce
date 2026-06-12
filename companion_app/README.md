@@ -7,6 +7,12 @@ in-game companion server via TCP / newline-delimited JSON.
 This package implements milestones **M1–M5** of
 `docs/companion_app/plans/mvp-milestones.md`: app skeleton, CRT screen shell, dev keyboard input, network handshake, live STATUS rendering, and full MVP section navigation with placeholder DATA/INVENTORY/MAP pages.
 
+## Documentation
+
+- `docs/architecture.md` — current package structure, runtime flow,
+  module boundaries, protocol handling, rendering model, tests, and
+  known implementation gaps.
+
 ## Requirements
 
 - Python >= 3.11

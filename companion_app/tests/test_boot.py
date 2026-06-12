@@ -8,12 +8,13 @@ import pygame
 from companion_app.debug.console import CONSOLE_CHAR_INTERVAL_MS, TypewriterConsole
 from companion_app.render import palette
 from companion_app.ui.pages.boot import (
+    BOOT_CONSOLE_MAX_LINES,
     BOOT_CURSOR_HOLD_MS,
-    REDIRECT_HOLD_MS,
+    BOOT_READY_HOLD_MS,
+    BOOT_TRANSCRIPT,
     BootPage,
     BootPhase,
     BootSequence,
-    REDIRECT_LINE,
 )
 
 
@@ -34,7 +35,17 @@ class BootSequenceTests(unittest.TestCase):
         self.assertGreater(len(console.lines), 0)
         self.assertEqual(sequence.phase, BootPhase.BOOTING)
 
-    def test_boot_completion_clears_console_then_enters_wait_phase(self) -> None:
+    def test_begin_preserves_full_transcript_with_boot_console_capacity(self) -> None:
+        console = TypewriterConsole(max_lines=BOOT_CONSOLE_MAX_LINES)
+        sequence = BootSequence()
+        sequence.begin(console)
+
+        self._drain_console(console)
+
+        self.assertEqual(len(console.lines), len(BOOT_TRANSCRIPT))
+        self.assertEqual(console.lines[0].text, BOOT_TRANSCRIPT[0])
+
+    def test_boot_completion_enters_cursor_hold_without_clearing_console(self) -> None:
         console = TypewriterConsole()
         sequence = BootSequence()
         sequence.begin(console)
@@ -42,14 +53,14 @@ class BootSequenceTests(unittest.TestCase):
         self._drain_console(console)
         result = sequence.tick(0, console)
 
-        self.assertTrue(result.clear_console)
-        self.assertEqual(sequence.phase, BootPhase.CLEARING)
-        self.assertEqual(len(console.lines), 0)
+        self.assertFalse(result.start_connect)
+        self.assertEqual(sequence.phase, BootPhase.CURSOR_HOLD)
+        self.assertGreater(len(console.lines), 0)
         self.assertTrue(console.show_idle_cursor)
 
-    def test_clearing_phase_starts_connect_after_delay(self) -> None:
+    def test_cursor_hold_phase_starts_connect_after_delay(self) -> None:
         console = TypewriterConsole(show_idle_cursor=True)
-        sequence = BootSequence(phase=BootPhase.CLEARING)
+        sequence = BootSequence(phase=BootPhase.CURSOR_HOLD)
 
         result = sequence.tick(BOOT_CURSOR_HOLD_MS, console)
 
@@ -57,26 +68,46 @@ class BootSequenceTests(unittest.TestCase):
         self.assertEqual(sequence.phase, BootPhase.CONNECTING)
         self.assertFalse(console.show_idle_cursor)
 
-    def test_connect_phase_logs_redirect_when_console_finishes(self) -> None:
+    def test_connect_phase_waits_for_successful_connection(self) -> None:
         console = TypewriterConsole()
         sequence = BootSequence(phase=BootPhase.CONNECTING)
 
         result = sequence.tick(16, console)
 
-        self.assertTrue(result.log_redirect)
-        self.assertEqual(sequence.phase, BootPhase.REDIRECTING)
+        self.assertFalse(result.start_connect)
+        self.assertFalse(sequence.show_main_ui)
+        self.assertEqual(sequence.phase, BootPhase.CONNECTING)
 
-    def test_redirect_phase_completes_after_redirect_line_and_hold(self) -> None:
+    def test_connect_phase_enters_ready_hold_after_successful_connection(self) -> None:
         console = TypewriterConsole()
-        sequence = BootSequence(phase=BootPhase.REDIRECTING)
-        console.log(REDIRECT_LINE)
-        self._drain_console(console)
+        sequence = BootSequence(phase=BootPhase.CONNECTING)
 
-        result = sequence.tick(REDIRECT_HOLD_MS, console)
+        result = sequence.tick(16, console, connection_ready=True)
 
-        self.assertTrue(result.show_main_ui)
+        self.assertFalse(result.start_connect)
+        self.assertFalse(sequence.show_main_ui)
+        self.assertEqual(sequence.phase, BootPhase.READY_HOLD)
+
+    def test_ready_hold_completes_after_delay(self) -> None:
+        console = TypewriterConsole()
+        sequence = BootSequence(phase=BootPhase.READY_HOLD)
+
+        result = sequence.tick(BOOT_READY_HOLD_MS, console)
+
+        self.assertFalse(result.start_connect)
         self.assertTrue(sequence.show_main_ui)
         self.assertEqual(sequence.phase, BootPhase.COMPLETE)
+
+    def test_ready_hold_waits_for_console_to_finish(self) -> None:
+        console = TypewriterConsole()
+        sequence = BootSequence(phase=BootPhase.READY_HOLD)
+        console.log("connected")
+
+        result = sequence.tick(BOOT_READY_HOLD_MS, console)
+
+        self.assertFalse(result.start_connect)
+        self.assertFalse(sequence.show_main_ui)
+        self.assertEqual(sequence.phase, BootPhase.READY_HOLD)
 
     def test_boot_page_renders_background(self) -> None:
         surface = pygame.Surface((480, 800))

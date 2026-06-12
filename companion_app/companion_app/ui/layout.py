@@ -85,7 +85,6 @@ class Layout:
             (title_rect.right, title_rect.bottom + _UNDERLINE_GAP),
             1,
         )
-        self.draw_console_frame(surface)
 
     def draw_console_frame(self, surface: pygame.Surface) -> None:
         label_rect = font.draw_text_left(

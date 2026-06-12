@@ -72,6 +72,7 @@ class LayoutTest(unittest.TestCase):
         from companion_app.render.font import _get_font
 
         self.layout.draw(self.surface, Page.STATUS, 'OK')
+        self.layout.draw_console_frame(self.surface)
         label_font = _get_font(HEADER_SIZE)
         label_rect = label_font.get_rect('CONSOLE', size=HEADER_SIZE)
         label_rect.topleft = self.layout.console_rect.topleft
