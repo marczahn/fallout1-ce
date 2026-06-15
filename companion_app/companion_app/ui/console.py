@@ -31,6 +31,7 @@ class ConsoleLine:
 @dataclass(frozen=True)
 class CursorDrawState:
     text: str
+    cursor_at_bottom: bool = False
 
 
 @dataclass
@@ -109,6 +110,18 @@ class TypewriterConsole:
             rendered = font_render_surface(state.text, CONSOLE_FONT_SIZE, _line_color(line.text))
             if rendered is not None:
                 surface.blit(rendered, (panel_rect.left + CONSOLE_PADDING, y))
+            if state.cursor_at_bottom:
+                cursor_rendered = font_render_surface(
+                    CONSOLE_CURSOR_GLYPH,
+                    CONSOLE_FONT_SIZE,
+                    _line_color(line.text),
+                )
+                if cursor_rendered is not None:
+                    cursor_y = y + CONSOLE_LINE_HEIGHT - cursor_rendered.get_height()
+                    surface.blit(
+                        cursor_rendered,
+                        (panel_rect.left + CONSOLE_PADDING, cursor_y),
+                    )
             y += CONSOLE_LINE_HEIGHT
         if not visible_lines and self.show_idle_cursor and self._cursor_visible:
             rendered = font_render_surface(CONSOLE_CURSOR_GLYPH, CONSOLE_FONT_SIZE, palette.DIM)
@@ -160,6 +173,13 @@ def _display_state(
     draw_cursor = cursor_visible and (is_active or (show_idle_cursor and is_last_visible))
     if show_idle_cursor and is_last_visible and not is_active:
         text = line.text
-    if draw_cursor:
+    cursor_at_bottom = (
+        draw_cursor
+        and show_idle_cursor
+        and is_last_visible
+        and not is_active
+        and not line.text
+    )
+    if draw_cursor and not cursor_at_bottom:
         text = f'{text}{CONSOLE_CURSOR_GLYPH}'
-    return CursorDrawState(text=text)
+    return CursorDrawState(text=text, cursor_at_bottom=cursor_at_bottom)

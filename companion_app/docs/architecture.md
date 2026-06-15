@@ -249,7 +249,8 @@ AWAITING_WORLD
 AWAITING_SNAPSHOT
   -> receive snapshot
 READY
-  -> apply update / player_unavailable messages
+  -> apply update / on_player_unavailable / on_player_available messages
+     (on_player_available re-enters AWAITING_SNAPSHOT for re-sync)
 ```
 
 The client currently queues `auth` and `hello` together once the socket is

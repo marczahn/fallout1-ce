@@ -235,8 +235,10 @@ class NetworkClient:
             self._on_snapshot(msg)
         elif msg_type == "update":
             self._on_update(msg)
-        elif msg_type == "player_unavailable":
-            self._on_player_unavailable()
+        elif msg_type == "on_player_unavailable":
+            self.on_player_unavailable()
+        elif msg_type == "on_player_available":
+            self.on_player_available()
         elif msg_type == "already_connected":
             self._log("server: another client is already connected")
             self._on_error("another client is already connected")
@@ -258,7 +260,13 @@ class NetworkClient:
             game=game,
             player_available=pa,
         )
-        self._log(f"world (v{sv}, game={game})")
+        # `world.playerAvailable` is the authoritative handshake-time
+        # availability. After handshake, `on_player_available` and
+        # `on_player_unavailable` carry transitions. The snapshot's
+        # `playerAvailable` field is informational only (truth at
+        # request time) and is not used to set `player.available`.
+        self._state.player.available = pa
+        self._log(f"world (v{sv}, game={game}, playerAvailable={pa})")
         self._log("requesting snapshot")
         self._queue_get_snapshot()
         self._state.connection = ConnectionState.AWAITING_SNAPSHOT
@@ -267,14 +275,18 @@ class NetworkClient:
         if self._state.connection is not ConnectionState.AWAITING_SNAPSHOT:
             return
 
-        pa = bool(msg.get("playerAvailable", False))
-        self._state.player.available = pa
-
-        if pa:
-            payload = msg.get("payload", {})
-            vitals = payload.get("player.vitals", {})
-            self._state.player.hp = int(vitals.get("hp", 0))
-            self._state.player.max_hp = int(vitals.get("maxHp", 0))
+        # Events are authoritative for `player.available`. The snapshot's
+        # `playerAvailable` field is informational (truth at request time)
+        # and is intentionally not applied here -- if `on_player_unavailable`
+        # raced a pending `get_snapshot` reply, the snapshot's flag would
+        # otherwise re-flip availability to the request-time value.
+        payload = msg.get("payload", {}) or {}
+        vitals = payload.get("player.vitals", {}) or {}
+        if vitals:
+            self._state.player.hp = int(vitals.get("hp", self._state.player.hp))
+            self._state.player.max_hp = int(
+                vitals.get("maxHp", self._state.player.max_hp)
+            )
 
         self._state.connection = ConnectionState.READY
         self._log(f"snapshot (hp={self._state.player.hp}/{self._state.player.max_hp})")
@@ -302,9 +314,15 @@ class NetworkClient:
         else:
             self._log(f"ignoring update: unknown kind {kind!r}")
 
-    def _on_player_unavailable(self) -> None:
+    def on_player_unavailable(self) -> None:
         self._state.player.available = False
         self._log("player unavailable")
+
+    def on_player_available(self) -> None:
+        self._state.player.available = True
+        self._log("player became available, requesting snapshot")
+        self._queue_get_snapshot()
+        self._state.connection = ConnectionState.AWAITING_SNAPSHOT
 
     # ── reconnection ───────────────────────────────────────────────
 

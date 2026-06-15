@@ -30,7 +30,8 @@ inspection of the main menu):
 - HP values in the payload (depends on the player being in real
   gameplay, which requires walking past the main menu in a real game).
 - The 500 ms cadence of `update` messages.
-- The `player_unavailable` transition on death/world unload.
+- The `on_player_unavailable` transition on death/world unload.
+- The `on_player_available` re-sync trigger (steady-state `Ready` -> `AWAITING_SNAPSHOT`).
 - The main-menu "disabled" hint line (verify visually).
 - Surface transitions (local <-> world map) force-emit.
 

@@ -58,9 +58,15 @@ std::string companionBuildWorldLocationUpdate(unsigned int seq,
 std::string companionBuildInventoryUpdate(unsigned int seq,
     const CompanionInventorySnapshot& current);
 
-// `player_unavailable`. One-shot on the present -> absent transition.
+// `on_player_unavailable`. One-shot on the present -> absent transition.
 // No `kind`, no `payload`.
-std::string companionBuildPlayerUnavailable(unsigned int seq);
+std::string companionBuildOnPlayerUnavailable(unsigned int seq);
+
+// `on_player_available`. One-shot on the absent -> present transition
+// after a steady-state `Ready` connection has been idle. The client is
+// expected to send `get_snapshot` in response; the server does not push
+// the snapshot itself. No `kind`, no `payload`.
+std::string companionBuildOnPlayerAvailable(unsigned int seq);
 
 // `cmd_ack`. `error` and `data` are optional; when `data` is present it
 // must already be a valid JSON object or array fragment.

@@ -156,6 +156,29 @@ class TypewriterConsoleTests(unittest.TestCase):
             show_idle_cursor=True,
         )
         self.assertEqual(state.text, f'READY{CONSOLE_CURSOR_GLYPH}')
+        self.assertFalse(state.cursor_at_bottom)
+
+    def test_display_state_omits_cursor_for_empty_idle_last_line(self) -> None:
+        state = _display_state(
+            ConsoleLine(text='', typed_chars=0, typing_complete=True),
+            cursor_visible=True,
+            is_active=False,
+            is_last_visible=True,
+            show_idle_cursor=True,
+        )
+        self.assertEqual(state.text, '')
+        self.assertTrue(state.cursor_at_bottom)
+
+    def test_display_state_keeps_cursor_for_empty_non_last_line(self) -> None:
+        state = _display_state(
+            ConsoleLine(text='', typed_chars=0, typing_complete=True),
+            cursor_visible=True,
+            is_active=False,
+            is_last_visible=False,
+            show_idle_cursor=True,
+        )
+        self.assertNotIn(CONSOLE_CURSOR_GLYPH, state.text)
+        self.assertFalse(state.cursor_at_bottom)
 
     def test_cursor_glyph_renders(self) -> None:
         rendered = font_render_surface(CONSOLE_CURSOR_GLYPH, 12, palette.FOREGROUND)

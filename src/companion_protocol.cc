@@ -46,16 +46,24 @@
 //     "player.inventory":       payload is the complete inventory array
 //   `playerAvailable` in the envelope is always `true` for an `update`:
 //   the server only emits `update` while the player is loaded. When
-//   the player is not loaded, the server emits `player_unavailable`
+//   the player is not loaded, the server emits `on_player_unavailable`
 //   instead.
 //
-//   {"type":"player_unavailable","seq":N,"playerAvailable":false}
+//   {"type":"on_player_unavailable","seq":N,"playerAvailable":false}
+//
+//   {"type":"on_player_available","seq":N,"playerAvailable":true}
+//   One-shot on the absent -> present transition while a steady-state
+//   `Ready` connection has been idle. The client is expected to send
+//   `get_snapshot` in response; the server does not push the snapshot
+//   itself. This closes the no-signal window that would otherwise only
+//   open on the next field-level `update`.
 //
 //   {"type":"cmd_ack","id":N,"ok":bool,"error":"<string>"?,"data":{...}?}
 //
 // `world` has no `seq`, no `payload`. `snapshot` has no `kind`; the
 // `payload` *is* the kind dispatch. `update` always has `kind` and
-// `payload`. `player_unavailable` has neither.
+// `payload`. `on_player_unavailable` and `on_player_available` have
+// neither.
 //
 // T0 changes from step 1/2:
 //   - `world.schemaVersion` is now `3` (was `1`, then `2`).
@@ -468,7 +476,8 @@ namespace {
 //
 // `playerAvailable` is hardcoded to `true` in the envelope: the server
 // only invokes an update builder while the player is loaded. When the
-// player is not loaded, the server emits `player_unavailable` instead.
+// player is not loaded, the server emits `on_player_unavailable`
+// instead.
 //
 // Returns an empty string on any formatting failure.
 std::string wrapUpdate(unsigned int seq,
@@ -539,12 +548,26 @@ std::string companionBuildInventoryUpdate(unsigned int seq,
     return wrapUpdate(seq, kInventoryKind, body.c_str());
 }
 
-std::string companionBuildPlayerUnavailable(unsigned int seq)
+std::string companionBuildOnPlayerUnavailable(unsigned int seq)
 {
     char buffer[80];
     int n = snprintf(buffer,
         sizeof(buffer),
-        R"({"type":"player_unavailable","seq":%u,"playerAvailable":false})"
+        R"({"type":"on_player_unavailable","seq":%u,"playerAvailable":false})"
+        "\n",
+        seq);
+    if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
+        return std::string();
+    }
+    return std::string(buffer, static_cast<size_t>(n));
+}
+
+std::string companionBuildOnPlayerAvailable(unsigned int seq)
+{
+    char buffer[80];
+    int n = snprintf(buffer,
+        sizeof(buffer),
+        R"({"type":"on_player_available","seq":%u,"playerAvailable":true})"
         "\n",
         seq);
     if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {

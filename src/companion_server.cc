@@ -297,13 +297,22 @@ void queueSnapshotMessage()
     queueSnapshotMessage(companionCollectSnapshot());
 }
 
-void queuePlayerUnavailableMessage()
+void queueOnPlayerUnavailableMessage()
 {
-    if (!queueMessage(companionBuildPlayerUnavailable(nextSequence()))) {
+    if (!queueMessage(companionBuildOnPlayerUnavailable(nextSequence()))) {
         return;
     }
 
-    debug_printf("companion: player_unavailable sent\n");
+    debug_printf("companion: on_player_unavailable sent\n");
+}
+
+void queueOnPlayerAvailableMessage()
+{
+    if (!queueMessage(companionBuildOnPlayerAvailable(nextSequence()))) {
+        return;
+    }
+
+    debug_printf("companion: on_player_available sent\n");
 }
 
 bool vitalsDiffer(const CompanionPlayerVitals& a, const CompanionPlayerVitals& b)
@@ -579,18 +588,22 @@ void sampleReadyClient(unsigned int now)
     if (current.hasPlayer != gConnection.playerWasAvailable) {
         gConnection.playerWasAvailable = current.hasPlayer;
         if (current.hasPlayer) {
-            // Absent -> present. Prime `lastSent` to the current
-            // sample so the next tick's diff is empty; the client is
-            // expected to call `get_snapshot` to learn the state. We
-            // do not force-emit here, because the client just got the
-            // `world` handshake and has not asked for data yet.
+            // Absent -> present in steady state. Emit the one-shot
+            // `on_player_available` notification and prime
+            // `lastSent` to the current sample so the next tick's
+            // diff is empty. The client is expected to send
+            // `get_snapshot` in response; we do not push the
+            // snapshot ourselves (snapshot stays a request/response
+            // contract). The handshake path is unaffected: that one
+            // runs before `sampleReadyClient` is ever called.
+            queueOnPlayerAvailableMessage();
             primeLastSentState(current);
         } else {
             // Present -> absent. Emit the one-shot transition and
             // clear the baseline so the next present sample is
             // treated as fresh.
             gConnection.lastSentPrimed = false;
-            queuePlayerUnavailableMessage();
+            queueOnPlayerUnavailableMessage();
         }
         return;
     }
