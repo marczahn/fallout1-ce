@@ -13,6 +13,8 @@ if TYPE_CHECKING:
 class InventoryPage:
     """Placeholder INVENTORY page."""
 
+    title = "INVENTORY"
+
     def render(
         self,
         surface: pygame.Surface,

@@ -4,7 +4,6 @@ from __future__ import annotations
 import pygame
 
 from companion_app.render import background, font, palette
-from companion_app.ui.pages import Page
 from companion_app.ui.shell import (
     BODY_SIZE,
     HEADER_HEIGHT,
@@ -55,15 +54,17 @@ class Layout:
     def draw(
         self,
         surface: pygame.Surface,
-        current_page: Page,
+        title: str | None,
     ) -> None:
         """Render background and the top header."""
         background.fill_background(surface)
+        if not title:
+            return
 
         page_rect = pygame.Rect(0, 0, self._width, HEADER_HEIGHT)
         title_rect = font.draw_text_centered(
             surface,
-            current_page.name,
+            title,
             page_rect,
             HEADER_SIZE,
             palette.FOREGROUND,

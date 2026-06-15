@@ -65,6 +65,8 @@ def return_to_root(ui_state: DataPageUiState) -> DataPageUiState:
 class DataPage:
     """DATA page with root sub-tab selection and placeholder bodies."""
 
+    title = "DATA"
+
     def render(
         self,
         surface: pygame.Surface,

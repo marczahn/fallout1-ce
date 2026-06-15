@@ -37,7 +37,12 @@ from companion_app.render.font import FontLoadError, load_font
 from companion_app.state import AppState, ConnectionState
 from companion_app.ui.layout import Layout
 from companion_app.ui.pages import Page
-from companion_app.ui.pages.boot import BOOT_CONSOLE_MAX_LINES, BootPage, BootSequence
+from companion_app.ui.pages.boot import (
+    BOOT_CONSOLE_MAX_LINES,
+    BootPage,
+    BootSequence,
+    SplashPage,
+)
 from companion_app.ui.pages.data import (
     DataPage,
     DataPageUiState,
@@ -161,7 +166,6 @@ def _run_loop(config: Config) -> int:
     state = AppState()
     typewriter = TypewriterConsole(max_lines=BOOT_CONSOLE_MAX_LINES)
     boot_sequence = BootSequence()
-    boot_sequence.begin(typewriter)
     net: NetworkClient | None = None
 
     vignette: VignetteOverlay | None = None
@@ -184,13 +188,20 @@ def _run_loop(config: Config) -> int:
     if config.debug_event_log:
         debug_overlay = EventLogOverlay()
 
-    boot_page = BootPage((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
     layout = Layout((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
+    splash_page = SplashPage()
+    boot_page = BootPage((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
 
     status_page = StatusPage()
     data_page = DataPage()
     inventory_page = InventoryPage()
     map_page = MapPage()
+    page_titles = {
+        Page.STATUS: status_page.title,
+        Page.DATA: data_page.title,
+        Page.INVENTORY: inventory_page.title,
+        Page.MAP: map_page.title,
+    }
 
     current_page: Page = Page.STATUS
     data_ui = DataPageUiState()
@@ -234,7 +245,7 @@ def _run_loop(config: Config) -> int:
         body = _body_text(state)
 
         if boot_sequence.show_main_ui:
-            layout.draw(virtual, current_page)
+            layout.draw(virtual, page_titles[current_page])
             if body:
                 layout.draw_placeholder(virtual, body)
             elif current_page is Page.STATUS:
@@ -245,9 +256,11 @@ def _run_loop(config: Config) -> int:
                 inventory_page.render(virtual, layout.content_rect, state)
             else:
                 map_page.render(virtual, layout.content_rect, state)
-        else:
+        elif boot_sequence.show_boot_console:
             boot_page.render(virtual)
             typewriter.draw(virtual, boot_page.console_rect)
+        else:
+            splash_page.render(virtual)
 
         if vignette is not None:
             vignette.draw(virtual)

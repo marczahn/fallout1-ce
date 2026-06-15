@@ -26,6 +26,8 @@ _STATUS_VALUE_OFFSET: int = 352
 class StatusPage:
     """Renders the STATUS page content into the layout's content rect."""
 
+    title = "STATUS"
+
     def render(
         self,
         surface: pygame.Surface,

@@ -7,7 +7,6 @@ import pygame
 
 from companion_app.render import palette
 from companion_app.ui.layout import Layout
-from companion_app.ui.pages import Page
 from companion_app.ui.shell import (
     BODY_SIZE,
     HEADER_HEIGHT,
@@ -26,7 +25,7 @@ class LayoutTest(unittest.TestCase):
 
     def test_draw_fills_background(self) -> None:
         self.surface.fill((123, 45, 67))
-        self.layout.draw(self.surface, Page.STATUS)
+        self.layout.draw(self.surface, "STATUS")
         px = tuple(self.surface.get_at((1, 1)))[:3]
         self.assertEqual(px, palette.BACKGROUND)
 
@@ -60,7 +59,7 @@ class LayoutTest(unittest.TestCase):
     def test_draw_renders_underlined_header(self) -> None:
         from companion_app.render.font import _get_font
 
-        self.layout.draw(self.surface, Page.STATUS)
+        self.layout.draw(self.surface, "STATUS")
         header_font = _get_font(HEADER_SIZE)
         title_rect = header_font.get_rect('STATUS', size=HEADER_SIZE)
         title_rect.center = (VIRTUAL_WIDTH // 2, HEADER_HEIGHT // 2)
@@ -71,7 +70,7 @@ class LayoutTest(unittest.TestCase):
     def test_draw_console_frame_renders_rule(self) -> None:
         from companion_app.render.font import _get_font
 
-        self.layout.draw(self.surface, Page.STATUS)
+        self.layout.draw(self.surface, "STATUS")
         self.layout.draw_console_frame(self.surface)
         label_font = _get_font(HEADER_SIZE)
         label_rect = label_font.get_rect('CONSOLE', size=HEADER_SIZE)
@@ -91,6 +90,11 @@ class LayoutTest(unittest.TestCase):
 
     def test_draw_placeholder_does_not_crash_with_empty_string(self) -> None:
         self.layout.draw_placeholder(self.surface, '')
+
+    def test_draw_omits_header_when_title_is_none(self) -> None:
+        self.layout.draw(self.surface, None)
+        px = tuple(self.surface.get_at((VIRTUAL_WIDTH // 2, HEADER_HEIGHT // 2)))[:3]
+        self.assertEqual(px, palette.BACKGROUND)
 
 
 if __name__ == '__main__':

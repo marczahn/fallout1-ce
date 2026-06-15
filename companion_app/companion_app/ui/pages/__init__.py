@@ -21,16 +21,6 @@ class Page(Enum):
     INVENTORY = 3
     MAP = 4
 
-    @property
-    def tab_label(self) -> str:
-        if self is Page.STATUS:
-            return "STAT"
-        if self is Page.DATA:
-            return "DATA"
-        if self is Page.INVENTORY:
-            return "INV"
-        return "MAP"
-
 
 class PageRenderer(Protocol):
     """Minimal contract every page must satisfy.
@@ -46,3 +36,6 @@ class PageRenderer(Protocol):
         content_rect: pygame.Rect,
         state: AppState,
     ) -> None: ...
+
+    @property
+    def title(self) -> str | None: ...

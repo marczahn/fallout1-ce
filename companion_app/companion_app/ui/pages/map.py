@@ -13,6 +13,8 @@ if TYPE_CHECKING:
 class MapPage:
     """Placeholder MAP page."""
 
+    title = "MAP"
+
     def render(
         self,
         surface: pygame.Surface,

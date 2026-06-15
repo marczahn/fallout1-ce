@@ -15,6 +15,8 @@ from companion_app.ui.pages.boot import (
     BootPage,
     BootPhase,
     BootSequence,
+    SPLASH_HOLD_MS,
+    SplashPage,
 )
 
 
@@ -33,7 +35,7 @@ class BootSequenceTests(unittest.TestCase):
         sequence = BootSequence()
         sequence.begin(console)
         self.assertGreater(len(console.lines), 0)
-        self.assertEqual(sequence.phase, BootPhase.BOOTING)
+        self.assertEqual(sequence.phase, BootPhase.SPLASH)
 
     def test_begin_preserves_full_transcript_with_boot_console_capacity(self) -> None:
         console = TypewriterConsole(max_lines=BOOT_CONSOLE_MAX_LINES)
@@ -45,9 +47,29 @@ class BootSequenceTests(unittest.TestCase):
         self.assertEqual(len(console.lines), len(BOOT_TRANSCRIPT))
         self.assertEqual(console.lines[0].text, BOOT_TRANSCRIPT[0])
 
-    def test_boot_completion_enters_cursor_hold_without_clearing_console(self) -> None:
+    def test_splash_phase_holds_before_boot_begins(self) -> None:
         console = TypewriterConsole()
         sequence = BootSequence()
+
+        result = sequence.tick(SPLASH_HOLD_MS - 1, console)
+
+        self.assertFalse(result.start_connect)
+        self.assertEqual(sequence.phase, BootPhase.SPLASH)
+        self.assertEqual(len(console.lines), 0)
+
+    def test_splash_phase_transitions_into_booting_after_delay(self) -> None:
+        console = TypewriterConsole()
+        sequence = BootSequence()
+
+        result = sequence.tick(SPLASH_HOLD_MS, console)
+
+        self.assertFalse(result.start_connect)
+        self.assertEqual(sequence.phase, BootPhase.BOOTING)
+        self.assertGreater(len(console.lines), 0)
+
+    def test_boot_completion_enters_cursor_hold_without_clearing_console(self) -> None:
+        console = TypewriterConsole()
+        sequence = BootSequence(phase=BootPhase.BOOTING)
         sequence.begin(console)
 
         self._drain_console(console)
@@ -118,6 +140,16 @@ class BootSequenceTests(unittest.TestCase):
 
         px = tuple(surface.get_at((1, 1)))[:3]
         self.assertEqual(px, palette.BACKGROUND)
+
+    def test_splash_page_renders_image_over_background(self) -> None:
+        surface = pygame.Surface((480, 800))
+        surface.fill((123, 45, 67))
+        page = SplashPage()
+
+        page.render(surface)
+
+        self.assertEqual(tuple(surface.get_at((1, 1)))[:3], palette.BACKGROUND)
+        self.assertNotEqual(tuple(surface.get_at((240, 400)))[:3], palette.BACKGROUND)
 
     def _drain_console(self, console: TypewriterConsole) -> None:
         for _ in range(64):
