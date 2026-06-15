@@ -101,7 +101,7 @@ class DataPage:
         )
         pygame.draw.line(
             surface,
-            palette.DIM,
+            palette.FOREGROUND,
             (content_rect.left + 36, content_rect.top + _TAB_LINE_Y),
             (content_rect.right - 36, content_rect.top + _TAB_LINE_Y),
             1,
@@ -136,7 +136,7 @@ class DataPage:
             "NOT YET IMPLEMENTED",
             body_rect,
             _DETAIL_BODY_SIZE,
-            palette.DIM,
+            palette.FOREGROUND,
         )
 
     def _draw_tab_label(
@@ -147,7 +147,7 @@ class DataPage:
         *,
         selected: bool,
     ) -> None:
-        color = palette.FOREGROUND if selected else palette.DIM
+        color = palette.FOREGROUND
         text_rect = font.draw_text_left(
             surface,
             label,

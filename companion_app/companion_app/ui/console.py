@@ -18,9 +18,6 @@ CONSOLE_LINE_DELAY_MS: int = 180
 CONSOLE_CURSOR_BLINK_MS: int = 320
 CONSOLE_CURSOR_GLYPH: str = '_'
 
-_COLOR_AMBER = (180, 180, 80)
-
-
 @dataclass
 class ConsoleLine:
     text: str
@@ -124,7 +121,11 @@ class TypewriterConsole:
                     )
             y += CONSOLE_LINE_HEIGHT
         if not visible_lines and self.show_idle_cursor and self._cursor_visible:
-            rendered = font_render_surface(CONSOLE_CURSOR_GLYPH, CONSOLE_FONT_SIZE, palette.DIM)
+            rendered = font_render_surface(
+                CONSOLE_CURSOR_GLYPH,
+                CONSOLE_FONT_SIZE,
+                palette.FOREGROUND,
+            )
             if rendered is not None:
                 surface.blit(rendered, (panel_rect.left + CONSOLE_PADDING, y))
 
@@ -151,14 +152,8 @@ class TypewriterConsole:
 
 
 def _line_color(text: str) -> tuple[int, int, int]:
-    lower = text.lower()
-    if 'error' in lower or 'failed' in lower:
-        return _COLOR_AMBER
-    if 'connected' in lower or 'snapshot' in lower:
-        return palette.FOREGROUND
-    if 'world' in lower or 'sending' in lower or 'requesting' in lower:
-        return palette.DIM
-    return palette.DIM
+    _ = text
+    return palette.FOREGROUND
 
 
 def _display_state(

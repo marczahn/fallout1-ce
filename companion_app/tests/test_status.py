@@ -8,6 +8,7 @@ import unittest
 
 import pygame
 
+from companion_app.render import palette
 from companion_app.state import AppState, ConnectionState, PlayerState
 from companion_app.ui.layout import Layout
 from companion_app.ui.pages.status import StatusPage
@@ -63,6 +64,16 @@ class StatusPageTests(unittest.TestCase):
                 self.layout.content_rect,
                 self._make_state(hp=50, max_hp=50),
             )
+
+    def test_rule_uses_same_phosphor_color_as_text(self) -> None:
+        self.page.render(
+            self.surface,
+            self.layout.content_rect,
+            self._make_state(hp=73, max_hp=100),
+        )
+        rule_y = self.layout.content_rect.top + 300
+        px = tuple(self.surface.get_at((100, rule_y)))[:3]
+        self.assertEqual(px, palette.FOREGROUND)
 
 
 if __name__ == "__main__":

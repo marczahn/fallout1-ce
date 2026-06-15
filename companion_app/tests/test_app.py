@@ -9,7 +9,6 @@ import unittest
 
 from companion_app.app import (
     _body_text,
-    _connection_status,
     _handle_data_input,
     _route_input,
     _start_network_client,
@@ -26,46 +25,6 @@ from companion_app.input.events import (
 from companion_app.state import AppState, ConnectionState, PlayerState
 from companion_app.ui.pages import Page
 from companion_app.ui.pages.data import DataPageUiState, DataTab
-
-
-class ConnectionStatusTests(unittest.TestCase):
-    def test_disconnected(self) -> None:
-        state = AppState()
-        self.assertEqual(_connection_status(state), "--")
-
-    def test_connecting(self) -> None:
-        state = AppState(connection=ConnectionState.CONNECTING)
-        self.assertEqual(_connection_status(state), "CONNECTING")
-
-    def test_awaiting_auth(self) -> None:
-        state = AppState(connection=ConnectionState.AWAITING_AUTH)
-        self.assertEqual(_connection_status(state), "CONNECTING")
-
-    def test_awaiting_world(self) -> None:
-        state = AppState(connection=ConnectionState.AWAITING_WORLD)
-        self.assertEqual(_connection_status(state), "CONNECTING")
-
-    def test_awaiting_snapshot(self) -> None:
-        state = AppState(connection=ConnectionState.AWAITING_SNAPSHOT)
-        self.assertEqual(_connection_status(state), "CONNECTING")
-
-    def test_ready_player_available(self) -> None:
-        state = AppState(
-            connection=ConnectionState.READY,
-            player=PlayerState(available=True),
-        )
-        self.assertEqual(_connection_status(state), "OK")
-
-    def test_ready_player_not_available(self) -> None:
-        state = AppState(
-            connection=ConnectionState.READY,
-            player=PlayerState(available=False),
-        )
-        self.assertEqual(_connection_status(state), "NO SIGNAL")
-
-    def test_reconnecting(self) -> None:
-        state = AppState(connection=ConnectionState.RECONNECTING)
-        self.assertEqual(_connection_status(state), "RECONNECTING")
 
 
 class BodyTextTests(unittest.TestCase):

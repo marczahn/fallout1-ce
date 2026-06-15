@@ -60,16 +60,6 @@ VIRTUAL_HEIGHT = 800
 TARGET_FPS = 60
 
 
-def _connection_status(state: AppState) -> str:
-    if state.connection is ConnectionState.READY:
-        return 'OK' if state.player.available else 'NO SIGNAL'
-    if state.connection is ConnectionState.RECONNECTING:
-        return 'RECONNECTING'
-    if state.connection is not ConnectionState.DISCONNECTED:
-        return 'CONNECTING'
-    return '--'
-
-
 def _body_text(state: AppState) -> str:
     if state.connection is not ConnectionState.READY:
         return 'CONNECTING…'
@@ -241,11 +231,10 @@ def _run_loop(config: Config) -> int:
         if boot_tick.start_connect and net is None:
             net = _start_network_client(config, state, typewriter)
 
-        connection_status = _connection_status(state)
         body = _body_text(state)
 
         if boot_sequence.show_main_ui:
-            layout.draw(virtual, current_page, connection_status)
+            layout.draw(virtual, current_page)
             if body:
                 layout.draw_placeholder(virtual, body)
             elif current_page is Page.STATUS:

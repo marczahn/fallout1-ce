@@ -12,6 +12,7 @@ from companion_app.ui.console import (
     ConsoleLine,
     TypewriterConsole,
     _display_state,
+    _line_color,
 )
 from companion_app.render import palette
 from companion_app.render.font import font_render_surface
@@ -186,6 +187,15 @@ class TypewriterConsoleTests(unittest.TestCase):
         assert rendered is not None
         self.assertGreater(rendered.get_width(), 0)
         self.assertGreater(rendered.get_height(), 0)
+
+    def test_line_color_is_monochrome_for_normal_and_status_messages(self) -> None:
+        for text in (
+            'CONNECTED',
+            'SENDING AUTH',
+            'REQUESTING WORLD',
+            'ERROR',
+        ):
+            self.assertEqual(_line_color(text), palette.FOREGROUND)
 
 
 if __name__ == '__main__':

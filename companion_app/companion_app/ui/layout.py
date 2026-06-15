@@ -15,7 +15,6 @@ from companion_app.ui.shell import (
 _CONSOLE_MARGIN_X = 44
 _CONSOLE_MARGIN_TOP = 22
 _CONSOLE_HEIGHT = 170
-_HEADER_RIGHT_MARGIN = 28
 _UNDERLINE_GAP = 4
 _CONSOLE_LABEL_GAP = 10
 _CONSOLE_RULE_PADDING = 12
@@ -57,7 +56,6 @@ class Layout:
         self,
         surface: pygame.Surface,
         current_page: Page,
-        connection_status: str,
     ) -> None:
         """Render background and the top header."""
         background.fill_background(surface)
@@ -70,17 +68,9 @@ class Layout:
             HEADER_SIZE,
             palette.FOREGROUND,
         )
-        if connection_status and connection_status != 'OK':
-            font.draw_text_right(
-                surface,
-                connection_status,
-                (self._width - _HEADER_RIGHT_MARGIN, title_rect.top),
-                HEADER_SIZE,
-                palette.DIM,
-            )
         pygame.draw.line(
             surface,
-            palette.DIM,
+            palette.FOREGROUND,
             (title_rect.left, title_rect.bottom + _UNDERLINE_GAP),
             (title_rect.right, title_rect.bottom + _UNDERLINE_GAP),
             1,
@@ -92,12 +82,12 @@ class Layout:
             'CONSOLE',
             (self._console_rect.left, self._console_rect.top),
             HEADER_SIZE,
-            palette.DIM,
+            palette.FOREGROUND,
         )
         rule_y = label_rect.bottom + _CONSOLE_LABEL_GAP
         pygame.draw.line(
             surface,
-            palette.DIM,
+            palette.FOREGROUND,
             (self._console_rect.left, rule_y),
             (self._console_rect.right - _CONSOLE_RULE_PADDING, rule_y),
             1,
@@ -105,7 +95,7 @@ class Layout:
         bottom_y = self._console_rect.bottom + _CONSOLE_FRAME_BOTTOM_GAP
         pygame.draw.line(
             surface,
-            palette.DIM,
+            palette.FOREGROUND,
             (self._console_rect.left, bottom_y),
             (self._console_rect.right - _CONSOLE_RULE_PADDING, bottom_y),
             1,

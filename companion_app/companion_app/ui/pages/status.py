@@ -39,7 +39,7 @@ class StatusPage:
 
         pygame.draw.line(
             surface,
-            palette.DIM,
+            palette.FOREGROUND,
             (left, rule_y),
             (content_rect.right - _STATUS_MARGIN_X, rule_y),
             1,

@@ -25,5 +25,5 @@ class MapPage:
             "NOT YET IMPLEMENTED",
             content_rect,
             24,
-            palette.DIM,
+            palette.FOREGROUND,
         )
