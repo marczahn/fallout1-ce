@@ -46,7 +46,7 @@ struct CompanionPlayerVitals {
     int maxHp;
 };
 
-// `player.local_location` payload. Meaningful when
+// `player.localLocation` payload. Meaningful when
 // `surface == CompanionPlayerSurface::Local`. Wire keys: `tile`,
 // `elevation`, `map`, `location`, `locationId`. `location` is the engine's
 // localized short name; `locationId` is a stable identifier from the
@@ -59,7 +59,7 @@ struct CompanionPlayerLocalLocation {
     char locationId[kCompanionLocationIdSize];
 };
 
-// `player.world_location` payload. Meaningful when
+// `player.worldLocation` payload. Meaningful when
 // `surface == CompanionPlayerSurface::World`. Wire keys: `x`, `y` (the
 // engine's 50-pixel-per-area world coordinates).
 struct CompanionPlayerWorldLocation {

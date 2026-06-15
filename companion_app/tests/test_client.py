@@ -215,17 +215,17 @@ class NetworkClientTest(unittest.TestCase):
         self.client._write_buf.clear()
         fake.sendbuf.clear()
         fake.recvbuf = bytearray(
-            b'{"type":"world","schemaVersion":3,"game":"fallout1-ce",'
+            b'{"type":"world","schemaVersion":4,"game":"fallout1-ce",'
             b'"playerAvailable":true}\n'
         )
         self.client._try_recv()
         self.assert_connection(ConnectionState.AWAITING_SNAPSHOT)
         self.assertIsNotNone(self.state.world)
-        self.assertEqual(self.state.world.schema_version, 3)
+        self.assertEqual(self.state.world.schema_version, 4)
         self.assertEqual(self.state.world.game, "fallout1-ce")
         self.assertTrue(self.state.world.player_available)
-        # get_snapshot should be queued in the internal write buffer.
-        self.assertIn(b"get_snapshot", self.client._write_buf)
+        # getSnapshot should be queued in the internal write buffer.
+        self.assertIn(b"getSnapshot", self.client._write_buf)
 
         # Simulate server sending snapshot.
         self.client._write_buf.clear()
@@ -246,12 +246,12 @@ class NetworkClientTest(unittest.TestCase):
         self.state.connection = ConnectionState.AWAITING_WORLD
         self.client._on_world({
             "type": "world",
-            "schemaVersion": 3,
+            "schemaVersion": 4,
             "game": "fallout1-ce",
             "playerAvailable": True,
         })
         self.assert_connection(ConnectionState.AWAITING_SNAPSHOT)
-        self.assertEqual(self.state.world.schema_version, 3)
+        self.assertEqual(self.state.world.schema_version, 4)
         self.assertEqual(self.state.world.game, "fallout1-ce")
         # `world.playerAvailable` is the authoritative handshake-time
         # availability flag.
@@ -264,7 +264,7 @@ class NetworkClientTest(unittest.TestCase):
         self.state.connection = ConnectionState.AWAITING_WORLD
         self.client._on_world({
             "type": "world",
-            "schemaVersion": 3,
+            "schemaVersion": 4,
             "game": "fallout1-ce",
             "playerAvailable": False,
         })
@@ -302,8 +302,8 @@ class NetworkClientTest(unittest.TestCase):
         self.assertEqual(self.state.player.max_hp, 0)
 
     def test_snapshot_does_not_override_availability(self) -> None:
-        # Race: an `on_player_unavailable` landed between the
-        # `get_snapshot` request and the reply. The snapshot's
+        # Race: an `onPlayerUnavailable` landed between the
+        # `getSnapshot` request and the reply. The snapshot's
         # `playerAvailable: True` is truth-at-request-time and must
         # NOT re-flip `player.available`. Events are authoritative.
         self.state.connection = ConnectionState.AWAITING_SNAPSHOT
@@ -322,30 +322,30 @@ class NetworkClientTest(unittest.TestCase):
         self.assertEqual(self.state.player.hp, 30)
         self.assertEqual(self.state.player.max_hp, 40)
 
-    def test_on_player_available(self) -> None:
+    def test_player_available_handler(self) -> None:
         # Steady-state `Ready`, player was unavailable. Server sends
-        # `on_player_available`; the client flips availability and
+        # `onPlayerAvailable`; the client flips availability and
         # queues a re-sync snapshot.
         self.state.connection = ConnectionState.READY
         self.state.player.available = False
         self.client._write_buf.clear()
-        self.client.on_player_available()
+        self.client._handle_player_available()
         self.assertTrue(self.state.player.available)
         self.assert_connection(ConnectionState.AWAITING_SNAPSHOT)
-        self.assertIn(b"get_snapshot", self.client._write_buf)
+        self.assertIn(b"getSnapshot", self.client._write_buf)
 
-    def test_on_player_available_when_already_available(self) -> None:
+    def test_player_available_handler_when_already_available(self) -> None:
         # Idempotency: if the event arrives when the player is
         # already available, the client still re-syncs. A double
-        # `on_player_available` would be a server bug, but the
+        # `onPlayerAvailable` would be a server bug, but the
         # client treats it as "request another snapshot".
         self.state.connection = ConnectionState.READY
         self.state.player.available = True
         self.client._write_buf.clear()
-        self.client.on_player_available()
+        self.client._handle_player_available()
         self.assertTrue(self.state.player.available)
         self.assert_connection(ConnectionState.AWAITING_SNAPSHOT)
-        self.assertIn(b"get_snapshot", self.client._write_buf)
+        self.assertIn(b"getSnapshot", self.client._write_buf)
 
     def test_update_vitals(self) -> None:
         self.state.connection = ConnectionState.READY
@@ -363,44 +363,44 @@ class NetworkClientTest(unittest.TestCase):
         self.assertEqual(self.state.player.max_hp, 40)
         self.assertTrue(self.state.player.available)
 
-    def test_on_player_unavailable(self) -> None:
+    def test_player_unavailable_handler(self) -> None:
         self.state.player.available = True
-        self.client.on_player_unavailable()
+        self.client._handle_player_unavailable()
         self.assertFalse(self.state.player.available)
 
-    def test_dispatch_on_player_available_routes_to_handler(self) -> None:
-        # Verifies the wire-type string `on_player_available` reaches
+    def test_dispatch_onPlayerAvailable_routes_to_handler(self) -> None:
+        # Verifies the wire-type string `onPlayerAvailable` reaches
         # the right handler via the dispatch path, not just a direct
         # method call.
         self.state.connection = ConnectionState.READY
         self.state.player.available = False
         self.client._write_buf.clear()
-        self.client._dispatch({"type": "on_player_available"})
+        self.client._dispatch({"type": "onPlayerAvailable"})
         self.assertTrue(self.state.player.available)
         self.assert_connection(ConnectionState.AWAITING_SNAPSHOT)
-        self.assertIn(b"get_snapshot", self.client._write_buf)
+        self.assertIn(b"getSnapshot", self.client._write_buf)
 
-    def test_dispatch_on_player_unavailable_routes_to_handler(self) -> None:
+    def test_dispatch_onPlayerUnavailable_routes_to_handler(self) -> None:
         self.state.connection = ConnectionState.READY
         self.state.player.available = True
-        self.client._dispatch({"type": "on_player_unavailable"})
+        self.client._dispatch({"type": "onPlayerUnavailable"})
         self.assertFalse(self.state.player.available)
 
     def test_re_sync_flow_end_to_end(self) -> None:
         # The full path the user reported: client is in steady-state
         # `Ready` with `player.available = False` (NO SIGNAL), the
-        # server sends `on_player_available`, then a `snapshot` in
-        # response to the client's `get_snapshot`. After both: state
+        # server sends `onPlayerAvailable`, then a `snapshot` in
+        # response to the client's `getSnapshot`. After both: state
         # is `Ready`, `player.available` is True, vitals are
         # populated.
         self.state.connection = ConnectionState.READY
         self.state.player.available = False
         self.client._write_buf.clear()
 
-        self.client._dispatch({"type": "on_player_available"})
+        self.client._dispatch({"type": "onPlayerAvailable"})
         self.assert_connection(ConnectionState.AWAITING_SNAPSHOT)
         self.assertTrue(self.state.player.available)
-        self.assertIn(b"get_snapshot", self.client._write_buf)
+        self.assertIn(b"getSnapshot", self.client._write_buf)
 
         self.client._dispatch({
             "type": "snapshot",
@@ -421,7 +421,7 @@ class NetworkClientTest(unittest.TestCase):
 
         self.client._on_update({
             "type": "update",
-            "kind": "player.local_location",
+            "kind": "player.localLocation",
             "payload": {},
         })
         # hp unchanged

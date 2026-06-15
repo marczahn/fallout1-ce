@@ -14,14 +14,14 @@ Supports the current step-2 / T0 protocol surface:
     companion_password from fallout.cfg). auth is unconditional: the
     server is only enabled when a password is configured.
   - hello
-  - get_snapshot
+  - getSnapshot
   - cmd (T6: id, name, args)
   - any other raw JSON line for protocol experiments
 
 T0 protocol awareness (visible in the log and the toolbar):
-  - `world.schemaVersion` is displayed inline (T0 bumped it to 3).
+  - `world.schemaVersion` is displayed inline (current protocol version: 4).
   - `update` messages show the `kind` tag (e.g. `player.vitals`,
-    `player.local_location`, `player.world_location`) so you can
+    `player.localLocation`, `player.worldLocation`) so you can
     tell at a glance which aspect of the player the update is about.
   - The log toolbar has a "kind" filter so you can scope the log to
     one kind (or one `world.schemaVersion`).
@@ -587,7 +587,7 @@ textarea {
         <div class="field"><label>Type</label>
           <select name="type" id="send-type">
             <option value="hello">hello</option>
-            <option value="get_snapshot">get_snapshot</option>
+            <option value="getSnapshot">getSnapshot</option>
             <option value="auth">auth</option>
             <option value="cmd">cmd</option>
             <option value="raw">raw (any JSON)</option>
@@ -612,7 +612,7 @@ textarea {
           <option value="kind">by kind</option>
           <option value="schema">by world.schemaVersion</option>
         </select>
-        <input id="filter-value" placeholder="player.vitals / 3" size="16" disabled>
+        <input id="filter-value" placeholder="player.vitals / 4" size="16" disabled>
       </label>
       <span class="spacer"></span>
       <span id="log-count">0 lines</span>
@@ -633,13 +633,13 @@ const TYPE_COLORS = {
   world: "#6ad0ff",
   snapshot: "#19ff66",
   update: "#19ff66",
-  on_player_unavailable: "#ff4040",
-  on_player_available: "#19ff66",
+  onPlayerUnavailable: "#ff4040",
+  onPlayerAvailable: "#19ff66",
   hello: "#ffb000",
-  get_snapshot: "#ffb000",
+  getSnapshot: "#ffb000",
   auth: "#ffb000",
   cmd: "#ffb000",
-  cmd_ack: "#19ff66",
+  cmdAck: "#19ff66",
   announce: "#ff66cc",
   foo: "#ff66cc"
 };
@@ -647,10 +647,11 @@ const TYPE_COLORS = {
 const META_COLORS = {
   // `kind` values for `update` and the keys of `snapshot.payload`.
   "player.vitals": "#19ff66",
-  "player.local_location": "#6ad0ff",
-  "player.world_location": "#ff66cc",
-  // `schemaVersion` for `world` (T0: 3).
-  "schema:3": "#6ad0ff",
+  "player.localLocation": "#6ad0ff",
+  "player.worldLocation": "#ff66cc",
+  // `schemaVersion` for `world` (current protocol: 4).
+  "schema:4": "#6ad0ff",
+  "schema:3": "#6a4a00",
   "schema:2": "#6a4a00",
   "schema:1": "#6a4a00"
 };
@@ -842,7 +843,7 @@ async function pollLoop() {
 function renderSendFields() {
   const t = elSendType.value;
   elSendFields.innerHTML = "";
-  if (t === "hello" || t === "get_snapshot") {
+  if (t === "hello" || t === "getSnapshot") {
     elSendFields.innerHTML = '<label>No extra fields. Sends <code>{"type":"' + t + '"}</code>.</label>';
   } else if (t === "auth") {
     elSendFields.innerHTML =
@@ -855,7 +856,7 @@ function renderSendFields() {
         '<div class="field"><label>Name</label>' +
           '<select name="name" id="cmd-name">' +
             '<option value="ping">ping</option>' +
-            '<option value="get_snapshot">get_snapshot</option>' +
+            '<option value="getSnapshot">getSnapshot</option>' +
             '<option value="__custom__">custom...</option>' +
           '</select>' +
         '</div>' +
@@ -957,7 +958,7 @@ async function onSendSubmit(e) {
   e.preventDefault();
   const t = elSendType.value;
   let body = {};
-  if (t === "hello" || t === "get_snapshot") {
+  if (t === "hello" || t === "getSnapshot") {
     body.payload = { type: t };
   } else if (t === "auth") {
     const fd = new FormData(elSendFields);

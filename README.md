@@ -120,7 +120,7 @@ Both keys are required. There is no no-password mode. A `fallout.cfg` without th
 - `password` is the shared secret the client must send in its first message. Pick anything opaque; the password is compared in constant time and is never logged. It is stored in cleartext in `fallout.cfg`, so treat the file accordingly.
 - The port is hardcoded to `28080` and is not configurable.
 
-The handshake is `{"type":"auth","password":"<password>"}` followed by `{"type":"hello"}`. The server replies with a `world` message, after which the client may send `{"type":"get_snapshot"}` to pull a full snapshot, or just wait for the server to push `update` messages as state changes. The current `world.schemaVersion` is `2`.
+The handshake is `{"type":"auth","password":"<password>"}` followed by `{"type":"hello"}`. The server replies with a `world` message, after which the client may send `{"type":"getSnapshot"}` to pull a full snapshot, or just wait for the server to push `update` messages as state changes. The current `world.schemaVersion` is `4`.
 
 > **NOTE**: `0.0.0.0` exposes the server to your LAN. The protocol has no encryption and the only authentication is the password, so use loopback (`127.0.0.1`) unless you trust the network.
 

@@ -5,7 +5,7 @@
 // Client -> server (TCP):
 //   {"type":"auth","password":"<string>"}   handshake; must be the first message
 //   {"type":"hello"}              post-auth handshake; second message
-//   {"type":"get_snapshot"}       request a full snapshot
+//   {"type":"getSnapshot"}       request a full snapshot
 //   {"type":"cmd","id":N,"name":"X","args":{...}}
 //                                          step-2 command channel (T6)
 //
@@ -18,19 +18,19 @@
 //                                 normal auth/hello handshake.
 //
 // Server -> client:
-//   {"type":"world","schemaVersion":3,"game":"fallout1-ce","playerAvailable":bool}
+//   {"type":"world","schemaVersion":4,"game":"fallout1-ce","playerAvailable":bool}
 //
 //   {"type":"snapshot","seq":N,"playerAvailable":bool,"payload":{
 //      "player.vitals":          {"hp":H,"maxHp":M},
-//      "player.local_location":  {"tile":T,"elevation":E,"map":M,
+//      "player.localLocation":  {"tile":T,"elevation":E,"map":M,
 //                                 "location":"<name>","locationId":"<id>"},
-//      "player.world_location":  {"x":X,"y":Y},
+//      "player.worldLocation":  {"x":X,"y":Y},
 //      "player.inventory":       [{"pid":P,"protoId":"<id>","name":"<name>",
 //                                   "type":"<type>","count":N,"slot":"<slot>"}]
 //   }}
 //   The `payload` of `snapshot` is a kind->object map. Only kinds valid
-//   in the current state are present. `player.local_location` and
-//   `player.world_location` are mutually exclusive (driven by
+//   in the current state are present. `player.localLocation` and
+//   `player.worldLocation` are mutually exclusive (driven by
 //   `CompanionPlayerSurface`).
 //
 //   {"type":"update","seq":N,"playerAvailable":true,
@@ -40,33 +40,33 @@
 //   object (all schema fields present, not a field-level diff). The
 //   current kinds are:
 //     "player.vitals":          payload fields are {hp, maxHp}
-//     "player.local_location":  payload fields are {tile, elevation,
+//     "player.localLocation":  payload fields are {tile, elevation,
 //                               map, location, locationId}
-//     "player.world_location":  payload fields are {x, y}
+//     "player.worldLocation":  payload fields are {x, y}
 //     "player.inventory":       payload is the complete inventory array
 //   `playerAvailable` in the envelope is always `true` for an `update`:
 //   the server only emits `update` while the player is loaded. When
-//   the player is not loaded, the server emits `on_player_unavailable`
+//   the player is not loaded, the server emits `onPlayerUnavailable`
 //   instead.
 //
-//   {"type":"on_player_unavailable","seq":N,"playerAvailable":false}
+//   {"type":"onPlayerUnavailable","seq":N,"playerAvailable":false}
 //
-//   {"type":"on_player_available","seq":N,"playerAvailable":true}
+//   {"type":"onPlayerAvailable","seq":N,"playerAvailable":true}
 //   One-shot on the absent -> present transition while a steady-state
 //   `Ready` connection has been idle. The client is expected to send
-//   `get_snapshot` in response; the server does not push the snapshot
+//   `getSnapshot` in response; the server does not push the snapshot
 //   itself. This closes the no-signal window that would otherwise only
 //   open on the next field-level `update`.
 //
-//   {"type":"cmd_ack","id":N,"ok":bool,"error":"<string>"?,"data":{...}?}
+//   {"type":"cmdAck","id":N,"ok":bool,"error":"<string>"?,"data":{...}?}
 //
 // `world` has no `seq`, no `payload`. `snapshot` has no `kind`; the
 // `payload` *is* the kind dispatch. `update` always has `kind` and
-// `payload`. `on_player_unavailable` and `on_player_available` have
+// `payload`. `onPlayerUnavailable` and `onPlayerAvailable` have
 // neither.
 //
 // T0 changes from step 1/2:
-//   - `world.schemaVersion` is now `3` (was `1`, then `2`).
+//   - `world.schemaVersion` is now `4` (was `1`, then `2`, then `3`).
 //   - `update` no longer carries `entity`; the entity is encoded in
 //     the `kind` namespace (e.g. `player.vitals`).
 //   - `update.data` is renamed to `update.payload`. The payload is
@@ -91,7 +91,7 @@ namespace fallout {
 namespace {
 
 constexpr char kHello[] = R"({"type":"hello"})";
-constexpr char kGetSnapshot[] = R"({"type":"get_snapshot"})";
+constexpr char kGetSnapshot[] = R"({"type":"getSnapshot"})";
 constexpr char kAuthPrefix[] = R"({"type":"auth")";
 constexpr char kCmdPrefix[] = R"({"type":"cmd")";
 constexpr size_t kHelloLen = sizeof(kHello) - 1;
@@ -100,8 +100,8 @@ constexpr size_t kAuthPrefixLen = sizeof(kAuthPrefix) - 1;
 constexpr size_t kCmdPrefixLen = sizeof(kCmdPrefix) - 1;
 
 constexpr char kVitalsKind[] = "player.vitals";
-constexpr char kLocalLocationKind[] = "player.local_location";
-constexpr char kWorldLocationKind[] = "player.world_location";
+constexpr char kLocalLocationKind[] = "player.localLocation";
+constexpr char kWorldLocationKind[] = "player.worldLocation";
 constexpr char kInventoryKind[] = "player.inventory";
 
 const char* inventoryTypeName(int type)
@@ -132,9 +132,9 @@ const char* inventorySlotName(CompanionInventorySlot slot)
     case CompanionInventorySlot::Worn:
         return "worn";
     case CompanionInventorySlot::RightHand:
-        return "right_hand";
+        return "rightHand";
     case CompanionInventorySlot::LeftHand:
-        return "left_hand";
+        return "leftHand";
     case CompanionInventorySlot::None:
     default:
         return "none";
@@ -369,7 +369,7 @@ std::string companionBuildWorld(bool playerAvailable)
     char buffer[96];
     int n = snprintf(buffer,
         sizeof(buffer),
-        R"({"type":"world","schemaVersion":3,"game":"fallout1-ce","playerAvailable":%s})"
+        R"({"type":"world","schemaVersion":4,"game":"fallout1-ce","playerAvailable":%s})"
         "\n",
         flag);
     if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
@@ -476,7 +476,7 @@ namespace {
 //
 // `playerAvailable` is hardcoded to `true` in the envelope: the server
 // only invokes an update builder while the player is loaded. When the
-// player is not loaded, the server emits `on_player_unavailable`
+// player is not loaded, the server emits `onPlayerUnavailable`
 // instead.
 //
 // Returns an empty string on any formatting failure.
@@ -553,7 +553,7 @@ std::string companionBuildOnPlayerUnavailable(unsigned int seq)
     char buffer[80];
     int n = snprintf(buffer,
         sizeof(buffer),
-        R"({"type":"on_player_unavailable","seq":%u,"playerAvailable":false})"
+        R"({"type":"onPlayerUnavailable","seq":%u,"playerAvailable":false})"
         "\n",
         seq);
     if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
@@ -567,7 +567,7 @@ std::string companionBuildOnPlayerAvailable(unsigned int seq)
     char buffer[80];
     int n = snprintf(buffer,
         sizeof(buffer),
-        R"({"type":"on_player_available","seq":%u,"playerAvailable":true})"
+        R"({"type":"onPlayerAvailable","seq":%u,"playerAvailable":true})"
         "\n",
         seq);
     if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
@@ -584,7 +584,7 @@ std::string companionBuildCmdAck(int id,
     char prefix[96];
     int prefixLen = snprintf(prefix,
         sizeof(prefix),
-        R"({"type":"cmd_ack","id":%d,"ok":%s)",
+        R"({"type":"cmdAck","id":%d,"ok":%s)",
         id,
         ok ? "true" : "false");
     if (prefixLen < 0 || static_cast<size_t>(prefixLen) >= sizeof(prefix)) {
@@ -611,7 +611,7 @@ std::string companionBuildAnnounce(std::string_view host)
 {
     std::string message;
     message.reserve(host.size() + 96);
-    message.append(R"({"type":"announce","game":"fallout1-ce","schemaVersion":3,"host":")");
+    message.append(R"({"type":"announce","game":"fallout1-ce","schemaVersion":4,"host":")");
     message.append(host);
     message.append(R"(","port":28080,"authRequired":true})"
                    "\n");
@@ -625,7 +625,7 @@ CompanionClientMessage companionParseClientMessage(const char* line, size_t leng
     }
 
     // Skip leading whitespace; the auth prefix match tolerates any amount
-    // of leading whitespace, while hello and get_snapshot are exact-shape
+    // of leading whitespace, while hello and getSnapshot are exact-shape
     // matches after full stripping. The prefix check is done on the
     // original line so that an auth message with a long password does
     // not have to fit in a small stripped buffer.

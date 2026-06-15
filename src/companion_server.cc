@@ -231,7 +231,7 @@ void acceptClient(int fd)
 
 void rejectExtraClient(int fd)
 {
-    static constexpr char kAlreadyConnected[] = R"({"type":"already_connected"})";
+    static constexpr char kAlreadyConnected[] = R"({"type":"alreadyConnected"})";
     send(fd, kAlreadyConnected, sizeof(kAlreadyConnected) - 1, 0);
     send(fd, "\n", 1, 0);
     // Shutdown the write half so the client receives the message before
@@ -303,7 +303,7 @@ void queueOnPlayerUnavailableMessage()
         return;
     }
 
-    debug_printf("companion: on_player_unavailable sent\n");
+    debug_printf("companion: onPlayerUnavailable sent\n");
 }
 
 void queueOnPlayerAvailableMessage()
@@ -312,7 +312,7 @@ void queueOnPlayerAvailableMessage()
         return;
     }
 
-    debug_printf("companion: on_player_available sent\n");
+    debug_printf("companion: onPlayerAvailable sent\n");
 }
 
 bool vitalsDiffer(const CompanionPlayerVitals& a, const CompanionPlayerVitals& b)
@@ -391,7 +391,7 @@ void handleCommandMessage(const char* line, size_t lineLength)
         return;
     }
 
-    if (request.name == "get_snapshot") {
+    if (request.name == "getSnapshot") {
         CompanionSnapshot snapshot = companionCollectSnapshot();
         std::string payload = companionBuildSnapshotPayload(snapshot);
         if (payload.empty()) {
@@ -412,7 +412,7 @@ void handleCommandMessage(const char* line, size_t lineLength)
         return;
     }
 
-    rejectCommand(request.id, request.name, "unknown_command");
+    rejectCommand(request.id, request.name, "unknownCommand");
 }
 
 void handleClientMessage(CompanionClientMessage message, const char* line, size_t lineLength)
@@ -589,10 +589,10 @@ void sampleReadyClient(unsigned int now)
         gConnection.playerWasAvailable = current.hasPlayer;
         if (current.hasPlayer) {
             // Absent -> present in steady state. Emit the one-shot
-            // `on_player_available` notification and prime
+            // `onPlayerAvailable` notification and prime
             // `lastSent` to the current sample so the next tick's
             // diff is empty. The client is expected to send
-            // `get_snapshot` in response; we do not push the
+            // `getSnapshot` in response; we do not push the
             // snapshot ourselves (snapshot stays a request/response
             // contract). The handshake path is unaffected: that one
             // runs before `sampleReadyClient` is ever called.
@@ -636,7 +636,7 @@ void sampleReadyClient(unsigned int now)
             }
             gConnection.lastSent.localLocation = current.localLocation;
             gConnection.lastSent.surface = CompanionPlayerSurface::Local;
-            debug_printf("companion: update sent (player.local_location)\n");
+            debug_printf("companion: update sent (player.localLocation)\n");
         }
     } else {
         bool surfaceChanged = gConnection.lastSent.surface != CompanionPlayerSurface::World;
@@ -648,7 +648,7 @@ void sampleReadyClient(unsigned int now)
             }
             gConnection.lastSent.worldLocation = current.worldLocation;
             gConnection.lastSent.surface = CompanionPlayerSurface::World;
-            debug_printf("companion: update sent (player.world_location)\n");
+            debug_printf("companion: update sent (player.worldLocation)\n");
         }
     }
 

@@ -268,7 +268,7 @@ For the companion server, QA should at minimum check:
 - game still starts normally with no client
 - handshake behavior is correct
 - invalid first message closes the connection
-- `get_snapshot` returns a full snapshot
+- `getSnapshot` returns a full snapshot
 - `update` messages are emitted only after handshake
 - HP changes are reflected correctly
 - disconnects do not destabilize the game
@@ -312,13 +312,13 @@ The current agreed direction (after step 2 T1) is:
 - one TCP client
 - the server only starts when both `companion_bind` and `companion_password` are present in the `[companion]` section of `fallout.cfg`; otherwise it starts in `disabled` and the main menu shows a single-line hint
 - when enabled, binds to `companion_bind` on fixed port `28080`; the bind host is the only config knob for the bind, the port is hardcoded
-- when enabled, every connection must complete the full handshake: client sends `auth` (with the configured password, constant-time compared) → server transitions to `awaiting_hello` → client sends `hello` → server replies `world` → client may send `get_snapshot` → server replies with one full `snapshot` → server pushes automatic `update` messages
+- when enabled, every connection must complete the full handshake: client sends `auth` (with the configured password, constant-time compared) → server transitions to `awaiting_hello` → client sends `hello` → server replies `world` → client may send `getSnapshot` → server replies with one full `snapshot` → server pushes automatic `update` messages
 - there is no opt-out mode. A step-1 client that does not know `auth` is always dropped at the `auth` step, which is the correct behavior
 - newline-delimited JSON
-- `world.schemaVersion` is `2` (unconditional bump from step 1's `1`); the rest of `world` is byte-identical to step 1
-- `snapshot` contains the full synchronized model
-- `update` contains one domain via `entity` and partial `data`
-- initial synced data is player HP only
+- `world.schemaVersion` is `4`; the wire contract uses camelCase field names and fixed protocol strings
+- `snapshot.payload` is a kind-to-object map containing the full synchronized model valid for the current surface
+- `update` carries one `kind` plus a full per-kind `payload`, not a field-level diff
+- `onPlayerUnavailable` and `onPlayerAvailable` are one-shot transition messages outside `update`
 
 If future proposals deviate from this, challenge them unless they clearly improve the design.
 
@@ -336,7 +336,7 @@ body area, CRT overlays (scanlines, vignette, rounded corners), virtual-to-windo
 scaling.
 
 **M3** (network, state): non-blocking TCP `NetworkClient` with auth → hello/world
-→ get_snapshot handshake, `AppState` / `PlayerState` / `ConnectionState` data
+→ getSnapshot handshake, `AppState` / `PlayerState` / `ConnectionState` data
 models, exponential backoff reconnect (1 s – 30 s), `TypewriterConsole` debug
 overlay (togglable with Tab), connection status shown in header (`CONNECTING`,
 `OK`, `NO SIGNAL`, `RECONNECTING`, `--`).
