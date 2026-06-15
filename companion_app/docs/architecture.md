@@ -245,12 +245,12 @@ CONNECTING
   -> send hello
 AWAITING_WORLD
   -> receive world
-  -> send get_snapshot
+  -> send getSnapshot
 AWAITING_SNAPSHOT
   -> receive snapshot
 READY
-  -> apply update / on_player_unavailable / on_player_available messages
-     (on_player_available re-enters AWAITING_SNAPSHOT for re-sync)
+  -> apply update / onPlayerUnavailable / onPlayerAvailable messages
+     (onPlayerAvailable re-enters AWAITING_SNAPSHOT for re-sync)
 ```
 
 The client currently queues `auth` and `hello` together once the socket is

@@ -14,8 +14,8 @@ namespace fallout {
 // `snapshot.payload`. Namespaced as `player.<aspect>`. New aspects land
 // as new `kind` values plus a new builder in this header.
 constexpr char kCompanionKindPlayerVitals[] = "player.vitals";
-constexpr char kCompanionKindPlayerLocalLocation[] = "player.local_location";
-constexpr char kCompanionKindPlayerWorldLocation[] = "player.world_location";
+constexpr char kCompanionKindPlayerLocalLocation[] = "player.localLocation";
+constexpr char kCompanionKindPlayerWorldLocation[] = "player.worldLocation";
 constexpr char kCompanionKindPlayerInventory[] = "player.inventory";
 
 enum class CompanionClientMessage {
@@ -31,7 +31,8 @@ struct CompanionCommandRequest {
     std::string_view name;
 };
 
-// `world` (handshake response). `schemaVersion` is `3` as of T0.
+// `world` (handshake response). `schemaVersion` is `4` after the
+// camelCase wire-identifier cleanup.
 std::string companionBuildWorld(bool playerAvailable);
 
 // `snapshot` (full state). `payload` is a kind->object map. Only kinds
@@ -58,26 +59,26 @@ std::string companionBuildWorldLocationUpdate(unsigned int seq,
 std::string companionBuildInventoryUpdate(unsigned int seq,
     const CompanionInventorySnapshot& current);
 
-// `on_player_unavailable`. One-shot on the present -> absent transition.
+// `onPlayerUnavailable`. One-shot on the present -> absent transition.
 // No `kind`, no `payload`.
 std::string companionBuildOnPlayerUnavailable(unsigned int seq);
 
-// `on_player_available`. One-shot on the absent -> present transition
+// `onPlayerAvailable`. One-shot on the absent -> present transition
 // after a steady-state `Ready` connection has been idle. The client is
-// expected to send `get_snapshot` in response; the server does not push
+// expected to send `getSnapshot` in response; the server does not push
 // the snapshot itself. No `kind`, no `payload`.
 std::string companionBuildOnPlayerAvailable(unsigned int seq);
 
-// `cmd_ack`. `error` and `data` are optional; when `data` is present it
+// `cmdAck`. `error` and `data` are optional; when `data` is present it
 // must already be a valid JSON object or array fragment.
 std::string companionBuildCmdAck(int id,
     bool ok,
     const char* error = nullptr,
     std::string_view data = {});
 
-// `announce` UDP broadcast. `schemaVersion` follows the live step-2
-// protocol version (`3` after T0), so discovery and TCP advertise the
-// same wire contract.
+// `announce` UDP broadcast. `schemaVersion` follows the live protocol
+// version (`4` after the camelCase cleanup), so discovery and TCP
+// advertise the same wire contract.
 std::string companionBuildAnnounce(std::string_view host);
 
 CompanionClientMessage companionParseClientMessage(const char* line, size_t length);

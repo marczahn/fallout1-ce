@@ -8,12 +8,12 @@ is enabled only when `fallout.cfg` has both `[companion] bind` and
 environment variable) and uses it for the `auth` step of the handshake.
 
 T0 protocol changes verified:
-- `world.schemaVersion` is `3` (was `2` in the pre-T0 step-2 contract).
+- `world.schemaVersion` is `4` (was `3` before the camelCase identifier cleanup).
 - `update` carries a `kind` field and a `payload` wrapper (no `entity`,
   no `data`).
 - `update.payload` is the *complete* per-kind object, not a field-level
   diff. A client that receives an `update` can merge it into its
-  current state without having to first `get_snapshot`.
+  current state without having to first `getSnapshot`.
 - `snapshot.payload` is a kind->object map (no `data.player`).
 - `update` and `snapshot` do NOT carry `data` (T0 renamed it to
   `payload`).
@@ -30,8 +30,8 @@ inspection of the main menu):
 - HP values in the payload (depends on the player being in real
   gameplay, which requires walking past the main menu in a real game).
 - The 500 ms cadence of `update` messages.
-- The `on_player_unavailable` transition on death/world unload.
-- The `on_player_available` re-sync trigger (steady-state `Ready` -> `AWAITING_SNAPSHOT`).
+- The `onPlayerUnavailable` transition on death/world unload.
+- The `onPlayerAvailable` re-sync trigger (steady-state `Ready` -> `AWAITING_SNAPSHOT`).
 - The main-menu "disabled" hint line (verify visually).
 - Surface transitions (local <-> world map) force-emit.
 
@@ -125,8 +125,8 @@ def test_auth_then_hello(sock, password):
     msg = json.loads(line)
     assert_equal(msg.get("type"), "world", "type")
     assert_field(msg, "schemaVersion", "world")
-    # T0: schemaVersion is 3.
-    assert_equal(msg.get("schemaVersion"), 3, "world.schemaVersion (T0)")
+    # Current protocol version after the camelCase identifier cleanup.
+    assert_equal(msg.get("schemaVersion"), 4, "world.schemaVersion")
     assert_field(msg, "game", "world")
     assert_field(msg, "playerAvailable", "world")
     assert_is_bool(msg["playerAvailable"], "world.playerAvailable")
@@ -139,12 +139,12 @@ def test_auth_then_hello(sock, password):
     assert_not_present(msg, "data", "world")
 
 
-def test_get_snapshot(sock, expected_seq):
-    print(f"test: get_snapshot -> snapshot (seq={expected_seq})")
-    sock.sendall(b'{"type":"get_snapshot"}\n')
+def test_getSnapshot(sock, expected_seq):
+    print(f"test: getSnapshot -> snapshot (seq={expected_seq})")
+    sock.sendall(b'{"type":"getSnapshot"}\n')
     line = recv_line(sock)
     if line is None:
-        fail("server closed connection after get_snapshot")
+        fail("server closed connection after getSnapshot")
     msg = json.loads(line)
     assert_equal(msg.get("type"), "snapshot", "type")
     assert_field(msg, "seq", "snapshot")
@@ -175,8 +175,8 @@ def test_get_snapshot(sock, expected_seq):
     print(f"  info: hp={vitals['hp']} maxHp={vitals['maxHp']}")
 
     # T0: exactly one of local_location / world_location is present.
-    has_local = "player.local_location" in payload
-    has_world = "player.world_location" in payload
+    has_local = "player.localLocation" in payload
+    has_world = "player.worldLocation" in payload
     if has_local and has_world:
         fail("snapshot.payload: local_location and world_location are mutually exclusive")
     if not has_local and not has_world:
@@ -187,23 +187,23 @@ def test_get_snapshot(sock, expected_seq):
         print("  info: no location kind in payload (player loaded but no surface determined)")
         return
     if has_local:
-        local = payload["player.local_location"]
+        local = payload["player.localLocation"]
         for k in ("tile", "elevation", "map", "location", "locationId"):
-            assert_field(local, k, f"snapshot.payload.player.local_location.{k}")
-        assert_is_int(local["tile"], "snapshot.payload.player.local_location.tile")
-        assert_is_int(local["elevation"], "snapshot.payload.player.local_location.elevation")
-        assert_is_int(local["map"], "snapshot.payload.player.local_location.map")
+            assert_field(local, k, f"snapshot.payload.player.localLocation.{k}")
+        assert_is_int(local["tile"], "snapshot.payload.player.localLocation.tile")
+        assert_is_int(local["elevation"], "snapshot.payload.player.localLocation.elevation")
+        assert_is_int(local["map"], "snapshot.payload.player.localLocation.map")
         # `location` may be a string or null (when the engine has no name).
         if local["location"] is not None:
-            assert_is_str(local["location"], "snapshot.payload.player.local_location.location")
-        assert_is_str(local["locationId"], "snapshot.payload.player.local_location.locationId")
+            assert_is_str(local["location"], "snapshot.payload.player.localLocation.location")
+        assert_is_str(local["locationId"], "snapshot.payload.player.localLocation.locationId")
         print(f"  info: local tile={local['tile']} elev={local['elevation']} map={local['map']} locationId={local['locationId']!r}")
     else:
-        world = payload["player.world_location"]
-        assert_field(world, "x", "snapshot.payload.player.world_location.x")
-        assert_field(world, "y", "snapshot.payload.player.world_location.y")
-        assert_is_int(world["x"], "snapshot.payload.player.world_location.x")
-        assert_is_int(world["y"], "snapshot.payload.player.world_location.y")
+        world = payload["player.worldLocation"]
+        assert_field(world, "x", "snapshot.payload.player.worldLocation.x")
+        assert_field(world, "y", "snapshot.payload.player.worldLocation.y")
+        assert_is_int(world["x"], "snapshot.payload.player.worldLocation.x")
+        assert_is_int(world["y"], "snapshot.payload.player.worldLocation.y")
         print(f"  info: world x={world['x']} y={world['y']}")
 
 
@@ -248,9 +248,9 @@ def test_update_shape(sock, password):
         payload = msg["payload"]
         if kind == "player.vitals":
             expected_fields = {"hp", "maxHp"}
-        elif kind == "player.local_location":
+        elif kind == "player.localLocation":
             expected_fields = {"tile", "elevation", "map", "location", "locationId"}
-        elif kind == "player.world_location":
+        elif kind == "player.worldLocation":
             expected_fields = {"x", "y"}
         else:
             fail(f"update.kind: unknown kind {kind!r}")
@@ -271,7 +271,7 @@ def test_post_handshake_hello_is_ignored(sock):
     print("test: post-handshake hello is silently ignored")
     sock.settimeout(RECV_TIMEOUT_SECONDS)
     sock.sendall(b'{"type":"hello"}\n')
-    sock.sendall(b'{"type":"get_snapshot"}\n')
+    sock.sendall(b'{"type":"getSnapshot"}\n')
     # First response: ignored hello produces no message. Second response: snapshot.
     line1 = recv_line(sock)
     if line1 is None:
@@ -343,8 +343,7 @@ def test_server_still_listening(host, port, password):
             fail("server did not respond to a new auth + hello after the bad client")
         msg = json.loads(line)
         assert_equal(msg.get("type"), "world", "type after recovery")
-        # T0: schemaVersion is 3 in the recovery path too.
-        assert_equal(msg.get("schemaVersion"), 3, "world.schemaVersion (recovery)")
+        assert_equal(msg.get("schemaVersion"), 4, "world.schemaVersion (recovery)")
 
 
 def main():
@@ -365,7 +364,7 @@ def main():
     with socket.create_connection((args.host, args.port), timeout=RECV_TIMEOUT_SECONDS) as sock:
         sock.settimeout(RECV_TIMEOUT_SECONDS)
         test_auth_then_hello(sock, args.password)
-        test_get_snapshot(sock, expected_seq=1)
+        test_getSnapshot(sock, expected_seq=1)
         test_update_shape(sock, args.password)
         test_post_handshake_hello_is_ignored(sock)
 

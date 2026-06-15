@@ -38,8 +38,8 @@ class AppStateTests(unittest.TestCase):
         self.assertEqual(p.max_hp, 40)
 
     def test_world_info_construction(self) -> None:
-        w = WorldInfo(schema_version=3, game="fallout1-ce", player_available=True)
-        self.assertEqual(w.schema_version, 3)
+        w = WorldInfo(schema_version=4, game="fallout1-ce", player_available=True)
+        self.assertEqual(w.schema_version, 4)
         self.assertEqual(w.game, "fallout1-ce")
         self.assertTrue(w.player_available)
 
