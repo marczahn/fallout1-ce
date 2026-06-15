@@ -7,7 +7,7 @@ import pygame
 
 from companion_app.state import AppState, ConnectionState, PlayerState
 from companion_app.ui.layout import Layout
-from companion_app.ui.pages.boot import SplashPage
+from companion_app.ui.pages.boot import BootPage, SplashPage
 from companion_app.ui.pages.data import DataPage, DataPageUiState, DataTab
 from companion_app.ui.pages.inventory import InventoryPage
 from companion_app.ui.pages.map import MapPage
@@ -71,6 +71,7 @@ class PlaceholderPageTests(unittest.TestCase):
         self.assertEqual(InventoryPage().title, "INVENTORY")
         self.assertEqual(MapPage().title, "MAP")
         self.assertIsNone(SplashPage().title)
+        self.assertIsNone(BootPage((480, 800)).title)
 
 
 if __name__ == "__main__":

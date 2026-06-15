@@ -7,7 +7,7 @@ buttons (1=STATUS, 2=DATA, 3=INVENTORY, 4=MAP).
 from __future__ import annotations
 
 from enum import Enum
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, TypeAlias
 
 if TYPE_CHECKING:
     import pygame
@@ -20,6 +20,14 @@ class Page(Enum):
     DATA = 2
     INVENTORY = 3
     MAP = 4
+
+
+class StartupPage(Enum):
+    SPLASH = "splash"
+    BOOT = "boot"
+
+
+VisiblePage: TypeAlias = Page | StartupPage
 
 
 class PageRenderer(Protocol):

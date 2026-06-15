@@ -62,6 +62,93 @@ class ScanlineOverlayTest(unittest.TestCase):
             overlay.draw(None)  # type: ignore[arg-type]
 
 
+# -- Startup power-on tests -------------------------------------------
+
+class PowerOnProgressTest(unittest.TestCase):
+    def test_starts_at_zero(self) -> None:
+        self.assertEqual(crt.power_on_progress(0), 0.0)
+
+    def test_clamps_to_one_at_duration(self) -> None:
+        self.assertEqual(crt.power_on_progress(720), 1.0)
+        self.assertEqual(crt.power_on_progress(1000), 1.0)
+
+
+class PowerOnVisibleHeightTest(unittest.TestCase):
+    def test_starts_as_thin_center_band(self) -> None:
+        self.assertEqual(crt.power_on_visible_height(100, 0), 1)
+
+    def test_grows_monotonically_to_full_height(self) -> None:
+        start = crt.power_on_visible_height(100, 0)
+        middle = crt.power_on_visible_height(100, 360)
+        end = crt.power_on_visible_height(100, 720)
+        self.assertLess(start, middle)
+        self.assertLess(middle, end)
+        self.assertEqual(end, 100)
+
+
+class PowerOnWobbleOffsetTest(unittest.TestCase):
+    def test_is_zero_during_initial_beam_phase(self) -> None:
+        self.assertEqual(crt.power_on_wobble_offset(0), 0)
+
+    def test_is_zero_when_complete(self) -> None:
+        self.assertEqual(crt.power_on_wobble_offset(720), 0)
+
+    def test_amplitude_decays_toward_zero(self) -> None:
+        early = abs(crt.power_on_wobble_offset(220))
+        late = abs(crt.power_on_wobble_offset(560))
+        self.assertGreater(early, late)
+
+
+class PowerOnBeamVisibleTest(unittest.TestCase):
+    def test_is_visible_at_start(self) -> None:
+        self.assertTrue(crt.power_on_beam_visible(0))
+
+    def test_turns_off_after_hold_period(self) -> None:
+        self.assertFalse(crt.power_on_beam_visible(140))
+
+
+class PowerOnEffectTest(unittest.TestCase):
+    def test_reports_complete_after_duration(self) -> None:
+        effect = crt.PowerOnEffect((20, 100))
+        self.assertFalse(effect.is_complete)
+        effect.tick(720)
+        self.assertTrue(effect.is_complete)
+
+    def test_apply_draws_bright_center_beam_at_start(self) -> None:
+        effect = crt.PowerOnEffect((20, 100))
+        target = pygame.Surface((20, 100))
+        target.fill((0, 255, 0))
+
+        effect.apply(target)
+
+        self.assertEqual(tuple(target.get_at((10, 0)))[:3], palette.BACKGROUND)
+        center = target.get_at((10, 50))
+        self.assertGreater(center.g, 200)
+        self.assertNotEqual(tuple(center)[:3], palette.BACKGROUND)
+
+    def test_apply_reveals_compressed_image_after_beam_phase(self) -> None:
+        effect = crt.PowerOnEffect((20, 100))
+        target = pygame.Surface((20, 100))
+        target.fill((0, 255, 0))
+        effect.tick(180)
+
+        effect.apply(target)
+
+        self.assertEqual(tuple(target.get_at((10, 0)))[:3], palette.BACKGROUND)
+        band_values = [target.get_at((x, 50)).g for x in range(20)]
+        self.assertTrue(any(value > 100 for value in band_values))
+
+    def test_apply_rejects_none_target(self) -> None:
+        effect = crt.PowerOnEffect((20, 100))
+        with self.assertRaises(ValueError):
+            effect.apply(None)  # type: ignore[arg-type]
+
+    def test_tick_rejects_negative_values(self) -> None:
+        effect = crt.PowerOnEffect((20, 100))
+        with self.assertRaises(ValueError):
+            effect.tick(-1)
+
+
 # -- Vertical sweep tests ---------------------------------------------
 
 class BuildVerticalSweepOverlayTest(unittest.TestCase):
@@ -117,6 +204,28 @@ class VerticalSweepOverlayTest(unittest.TestCase):
         overlay = crt.VerticalSweepOverlay((20, 100))
         with self.assertRaises(ValueError):
             overlay.draw(None)  # type: ignore[arg-type]
+
+    def test_reset_restarts_sweep_from_top(self) -> None:
+        overlay = crt.VerticalSweepOverlay((20, 100))
+        overlay.tick(3400)
+        overlay.reset()
+        restarted = pygame.Surface((20, 100))
+        restarted.fill((0, 0, 0))
+        overlay.draw(restarted)
+
+        fresh = crt.VerticalSweepOverlay((20, 100))
+        expected = pygame.Surface((20, 100))
+        expected.fill((0, 0, 0))
+        fresh.draw(expected)
+
+        self.assertEqual(
+            restarted.get_at((0, 0)),
+            expected.get_at((0, 0)),
+        )
+        self.assertEqual(
+            restarted.get_at((0, 4)),
+            expected.get_at((0, 4)),
+        )
 
 
 # -- Vignette tests ---------------------------------------------------

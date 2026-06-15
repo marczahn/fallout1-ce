@@ -1,13 +1,16 @@
-"""CRT visual effects: scanlines, sweep, vignette, and rounded-corner bezel.
+"""CRT visual effects: startup power-on, scanlines, sweep, vignette, and bezel.
 
 All effects are pre-rendered SRCALPHA surfaces built once at startup
-and blitted per frame. No per-frame surface rebuilds.
+and blitted per frame where practical. The startup power-on effect
+reuses a cached working surface and transforms the already-rendered
+startup frame for a short time at launch.
 
 Draw order for the full CRT stack (all optional, controlled by config):
-  1. VignetteOverlay     — dark edges, radial gradient
-  2. ScanlineOverlay     — horizontal scanlines
-  3. VerticalSweepOverlay — moving phosphor sweep band
-  4. RoundedCornerOverlay — black bezel masking the four corners
+  1. PowerOnEffect       — startup-only raster expansion + wobble
+  2. VignetteOverlay     — dark edges, radial gradient
+  3. ScanlineOverlay     — horizontal scanlines
+  4. VerticalSweepOverlay — moving phosphor sweep band
+  5. RoundedCornerOverlay — black bezel masking the four corners
 """
 from __future__ import annotations
 
@@ -16,6 +19,190 @@ import math
 import pygame
 
 from companion_app.render import palette
+
+# -- Startup power-on -------------------------------------------------
+
+_POWER_ON_DURATION_MS: int = 720
+_POWER_ON_BEAM_HOLD_MS: int = 140
+_POWER_ON_MIN_HEIGHT_RATIO: float = 0.003
+_POWER_ON_MAX_WOBBLE_PX: int = 18
+_POWER_ON_WOBBLE_CYCLES: float = 2.75
+_POWER_ON_BEAM_THICKNESS: int = 3
+_POWER_ON_BEAM_GLOW_ALPHA: int = 220
+
+
+def power_on_progress(
+    elapsed_ms: int,
+    duration_ms: int = _POWER_ON_DURATION_MS,
+) -> float:
+    if not isinstance(elapsed_ms, int) or not isinstance(duration_ms, int):
+        raise TypeError("elapsed_ms and duration_ms must be int")
+    if elapsed_ms < 0:
+        raise ValueError("elapsed_ms must be >= 0")
+    if duration_ms <= 0:
+        raise ValueError("duration_ms must be positive")
+    if elapsed_ms >= duration_ms:
+        return 1.0
+    return elapsed_ms / duration_ms
+
+
+def power_on_visible_height(
+    screen_height: int,
+    elapsed_ms: int,
+    duration_ms: int = _POWER_ON_DURATION_MS,
+    beam_hold_ms: int = _POWER_ON_BEAM_HOLD_MS,
+    min_height_ratio: float = _POWER_ON_MIN_HEIGHT_RATIO,
+) -> int:
+    if not isinstance(screen_height, int):
+        raise TypeError("screen_height must be int")
+    if screen_height <= 0:
+        raise ValueError("screen_height must be positive")
+    if not isinstance(min_height_ratio, (int, float)) or isinstance(min_height_ratio, bool):
+        raise TypeError("min_height_ratio must be a number")
+    if min_height_ratio <= 0.0 or min_height_ratio > 1.0:
+        raise ValueError("min_height_ratio must be in (0, 1]")
+
+    if not isinstance(beam_hold_ms, int):
+        raise TypeError("beam_hold_ms must be int")
+    if beam_hold_ms < 0 or beam_hold_ms >= duration_ms:
+        raise ValueError("beam_hold_ms must be >= 0 and < duration_ms")
+
+    if elapsed_ms < beam_hold_ms:
+        return max(1, int(round(screen_height * min_height_ratio)))
+
+    reveal_elapsed = elapsed_ms - beam_hold_ms
+    reveal_duration = duration_ms - beam_hold_ms
+    progress = power_on_progress(reveal_elapsed, reveal_duration)
+    eased = 1.0 - ((1.0 - progress) ** 3)
+    min_height = max(1, int(round(screen_height * min_height_ratio)))
+    return min(
+        screen_height,
+        max(min_height, int(round(min_height + ((screen_height - min_height) * eased)))),
+    )
+
+
+def power_on_wobble_offset(
+    elapsed_ms: int,
+    duration_ms: int = _POWER_ON_DURATION_MS,
+    beam_hold_ms: int = _POWER_ON_BEAM_HOLD_MS,
+    max_wobble_px: int = _POWER_ON_MAX_WOBBLE_PX,
+) -> int:
+    if not isinstance(max_wobble_px, int):
+        raise TypeError("max_wobble_px must be int")
+    if max_wobble_px < 0:
+        raise ValueError("max_wobble_px must be >= 0")
+
+    if not isinstance(beam_hold_ms, int):
+        raise TypeError("beam_hold_ms must be int")
+    if beam_hold_ms < 0 or beam_hold_ms >= duration_ms:
+        raise ValueError("beam_hold_ms must be >= 0 and < duration_ms")
+
+    if elapsed_ms < beam_hold_ms:
+        return 0
+
+    progress = power_on_progress(elapsed_ms - beam_hold_ms, duration_ms - beam_hold_ms)
+    if progress >= 1.0 or max_wobble_px == 0:
+        return 0
+
+    envelope = (1.0 - progress) ** 2
+    angle = progress * math.tau * _POWER_ON_WOBBLE_CYCLES
+    return int(round(math.sin(angle) * max_wobble_px * envelope))
+
+
+def power_on_beam_visible(
+    elapsed_ms: int,
+    beam_hold_ms: int = _POWER_ON_BEAM_HOLD_MS,
+) -> bool:
+    if not isinstance(elapsed_ms, int) or not isinstance(beam_hold_ms, int):
+        raise TypeError("elapsed_ms and beam_hold_ms must be int")
+    if elapsed_ms < 0:
+        raise ValueError("elapsed_ms must be >= 0")
+    if beam_hold_ms < 0:
+        raise ValueError("beam_hold_ms must be >= 0")
+    return elapsed_ms < beam_hold_ms
+
+
+class PowerOnEffect:
+    def __init__(
+        self,
+        size: tuple[int, int],
+        duration_ms: int = _POWER_ON_DURATION_MS,
+    ) -> None:
+        if not isinstance(size, tuple) or len(size) != 2:
+            raise TypeError("size must be a (width, height) tuple")
+        width, height = size
+        if not isinstance(width, int) or not isinstance(height, int):
+            raise TypeError("size components must be int")
+        if width <= 0 or height <= 0:
+            raise ValueError(f"size must be positive, got {size!r}")
+        if duration_ms <= 0:
+            raise ValueError(f"duration_ms must be positive, got {duration_ms!r}")
+
+        self._width = width
+        self._height = height
+        self._duration_ms = duration_ms
+        self._elapsed_ms = 0
+        self._working = pygame.Surface((width, height))
+        self._beam_hold_ms = _POWER_ON_BEAM_HOLD_MS
+
+    @property
+    def is_complete(self) -> bool:
+        return self._elapsed_ms >= self._duration_ms
+
+    def tick(self, dt_ms: int) -> None:
+        if not isinstance(dt_ms, int):
+            raise TypeError("dt_ms must be int")
+        if dt_ms < 0:
+            raise ValueError("dt_ms must be >= 0")
+        self._elapsed_ms = min(self._duration_ms, self._elapsed_ms + dt_ms)
+
+    def apply(self, target: pygame.Surface) -> None:
+        if target is None:
+            raise ValueError("target surface is required")
+        if self.is_complete:
+            return
+
+        self._working.blit(target, (0, 0))
+        center_y = self._height // 2
+        target.fill(palette.BACKGROUND)
+        if power_on_beam_visible(self._elapsed_ms, self._beam_hold_ms):
+            beam_rect = pygame.Rect(
+                0,
+                center_y - (_POWER_ON_BEAM_THICKNESS // 2),
+                self._width,
+                _POWER_ON_BEAM_THICKNESS,
+            )
+            target.fill(palette.FOREGROUND, beam_rect)
+            glow_half = max(3, self._height // 40)
+            glow = pygame.Surface((self._width, glow_half * 2), pygame.SRCALPHA)
+            for y in range(glow.get_height()):
+                dist = abs(y - glow_half) / max(glow_half, 1)
+                alpha = int(round(max(0.0, 1.0 - dist) * _POWER_ON_BEAM_GLOW_ALPHA))
+                if alpha <= 0:
+                    continue
+                glow.fill((palette.FOREGROUND[0], palette.FOREGROUND[1], palette.FOREGROUND[2], alpha),
+                          rect=pygame.Rect(0, y, self._width, 1))
+            target.blit(glow, (0, center_y - glow_half))
+            return
+
+        visible_height = power_on_visible_height(
+            self._height,
+            self._elapsed_ms,
+            self._duration_ms,
+            self._beam_hold_ms,
+        )
+        wobble_x = power_on_wobble_offset(
+            self._elapsed_ms,
+            self._duration_ms,
+            self._beam_hold_ms,
+        )
+
+        scaled = pygame.transform.smoothscale(
+            self._working,
+            (self._width, visible_height),
+        )
+        dest_y = (self._height - visible_height) // 2
+        target.blit(scaled, (wobble_x, dest_y))
 
 # -- Scanlines --------------------------------------------------------
 
@@ -140,6 +327,9 @@ class VerticalSweepOverlay:
         self._duration_ms = duration_ms
         self._elapsed_ms = 0
         self._surface = build_vertical_sweep_overlay(width, sweep_height)
+
+    def reset(self) -> None:
+        self._elapsed_ms = 0
 
     def tick(self, dt_ms: int) -> None:
         if not isinstance(dt_ms, int):

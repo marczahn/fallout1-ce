@@ -52,6 +52,7 @@ Config resolution order:
   "display": {
     "scale": 1.0,
     "crtOverlay": true,
+    "powerOnEffect": true,
     "verticalSweep": true,
     "vignette": true,
     "roundedCrt": true
@@ -84,9 +85,15 @@ Honored keys:
 - `display.scale` — window scale factor over the 480×800 virtual
   surface. Must be a positive number. Default `1.0`.
 - `display.crtOverlay` — master switch for the animated CRT layer stack.
-  Enables the scanline overlay and, when separately enabled, the moving
-  phosphor sweep. Must be a boolean. Default `true`. When `false`, those
-  overlay surfaces are not built and no per-frame cost is paid.
+  Enables the CRT-specific startup and steady-state effects. Must be a
+  boolean. Default `true`. When `false`, the startup power-on effect,
+  scanline overlay, and moving phosphor sweep are not built.
+- `display.powerOnEffect` — startup-only CRT power-on effect. Briefly
+  compresses the splash/boot image into a thin central raster that expands
+  to full height with a subtle decaying wobble, approximating raster
+  deflection settling plus a degauss-like shake. Must be a boolean.
+  Default `true`. This flag is only honored when `display.crtOverlay`
+  is also `true`.
 - `display.verticalSweep` — draw the moving top-to-bottom phosphor sweep
   band that simulates an energized CRT refresh pass. Must be a boolean.
   Default `true`. This flag is only honored when `display.crtOverlay`

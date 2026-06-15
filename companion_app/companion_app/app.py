@@ -28,6 +28,7 @@ from companion_app.input.events import (
 from companion_app.input.keyboard import KeyboardInput
 from companion_app.net import NetworkClient
 from companion_app.render.crt import (
+    PowerOnEffect,
     RoundedCornerOverlay,
     ScanlineOverlay,
     VerticalSweepOverlay,
@@ -37,6 +38,7 @@ from companion_app.render.font import FontLoadError, load_font
 from companion_app.state import AppState, ConnectionState
 from companion_app.ui.layout import Layout
 from companion_app.ui.pages import Page
+from companion_app.ui.pages import StartupPage, VisiblePage
 from companion_app.ui.pages.boot import (
     BOOT_CONSOLE_MAX_LINES,
     BootPage,
@@ -103,6 +105,17 @@ def _route_input(
         return current_page, _handle_data_input(data_ui, input_event)
 
     return current_page, data_ui
+
+
+def _visible_page(
+    boot_sequence: BootSequence,
+    current_page: Page,
+) -> VisiblePage:
+    if boot_sequence.show_main_ui:
+        return current_page
+    if boot_sequence.show_boot_console:
+        return StartupPage.BOOT
+    return StartupPage.SPLASH
 
 
 def _start_network_client(
@@ -176,6 +189,10 @@ def _run_loop(config: Config) -> int:
     if config.display_crt_overlay:
         scanlines = ScanlineOverlay((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
 
+    power_on_effect: PowerOnEffect | None = None
+    if config.display_crt_overlay and config.display_power_on_effect:
+        power_on_effect = PowerOnEffect((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
+
     vertical_sweep: VerticalSweepOverlay | None = None
     if config.display_crt_overlay and config.display_vertical_sweep:
         vertical_sweep = VerticalSweepOverlay((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
@@ -205,6 +222,7 @@ def _run_loop(config: Config) -> int:
 
     current_page: Page = Page.STATUS
     data_ui = DataPageUiState()
+    visible_page: VisiblePage = StartupPage.SPLASH
 
     running = True
     while running:
@@ -232,8 +250,6 @@ def _run_loop(config: Config) -> int:
         if net is not None:
             net.poll()
         typewriter.tick(dt_ms)
-        if vertical_sweep is not None:
-            vertical_sweep.tick(dt_ms)
         boot_tick = boot_sequence.tick(
             dt_ms,
             typewriter,
@@ -243,6 +259,13 @@ def _run_loop(config: Config) -> int:
             net = _start_network_client(config, state, typewriter)
 
         body = _body_text(state)
+        next_visible_page = _visible_page(boot_sequence, current_page)
+        if vertical_sweep is not None:
+            if next_visible_page != visible_page:
+                vertical_sweep.reset()
+            else:
+                vertical_sweep.tick(dt_ms)
+        visible_page = next_visible_page
 
         if boot_sequence.show_main_ui:
             layout.draw(virtual, page_titles[current_page])
@@ -262,6 +285,12 @@ def _run_loop(config: Config) -> int:
         else:
             splash_page.render(virtual)
 
+        if (
+            power_on_effect is not None
+            and not boot_sequence.show_main_ui
+            and not power_on_effect.is_complete
+        ):
+            power_on_effect.apply(virtual)
         if vignette is not None:
             vignette.draw(virtual)
         if scanlines is not None:
@@ -279,6 +308,8 @@ def _run_loop(config: Config) -> int:
             pygame.transform.scale(virtual, window_size, window)
 
         pygame.display.flip()
+        if power_on_effect is not None and not power_on_effect.is_complete:
+            power_on_effect.tick(dt_ms)
 
     if net is not None:
         net.cleanup()

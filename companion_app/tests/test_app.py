@@ -12,6 +12,7 @@ from companion_app.app import (
     _handle_data_input,
     _route_input,
     _start_network_client,
+    _visible_page,
 )
 from companion_app.config import Config
 from companion_app.ui.console import TypewriterConsole
@@ -23,7 +24,8 @@ from companion_app.input.events import (
     PageButtonEvent,
 )
 from companion_app.state import AppState, ConnectionState, PlayerState
-from companion_app.ui.pages import Page
+from companion_app.ui.pages import Page, StartupPage
+from companion_app.ui.pages.boot import BootPhase, BootSequence
 from companion_app.ui.pages.data import DataPageUiState, DataTab
 
 
@@ -128,6 +130,20 @@ class DataInputRoutingTests(unittest.TestCase):
             page, ui_state = _route_input(Page.MAP, data_ui, input_event)
             self.assertEqual(page, Page.MAP)
             self.assertEqual(ui_state, data_ui)
+
+
+class VisiblePageTests(unittest.TestCase):
+    def test_returns_splash_before_boot_console(self) -> None:
+        sequence = BootSequence(phase=BootPhase.SPLASH)
+        self.assertEqual(_visible_page(sequence, Page.STATUS), StartupPage.SPLASH)
+
+    def test_returns_boot_during_boot_console_phases(self) -> None:
+        sequence = BootSequence(phase=BootPhase.BOOTING)
+        self.assertEqual(_visible_page(sequence, Page.STATUS), StartupPage.BOOT)
+
+    def test_returns_current_main_page_after_startup(self) -> None:
+        sequence = BootSequence(phase=BootPhase.COMPLETE)
+        self.assertEqual(_visible_page(sequence, Page.MAP), Page.MAP)
 
 
 if __name__ == "__main__":
