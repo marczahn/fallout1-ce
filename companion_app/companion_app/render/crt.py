@@ -1,4 +1,4 @@
-"""CRT visual effects: scanlines, vignette, and rounded-corner bezel.
+"""CRT visual effects: scanlines, sweep, vignette, and rounded-corner bezel.
 
 All effects are pre-rendered SRCALPHA surfaces built once at startup
 and blitted per frame. No per-frame surface rebuilds.
@@ -6,7 +6,8 @@ and blitted per frame. No per-frame surface rebuilds.
 Draw order for the full CRT stack (all optional, controlled by config):
   1. VignetteOverlay     — dark edges, radial gradient
   2. ScanlineOverlay     — horizontal scanlines
-  3. RoundedCornerOverlay — black bezel masking the four corners
+  3. VerticalSweepOverlay — moving phosphor sweep band
+  4. RoundedCornerOverlay — black bezel masking the four corners
 """
 from __future__ import annotations
 
@@ -50,6 +51,115 @@ class ScanlineOverlay:
         if target is None:
             raise ValueError("target surface is required")
         target.blit(self._surface, (0, 0))
+
+
+# -- Vertical sweep ---------------------------------------------------
+
+_SWEEP_DURATION_MS: int = 6800
+_SWEEP_HEIGHT_RATIO: float = 0.09
+_SWEEP_MAX_RGB: int = 10
+
+
+def build_vertical_sweep_overlay(
+    width: int,
+    height: int,
+) -> pygame.Surface:
+    """Return a prebuilt phosphor sweep band for additive-style blitting."""
+    if not isinstance(width, int) or not isinstance(height, int):
+        raise TypeError("width and height must be int")
+    if width <= 0 or height <= 0:
+        raise ValueError(
+            f"width and height must be positive, got {(width, height)!r}"
+        )
+
+    surface = pygame.Surface((width, height), pygame.SRCALPHA)
+    surface.fill((0, 0, 0, 0))
+
+    green = palette.FOREGROUND[1]
+    max_index = max(height - 1, 1)
+
+    for y in range(height):
+        # Model the sweep as a bright leading beam with a softer trailing
+        # phosphor bloom. A symmetric gradient reads like a synthetic block.
+        t = y / max_index
+        lead = math.exp(-((t - 0.15) / 0.09) ** 2)
+        trail = 0.18 * math.exp(-((t - 0.38) / 0.22) ** 2)
+        intensity = min(1.0, lead + trail)
+        if intensity <= 0.0:
+            continue
+        green_value = int(round(green * (_SWEEP_MAX_RGB / 255.0) * intensity))
+        alpha_value = int(round(110 * intensity))
+        if green_value > 0:
+            surface.fill(
+                (0, green_value, 0, alpha_value),
+                rect=pygame.Rect(0, y, width, 1),
+            )
+
+    return surface
+
+
+def vertical_sweep_top(
+    screen_height: int,
+    sweep_height: int,
+    elapsed_ms: int,
+    duration_ms: int = _SWEEP_DURATION_MS,
+) -> float:
+    """Return the current top-edge position for the moving sweep band."""
+    if not isinstance(screen_height, int) or not isinstance(sweep_height, int):
+        raise TypeError("screen_height and sweep_height must be int")
+    if not isinstance(elapsed_ms, int) or not isinstance(duration_ms, int):
+        raise TypeError("elapsed_ms and duration_ms must be int")
+    if screen_height <= 0 or sweep_height <= 0:
+        raise ValueError("screen_height and sweep_height must be positive")
+    if duration_ms <= 0:
+        raise ValueError("duration_ms must be positive")
+
+    progress = (elapsed_ms % duration_ms) / duration_ms
+    return (-sweep_height) + ((screen_height + sweep_height) * progress)
+
+
+class VerticalSweepOverlay:
+    def __init__(
+        self,
+        size: tuple[int, int],
+        duration_ms: int = _SWEEP_DURATION_MS,
+    ) -> None:
+        if not isinstance(size, tuple) or len(size) != 2:
+            raise TypeError("size must be a (width, height) tuple")
+        width, height = size
+        if not isinstance(width, int) or not isinstance(height, int):
+            raise TypeError("size components must be int")
+        if width <= 0 or height <= 0:
+            raise ValueError(f"size must be positive, got {size!r}")
+        if duration_ms <= 0:
+            raise ValueError(f"duration_ms must be positive, got {duration_ms!r}")
+
+        sweep_height = max(1, int(round(height * _SWEEP_HEIGHT_RATIO)))
+        self._screen_height = height
+        self._sweep_height = sweep_height
+        self._duration_ms = duration_ms
+        self._elapsed_ms = 0
+        self._surface = build_vertical_sweep_overlay(width, sweep_height)
+
+    def tick(self, dt_ms: int) -> None:
+        if not isinstance(dt_ms, int):
+            raise TypeError("dt_ms must be int")
+        if dt_ms < 0:
+            raise ValueError("dt_ms must be >= 0")
+        self._elapsed_ms = (self._elapsed_ms + dt_ms) % self._duration_ms
+
+    def draw(self, target: pygame.Surface) -> None:
+        if target is None:
+            raise ValueError("target surface is required")
+        top = int(round(
+            vertical_sweep_top(
+                self._screen_height,
+                self._sweep_height,
+                self._elapsed_ms,
+                self._duration_ms,
+            )
+        ))
+        target.blit(self._surface, (0, top), special_flags=pygame.BLEND_RGB_ADD)
 
 
 # -- Vignette ---------------------------------------------------------

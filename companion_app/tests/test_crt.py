@@ -62,6 +62,63 @@ class ScanlineOverlayTest(unittest.TestCase):
             overlay.draw(None)  # type: ignore[arg-type]
 
 
+# -- Vertical sweep tests ---------------------------------------------
+
+class BuildVerticalSweepOverlayTest(unittest.TestCase):
+    def test_size_matches_request(self) -> None:
+        surface = crt.build_vertical_sweep_overlay(40, 12)
+        self.assertEqual(surface.get_size(), (40, 12))
+
+    def test_leading_edge_is_brighter_than_tail_and_edges(self) -> None:
+        surface = crt.build_vertical_sweep_overlay(6, 20)
+        peak = surface.get_at((0, 3))
+        tail = surface.get_at((0, 10))
+        edge = surface.get_at((0, 19))
+        self.assertGreater(peak.g, tail.g)
+        self.assertGreater(tail.g, edge.g)
+
+    def test_rejects_bad_sizes(self) -> None:
+        with self.assertRaises(ValueError):
+            crt.build_vertical_sweep_overlay(0, 10)
+        with self.assertRaises(ValueError):
+            crt.build_vertical_sweep_overlay(10, -1)
+        with self.assertRaises(TypeError):
+            crt.build_vertical_sweep_overlay(10.0, 20)  # type: ignore[arg-type]
+
+
+class VerticalSweepTopTest(unittest.TestCase):
+    def test_starts_above_screen(self) -> None:
+        self.assertEqual(crt.vertical_sweep_top(100, 18, 0), -18)
+
+    def test_reaches_mid_screen_halfway_through_cycle(self) -> None:
+        top = crt.vertical_sweep_top(100, 18, 3400)
+        self.assertEqual(top, 41.0)
+
+    def test_wraps_after_full_cycle(self) -> None:
+        self.assertEqual(crt.vertical_sweep_top(100, 18, 6800), -18)
+
+
+class VerticalSweepOverlayTest(unittest.TestCase):
+    def test_draw_brightens_pixels_after_tick(self) -> None:
+        overlay = crt.VerticalSweepOverlay((20, 100))
+        overlay.tick(3400)
+        target = pygame.Surface((20, 100))
+        target.fill((0, 0, 0))
+        overlay.draw(target)
+        band_values = [target.get_at((0, y)).g for y in range(41, 50)]
+        self.assertTrue(any(value > 0 for value in band_values))
+
+    def test_tick_rejects_negative_values(self) -> None:
+        overlay = crt.VerticalSweepOverlay((20, 100))
+        with self.assertRaises(ValueError):
+            overlay.tick(-1)
+
+    def test_draw_rejects_none_target(self) -> None:
+        overlay = crt.VerticalSweepOverlay((20, 100))
+        with self.assertRaises(ValueError):
+            overlay.draw(None)  # type: ignore[arg-type]
+
+
 # -- Vignette tests ---------------------------------------------------
 
 class BuildVignetteOverlayTest(unittest.TestCase):

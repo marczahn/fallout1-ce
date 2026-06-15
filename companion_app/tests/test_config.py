@@ -229,6 +229,25 @@ class LoadConfigTests(unittest.TestCase):
             cfg = load_and_resolve_config(None)
         self.assertTrue(cfg.display_vignette)
 
+    def test_display_vertical_sweep_default_is_true(self) -> None:
+        with _Tempdir() as td:
+            self._write(td / "companion_app.config.json", _with_password({}))
+            cfg = load_and_resolve_config(None)
+        self.assertTrue(cfg.display_vertical_sweep)
+
+    def test_display_vertical_sweep_false_honored(self) -> None:
+        with _Tempdir() as td:
+            p = self._write_pw(td, {"display": {"verticalSweep": False}})
+            cfg = load_and_resolve_config(str(p))
+        self.assertFalse(cfg.display_vertical_sweep)
+
+    def test_display_vertical_sweep_must_be_bool(self) -> None:
+        with _Tempdir() as td:
+            p = self._write_pw(td, {"display": {"verticalSweep": "yes"}})
+            with self.assertRaises(ConfigError) as ctx:
+                load_and_resolve_config(str(p))
+            self.assertIn("display.verticalSweep", str(ctx.exception))
+
     def test_display_vignette_false_honored(self) -> None:
         with _Tempdir() as td:
             p = self._write_pw(td, {"display": {"vignette": False}})

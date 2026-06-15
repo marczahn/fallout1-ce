@@ -185,8 +185,10 @@ Rendering is split across `render/` and `ui/`:
 - `render/font.py` loads the vendored Fallout font from package resources and
   caches fonts by size.
 - `render/background.py` fills the virtual surface.
-- `render/crt.py` builds scanline, vignette, and rounded-corner overlays once
-  at startup and blits them each frame.
+- `render/crt.py` builds scanline, vertical sweep, vignette, and
+  rounded-corner CRT overlays. The static surfaces are built once at
+  startup; the animated sweep reuses a cached band surface and changes
+  only its draw position each frame.
 - `ui/layout.py` draws the shared shell: background, centered page title,
   connection status, header underline, content rect, and generic placeholders.
 - `ui/shell.py` stores shared geometry and font-size constants.

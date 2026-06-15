@@ -16,6 +16,7 @@ are warned about and ignored.
 Currently honored keys:
   - `display.scale`         (float, M1)
   - `display.crtOverlay`    (bool,  M2)
+  - `display.verticalSweep` (bool,  M6)
   - `display.vignette`      (bool,  M2)
   - `display.roundedCrt`    (bool,  M2)
   - `debug.eventLog`        (bool,  M2)
@@ -45,6 +46,7 @@ VALID_EVENT_NAMES: tuple[str, ...] = (
 
 DEFAULT_DISPLAY_SCALE: float = 1.0
 DEFAULT_DISPLAY_CRT_OVERLAY: bool = True
+DEFAULT_DISPLAY_VERTICAL_SWEEP: bool = True
 DEFAULT_DISPLAY_VIGNETTE: bool = True
 DEFAULT_DISPLAY_ROUNDED_CRT: bool = True
 DEFAULT_DEBUG_EVENT_LOG: bool = False
@@ -75,6 +77,7 @@ class ConfigError(Exception):
 class Config:
     display_scale: float = DEFAULT_DISPLAY_SCALE
     display_crt_overlay: bool = DEFAULT_DISPLAY_CRT_OVERLAY
+    display_vertical_sweep: bool = DEFAULT_DISPLAY_VERTICAL_SWEEP
     display_vignette: bool = DEFAULT_DISPLAY_VIGNETTE
     display_rounded_crt: bool = DEFAULT_DISPLAY_ROUNDED_CRT
     debug_event_log: bool = DEFAULT_DEBUG_EVENT_LOG
@@ -161,6 +164,7 @@ def _extract_fields(
     """Pull only the keys the app honors. Warn on the rest."""
     scale: float = DEFAULT_DISPLAY_SCALE
     crt_overlay: bool = DEFAULT_DISPLAY_CRT_OVERLAY
+    vertical_sweep: bool = DEFAULT_DISPLAY_VERTICAL_SWEEP
     vignette: bool = DEFAULT_DISPLAY_VIGNETTE
     rounded_crt: bool = DEFAULT_DISPLAY_ROUNDED_CRT
     debug_event_log: bool = DEFAULT_DEBUG_EVENT_LOG
@@ -186,6 +190,8 @@ def _extract_fields(
                     scale = float(v)
                 elif k == "crtOverlay":
                     crt_overlay = _require_bool("display.crtOverlay", v)
+                elif k == "verticalSweep":
+                    vertical_sweep = _require_bool("display.verticalSweep", v)
                 elif k == "vignette":
                     vignette = _require_bool("display.vignette", v)
                 elif k == "roundedCrt":
@@ -246,7 +252,7 @@ def _extract_fields(
 
     resolved_names = _merge_keymap_names(keymap_names, source)
     return (
-        scale, crt_overlay, vignette, rounded_crt, debug_event_log,
+        scale, crt_overlay, vertical_sweep, vignette, rounded_crt, debug_event_log,
         resolved_names, server_host, server_port, server_password,
     )
 
@@ -287,12 +293,13 @@ def load_config(path: str | None) -> Config:
     """
     raw, source = _load_raw(path)
     (
-        scale, crt_overlay, vignette, rounded_crt, debug_event_log,
+        scale, crt_overlay, vertical_sweep, vignette, rounded_crt, debug_event_log,
         _names, server_host, server_port, server_password,
     ) = _extract_fields(raw, source)
     return Config(
         display_scale=scale,
         display_crt_overlay=crt_overlay,
+        display_vertical_sweep=vertical_sweep,
         display_vignette=vignette,
         display_rounded_crt=rounded_crt,
         debug_event_log=debug_event_log,
@@ -312,7 +319,7 @@ def load_and_resolve_config(path: str | None) -> Config:
     """
     raw, source = _load_raw(path)
     (
-        scale, crt_overlay, vignette, rounded_crt, debug_event_log,
+        scale, crt_overlay, vertical_sweep, vignette, rounded_crt, debug_event_log,
         keymap_names, server_host, server_port, server_password,
     ) = _extract_fields(raw, source)
 
@@ -325,6 +332,7 @@ def load_and_resolve_config(path: str | None) -> Config:
     return Config(
         display_scale=scale,
         display_crt_overlay=crt_overlay,
+        display_vertical_sweep=vertical_sweep,
         display_vignette=vignette,
         display_rounded_crt=rounded_crt,
         debug_event_log=debug_event_log,

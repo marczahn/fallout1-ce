@@ -30,6 +30,7 @@ from companion_app.net import NetworkClient
 from companion_app.render.crt import (
     RoundedCornerOverlay,
     ScanlineOverlay,
+    VerticalSweepOverlay,
     VignetteOverlay,
 )
 from companion_app.render.font import FontLoadError, load_font
@@ -181,6 +182,10 @@ def _run_loop(config: Config) -> int:
     if config.display_crt_overlay:
         scanlines = ScanlineOverlay((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
 
+    vertical_sweep: VerticalSweepOverlay | None = None
+    if config.display_crt_overlay and config.display_vertical_sweep:
+        vertical_sweep = VerticalSweepOverlay((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
+
     rounded_crt: RoundedCornerOverlay | None = None
     if config.display_rounded_crt:
         rounded_crt = RoundedCornerOverlay((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
@@ -226,6 +231,8 @@ def _run_loop(config: Config) -> int:
         if net is not None:
             net.poll()
         typewriter.tick(dt_ms)
+        if vertical_sweep is not None:
+            vertical_sweep.tick(dt_ms)
         boot_tick = boot_sequence.tick(
             dt_ms,
             typewriter,
@@ -257,6 +264,8 @@ def _run_loop(config: Config) -> int:
             vignette.draw(virtual)
         if scanlines is not None:
             scanlines.draw(virtual)
+        if vertical_sweep is not None:
+            vertical_sweep.draw(virtual)
         if rounded_crt is not None:
             rounded_crt.draw(virtual)
         if debug_overlay is not None:

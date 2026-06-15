@@ -52,6 +52,7 @@ Config resolution order:
   "display": {
     "scale": 1.0,
     "crtOverlay": true,
+    "verticalSweep": true,
     "vignette": true,
     "roundedCrt": true
   },
@@ -82,10 +83,14 @@ Honored keys:
 
 - `display.scale` — window scale factor over the 480×800 virtual
   surface. Must be a positive number. Default `1.0`.
-- `display.crtOverlay` — draw the CRT scanline overlay on top of the
-  screen shell each frame. Must be a boolean. Default `true`. When
-  `false`, the overlay surface is not built and no per-frame cost is
-  paid.
+- `display.crtOverlay` — master switch for the animated CRT layer stack.
+  Enables the scanline overlay and, when separately enabled, the moving
+  phosphor sweep. Must be a boolean. Default `true`. When `false`, those
+  overlay surfaces are not built and no per-frame cost is paid.
+- `display.verticalSweep` — draw the moving top-to-bottom phosphor sweep
+  band that simulates an energized CRT refresh pass. Must be a boolean.
+  Default `true`. This flag is only honored when `display.crtOverlay`
+  is also `true`.
 - `display.vignette` — radial edge-darkening overlay. Darkens the
   screen edges using a power-curve falloff to suggest CRT phosphor
   dropout near the bezel. Must be a boolean. Default `true`. When
