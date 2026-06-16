@@ -320,6 +320,38 @@ bool vitalsDiffer(const CompanionPlayerVitals& a, const CompanionPlayerVitals& b
     return a.hp != b.hp || a.maxHp != b.maxHp;
 }
 
+bool statusDiffer(const CompanionPlayerStatus& a, const CompanionPlayerStatus& b)
+{
+    return a.armorClass != b.armorClass
+        || a.currentCarryWeight != b.currentCarryWeight
+        || a.carryWeight != b.carryWeight
+        || a.meleeDamage != b.meleeDamage
+        || a.damageResistance != b.damageResistance
+        || a.poisonResistance != b.poisonResistance
+        || a.radiationResistance != b.radiationResistance
+        || a.healingRate != b.healingRate
+        || a.radiation != b.radiation
+        || a.poison != b.poison;
+}
+
+bool specialDiffer(const CompanionPlayerSpecial& a, const CompanionPlayerSpecial& b)
+{
+    return a.strength != b.strength
+        || a.perception != b.perception
+        || a.endurance != b.endurance
+        || a.charisma != b.charisma
+        || a.intelligence != b.intelligence
+        || a.agility != b.agility
+        || a.luck != b.luck;
+}
+
+bool progressionDiffer(const CompanionPlayerProgression& a, const CompanionPlayerProgression& b)
+{
+    return a.level != b.level
+        || a.experience != b.experience
+        || a.nextLevelExp != b.nextLevelExp;
+}
+
 bool localLocationDiffer(const CompanionPlayerLocalLocation& a, const CompanionPlayerLocalLocation& b)
 {
     return a.tile != b.tile
@@ -620,6 +652,33 @@ void sampleReadyClient(unsigned int now)
         }
         gConnection.lastSent.vitals = current.vitals;
         debug_printf("companion: update sent (player.vitals)\n");
+    }
+
+    if (statusDiffer(current.status, gConnection.lastSent.status)) {
+        if (!queueMessage(companionBuildStatusUpdate(
+                nextSequence(), current.status))) {
+            return;
+        }
+        gConnection.lastSent.status = current.status;
+        debug_printf("companion: update sent (player.status)\n");
+    }
+
+    if (specialDiffer(current.special, gConnection.lastSent.special)) {
+        if (!queueMessage(companionBuildSpecialUpdate(
+                nextSequence(), current.special))) {
+            return;
+        }
+        gConnection.lastSent.special = current.special;
+        debug_printf("companion: update sent (player.special)\n");
+    }
+
+    if (progressionDiffer(current.progression, gConnection.lastSent.progression)) {
+        if (!queueMessage(companionBuildProgressionUpdate(
+                nextSequence(), current.progression))) {
+            return;
+        }
+        gConnection.lastSent.progression = current.progression;
+        debug_printf("companion: update sent (player.progression)\n");
     }
 
     // Surface. The current surface drives which location kind is

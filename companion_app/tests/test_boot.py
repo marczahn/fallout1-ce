@@ -110,6 +110,38 @@ class BootSequenceTests(unittest.TestCase):
         self.assertFalse(sequence.show_main_ui)
         self.assertEqual(sequence.phase, BootPhase.READY_HOLD)
 
+    def test_skip_from_splash_completes_boot_and_requests_connect(self) -> None:
+        console = TypewriterConsole()
+        sequence = BootSequence()
+
+        result = sequence.skip(console)
+
+        self.assertTrue(result.start_connect)
+        self.assertEqual(sequence.phase, BootPhase.COMPLETE)
+        self.assertTrue(sequence.show_main_ui)
+        self.assertFalse(console.show_idle_cursor)
+
+    def test_skip_finishes_existing_console_output(self) -> None:
+        console = TypewriterConsole()
+        sequence = BootSequence(phase=BootPhase.BOOTING)
+        sequence.begin(console)
+        console.tick(CONSOLE_CHAR_INTERVAL_MS)
+
+        result = sequence.skip(console)
+
+        self.assertTrue(result.start_connect)
+        self.assertTrue(console.is_idle())
+        self.assertTrue(all(line.typing_complete for line in console.lines))
+
+    def test_skip_during_connecting_does_not_request_second_connect(self) -> None:
+        console = TypewriterConsole()
+        sequence = BootSequence(phase=BootPhase.CONNECTING)
+
+        result = sequence.skip(console)
+
+        self.assertFalse(result.start_connect)
+        self.assertEqual(sequence.phase, BootPhase.COMPLETE)
+
     def test_ready_hold_completes_after_delay(self) -> None:
         console = TypewriterConsole()
         sequence = BootSequence(phase=BootPhase.READY_HOLD)

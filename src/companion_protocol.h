@@ -14,6 +14,9 @@ namespace fallout {
 // `snapshot.payload`. Namespaced as `player.<aspect>`. New aspects land
 // as new `kind` values plus a new builder in this header.
 constexpr char kCompanionKindPlayerVitals[] = "player.vitals";
+constexpr char kCompanionKindPlayerStatus[] = "player.status";
+constexpr char kCompanionKindPlayerSpecial[] = "player.special";
+constexpr char kCompanionKindPlayerProgression[] = "player.progression";
 constexpr char kCompanionKindPlayerLocalLocation[] = "player.localLocation";
 constexpr char kCompanionKindPlayerWorldLocation[] = "player.worldLocation";
 constexpr char kCompanionKindPlayerInventory[] = "player.inventory";
@@ -49,6 +52,15 @@ std::string companionBuildSnapshot(unsigned int seq, const CompanionSnapshot& sn
 // that is not meaningful in the current surface.
 std::string companionBuildVitalsUpdate(unsigned int seq,
     const CompanionPlayerVitals& current);
+
+std::string companionBuildStatusUpdate(unsigned int seq,
+    const CompanionPlayerStatus& current);
+
+std::string companionBuildSpecialUpdate(unsigned int seq,
+    const CompanionPlayerSpecial& current);
+
+std::string companionBuildProgressionUpdate(unsigned int seq,
+    const CompanionPlayerProgression& current);
 
 std::string companionBuildLocalLocationUpdate(unsigned int seq,
     const CompanionPlayerLocalLocation& current);

@@ -13,12 +13,10 @@ import time
 from typing import Any, Callable
 
 from companion_app.net.framing import encode_line, read_line
-from companion_app.state import AppState, ConnectionState
+from companion_app.state import AppState, ConnectionState, PlayerSurface
 
 
 RECONNECT_DELAY_SECONDS: float = 1.0
-
-
 
 
 class NetworkClient:
@@ -281,12 +279,7 @@ class NetworkClient:
         # event raced a pending snapshot reply, the snapshot's flag would
         # otherwise re-flip availability to the request-time value.
         payload = msg.get("payload", {}) or {}
-        vitals = payload.get("player.vitals", {}) or {}
-        if vitals:
-            self._state.player.hp = int(vitals.get("hp", self._state.player.hp))
-            self._state.player.max_hp = int(
-                vitals.get("maxHp", self._state.player.max_hp)
-            )
+        self._apply_snapshot_payload(payload)
 
         self._state.connection = ConnectionState.READY
         self._log(f"snapshot (hp={self._state.player.hp}/{self._state.player.max_hp})")
@@ -302,13 +295,27 @@ class NetworkClient:
 
         kind = msg.get("kind")
         if kind == "player.vitals":
-            payload = msg.get("payload", {})
-            self._state.player.hp = int(payload.get("hp", self._state.player.hp))
-            self._state.player.max_hp = int(
-                payload.get("maxHp", self._state.player.max_hp)
-            )
+            self._apply_vitals(msg.get("payload", {}) or {})
             self._state.player.available = True
             self._log(f"update: hp={self._state.player.hp}/{self._state.player.max_hp}")
+        elif kind == "player.status":
+            self._apply_status(msg.get("payload", {}) or {})
+            self._log("update: player.status")
+        elif kind == "player.special":
+            self._apply_special(msg.get("payload", {}) or {})
+            self._log("update: player.special")
+        elif kind == "player.progression":
+            self._apply_progression(msg.get("payload", {}) or {})
+            self._log("update: player.progression")
+        elif kind == "player.localLocation":
+            self._apply_local_location(msg.get("payload", {}) or {})
+            self._log("update: player.localLocation")
+        elif kind == "player.worldLocation":
+            self._apply_world_location(msg.get("payload", {}) or {})
+            self._log("update: player.worldLocation")
+        elif kind == "player.inventory":
+            self._apply_inventory(msg.get("payload", []) or [])
+            self._log("update: player.inventory")
         elif kind is None:
             pass
         else:
@@ -351,3 +358,108 @@ class NetworkClient:
             self._sock = None
         self._read_buf.clear()
         self._write_buf.clear()
+
+    def _apply_snapshot_payload(self, payload: dict[str, Any]) -> None:
+        vitals = payload.get("player.vitals", {}) or {}
+        status = payload.get("player.status", {}) or {}
+        special = payload.get("player.special", {}) or {}
+        progression = payload.get("player.progression", {}) or {}
+        local_location = payload.get("player.localLocation", {}) or {}
+        world_location = payload.get("player.worldLocation", {}) or {}
+        inventory = payload.get("player.inventory", []) or []
+
+        if vitals:
+            self._apply_vitals(vitals)
+        if status:
+            self._apply_status(status)
+        if special:
+            self._apply_special(special)
+        if progression:
+            self._apply_progression(progression)
+        if local_location:
+            self._apply_local_location(local_location)
+        elif world_location:
+            self._apply_world_location(world_location)
+        self._apply_inventory(inventory)
+
+    def _apply_vitals(self, payload: dict[str, Any]) -> None:
+        self._state.player.hp = int(payload.get("hp", self._state.player.hp))
+        self._state.player.max_hp = int(payload.get("maxHp", self._state.player.max_hp))
+
+    def _apply_status(self, payload: dict[str, Any]) -> None:
+        self._state.player.armor_class = int(
+            payload.get("armorClass", self._state.player.armor_class)
+        )
+        self._state.player.current_carry_weight = int(
+            payload.get("currentCarryWeight", self._state.player.current_carry_weight)
+        )
+        self._state.player.carry_weight = int(
+            payload.get("carryWeight", self._state.player.carry_weight)
+        )
+        self._state.player.melee_damage = int(
+            payload.get("meleeDamage", self._state.player.melee_damage)
+        )
+        self._state.player.damage_resistance = int(
+            payload.get("damageResistance", self._state.player.damage_resistance)
+        )
+        self._state.player.radiation = int(
+            payload.get("radiation", self._state.player.radiation)
+        )
+        self._state.player.poison = int(payload.get("poison", self._state.player.poison))
+
+    def _apply_special(self, payload: dict[str, Any]) -> None:
+        self._state.player.strength = int(payload.get("strength", self._state.player.strength))
+        self._state.player.perception = int(
+            payload.get("perception", self._state.player.perception)
+        )
+        self._state.player.endurance = int(payload.get("endurance", self._state.player.endurance))
+        self._state.player.charisma = int(payload.get("charisma", self._state.player.charisma))
+        self._state.player.intelligence = int(
+            payload.get("intelligence", self._state.player.intelligence)
+        )
+        self._state.player.agility = int(payload.get("agility", self._state.player.agility))
+        self._state.player.luck = int(payload.get("luck", self._state.player.luck))
+
+    def _apply_progression(self, payload: dict[str, Any]) -> None:
+        self._state.player.level = int(payload.get("level", self._state.player.level))
+        self._state.player.experience = int(
+            payload.get("experience", self._state.player.experience)
+        )
+        self._state.player.next_level_exp = int(
+            payload.get("nextLevelExp", self._state.player.next_level_exp)
+        )
+
+    def _apply_inventory(self, payload: list[dict[str, Any]]) -> None:
+        from companion_app.state import InventoryItem
+
+        items: list[InventoryItem] = []
+        for raw_item in payload:
+            if not isinstance(raw_item, dict):
+                continue
+            items.append(
+                InventoryItem(
+                    pid=int(raw_item.get("pid", 0)),
+                    proto_id=str(raw_item.get("protoId", "")),
+                    name=str(raw_item.get("name", "")),
+                    item_type=str(raw_item.get("type", "")),
+                    count=int(raw_item.get("count", 0)),
+                    slot=str(raw_item.get("slot", "none")),
+                )
+            )
+        self._state.player.inventory = items
+
+    def _apply_local_location(self, payload: dict[str, Any]) -> None:
+        self._state.player.surface = PlayerSurface.LOCAL
+        self._state.player.location = str(payload.get("location", self._state.player.location))
+        self._state.player.location_id = str(
+            payload.get("locationId", self._state.player.location_id)
+        )
+        self._state.player.world_x = 0
+        self._state.player.world_y = 0
+
+    def _apply_world_location(self, payload: dict[str, Any]) -> None:
+        self._state.player.surface = PlayerSurface.WORLD
+        self._state.player.location = ""
+        self._state.player.location_id = ""
+        self._state.player.world_x = int(payload.get("x", self._state.player.world_x))
+        self._state.player.world_y = int(payload.get("y", self._state.player.world_y))

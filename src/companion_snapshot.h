@@ -46,6 +46,47 @@ struct CompanionPlayerVitals {
     int maxHp;
 };
 
+// `player.status` payload. Derived defensive and survivability values
+// sampled directly from engine state. Wire keys: `armorClass`,
+// `currentCarryWeight`, `carryWeight`, `meleeDamage`,
+// `damageResistance`, `poisonResistance`, `radiationResistance`,
+// `healingRate`, `radiation`, `poison`.
+struct CompanionPlayerStatus {
+    int armorClass;
+    int currentCarryWeight;
+    int carryWeight;
+    int meleeDamage;
+    int damageResistance;
+    int poisonResistance;
+    int radiationResistance;
+    int healingRate;
+    int radiation;
+    int poison;
+};
+
+// `player.special` payload. Current SPECIAL attribute levels. Wire
+// keys: `strength`, `perception`, `endurance`, `charisma`,
+// `intelligence`, `agility`, `luck`.
+struct CompanionPlayerSpecial {
+    int strength;
+    int perception;
+    int endurance;
+    int charisma;
+    int intelligence;
+    int agility;
+    int luck;
+};
+
+// `player.progression` payload. Current player progression values.
+// `nextLevelExp` is the engine's total XP threshold for the next level,
+// not the remaining delta. Wire keys: `level`, `experience`,
+// `nextLevelExp`.
+struct CompanionPlayerProgression {
+    int level;
+    int experience;
+    int nextLevelExp;
+};
+
 // `player.localLocation` payload. Meaningful when
 // `surface == CompanionPlayerSurface::Local`. Wire keys: `tile`,
 // `elevation`, `map`, `location`, `locationId`. `location` is the engine's
@@ -96,6 +137,9 @@ struct CompanionSnapshot {
     bool hasPlayer;
     CompanionPlayerSurface surface;
     CompanionPlayerVitals vitals;
+    CompanionPlayerStatus status;
+    CompanionPlayerSpecial special;
+    CompanionPlayerProgression progression;
     CompanionPlayerLocalLocation localLocation;
     CompanionPlayerWorldLocation worldLocation;
     CompanionInventorySnapshot inventory;

@@ -7,6 +7,7 @@
 #include "companion_player_state.h"
 #include "game/critter.h"
 #include "game/inventry.h"
+#include "game/item.h"
 #include "game/map.h"
 #include "game/object.h"
 #include "game/object_types.h"
@@ -143,6 +144,9 @@ CompanionSnapshot companionCollectSnapshot()
     snapshot.hasPlayer = false;
     snapshot.surface = CompanionPlayerSurface::Local;
     snapshot.vitals = CompanionPlayerVitals{ 0, 0 };
+    snapshot.status = CompanionPlayerStatus{ 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    snapshot.special = CompanionPlayerSpecial{ 0, 0, 0, 0, 0, 0, 0 };
+    snapshot.progression = CompanionPlayerProgression{ 0, 0, 0 };
     snapshot.localLocation = CompanionPlayerLocalLocation{};
     snapshot.localLocation.location[0] = '\0';
     snapshot.localLocation.locationId[0] = '\0';
@@ -156,6 +160,26 @@ CompanionSnapshot companionCollectSnapshot()
     snapshot.hasPlayer = true;
     snapshot.vitals.hp = critter_get_hits(obj_dude);
     snapshot.vitals.maxHp = stat_level(obj_dude, STAT_MAXIMUM_HIT_POINTS);
+    snapshot.status.armorClass = stat_level(obj_dude, STAT_ARMOR_CLASS);
+    snapshot.status.currentCarryWeight = item_total_weight(obj_dude);
+    snapshot.status.carryWeight = stat_level(obj_dude, STAT_CARRY_WEIGHT);
+    snapshot.status.meleeDamage = stat_level(obj_dude, STAT_MELEE_DAMAGE);
+    snapshot.status.damageResistance = stat_level(obj_dude, STAT_DAMAGE_RESISTANCE);
+    snapshot.status.poisonResistance = stat_level(obj_dude, STAT_POISON_RESISTANCE);
+    snapshot.status.radiationResistance = stat_level(obj_dude, STAT_RADIATION_RESISTANCE);
+    snapshot.status.healingRate = stat_level(obj_dude, STAT_HEALING_RATE);
+    snapshot.status.radiation = critter_get_rads(obj_dude);
+    snapshot.status.poison = critter_get_poison(obj_dude);
+    snapshot.special.strength = stat_level(obj_dude, STAT_STRENGTH);
+    snapshot.special.perception = stat_level(obj_dude, STAT_PERCEPTION);
+    snapshot.special.endurance = stat_level(obj_dude, STAT_ENDURANCE);
+    snapshot.special.charisma = stat_level(obj_dude, STAT_CHARISMA);
+    snapshot.special.intelligence = stat_level(obj_dude, STAT_INTELLIGENCE);
+    snapshot.special.agility = stat_level(obj_dude, STAT_AGILITY);
+    snapshot.special.luck = stat_level(obj_dude, STAT_LUCK);
+    snapshot.progression.level = stat_pc_get(PC_STAT_LEVEL);
+    snapshot.progression.experience = stat_pc_get(PC_STAT_EXPERIENCE);
+    snapshot.progression.nextLevelExp = stat_pc_min_exp();
     collectInventorySnapshot(snapshot.inventory);
 
     if (worldMapIsActive()) {

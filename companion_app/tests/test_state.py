@@ -7,7 +7,14 @@ from __future__ import annotations
 
 import unittest
 
-from companion_app.state import AppState, ConnectionState, PlayerState, WorldInfo
+from companion_app.state import (
+    AppState,
+    ConnectionState,
+    InventoryItem,
+    PlayerState,
+    PlayerSurface,
+    WorldInfo,
+)
 
 
 class AppStateTests(unittest.TestCase):
@@ -32,10 +39,60 @@ class AppStateTests(unittest.TestCase):
         self.assertEqual(state.player.max_hp, 0)
 
     def test_player_state_construction(self) -> None:
-        p = PlayerState(available=True, hp=30, max_hp=40)
+        p = PlayerState(
+            available=True,
+            hp=30,
+            max_hp=40,
+            surface=PlayerSurface.LOCAL,
+            location="Vault 13",
+            armor_class=12,
+            current_carry_weight=50,
+            carry_weight=125,
+            melee_damage=3,
+            damage_resistance=10,
+            radiation=3,
+            poison=1,
+            level=4,
+            experience=7650,
+            next_level_exp=8000,
+            strength=5,
+            inventory=[InventoryItem(pid=40, count=2)],
+        )
         self.assertTrue(p.available)
         self.assertEqual(p.hp, 30)
         self.assertEqual(p.max_hp, 40)
+        self.assertEqual(p.surface, PlayerSurface.LOCAL)
+        self.assertEqual(p.location, "Vault 13")
+        self.assertEqual(p.armor_class, 12)
+        self.assertEqual(p.current_carry_weight, 50)
+        self.assertEqual(p.carry_weight, 125)
+        self.assertEqual(p.melee_damage, 3)
+        self.assertEqual(p.damage_resistance, 10)
+        self.assertEqual(p.radiation, 3)
+        self.assertEqual(p.poison, 1)
+        self.assertEqual(p.level, 4)
+        self.assertEqual(p.experience, 7650)
+        self.assertEqual(p.next_level_exp, 8000)
+        self.assertEqual(p.strength, 5)
+        self.assertEqual(len(p.inventory), 1)
+
+    def test_player_state_defaults_for_status_fields(self) -> None:
+        p = PlayerState()
+        self.assertEqual(p.surface, PlayerSurface.UNKNOWN)
+        self.assertEqual(p.location, "")
+        self.assertEqual(p.location_id, "")
+        self.assertEqual(p.armor_class, 0)
+        self.assertEqual(p.current_carry_weight, 0)
+        self.assertEqual(p.carry_weight, 0)
+        self.assertEqual(p.melee_damage, 0)
+        self.assertEqual(p.damage_resistance, 0)
+        self.assertEqual(p.radiation, 0)
+        self.assertEqual(p.poison, 0)
+        self.assertEqual(p.level, 0)
+        self.assertEqual(p.experience, 0)
+        self.assertEqual(p.next_level_exp, 0)
+        self.assertEqual(p.luck, 0)
+        self.assertEqual(p.inventory, [])
 
     def test_world_info_construction(self) -> None:
         w = WorldInfo(schema_version=4, game="fallout1-ce", player_available=True)

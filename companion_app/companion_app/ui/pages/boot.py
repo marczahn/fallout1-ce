@@ -167,6 +167,18 @@ class BootSequence:
 
         return BootTickResult()
 
+    def skip(self, console: TypewriterConsole) -> BootTickResult:
+        start_connect = self.phase in {
+            BootPhase.SPLASH,
+            BootPhase.BOOTING,
+            BootPhase.CURSOR_HOLD,
+        }
+        console.finish()
+        console.show_idle_cursor = False
+        self.phase = BootPhase.COMPLETE
+        self._phase_elapsed_ms = 0
+        return BootTickResult(start_connect=start_connect)
+
     @property
     def show_main_ui(self) -> bool:
         return self.phase is BootPhase.COMPLETE

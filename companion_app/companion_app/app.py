@@ -56,8 +56,14 @@ from companion_app.ui.pages.data import (
 from companion_app.ui.pages.inventory import InventoryPage
 from companion_app.ui.pages.map import MapPage
 from companion_app.ui.pages.status import (
+    STATUS_BOX_SIZE,
+    STATUS_HP_CHEVRON_SIZE,
     STATUS_HP_LABEL_SIZE,
     STATUS_HP_VALUE_SIZE,
+    STATUS_ROW_SIZE,
+    STATUS_SECTION_SIZE,
+    STATUS_SPECIAL_SIZE,
+    STATUS_TITLE_SIZE,
     StatusPage,
 )
 from companion_app.ui.shell import BODY_SIZE, HEADER_SIZE, STATUS_SIZE
@@ -136,6 +142,24 @@ def _start_network_client(
     )
 
 
+def _handle_tab_key(
+    boot_sequence: BootSequence,
+    typewriter: TypewriterConsole,
+    *,
+    config: Config,
+    state: AppState,
+    net: NetworkClient | None,
+) -> NetworkClient | None:
+    if boot_sequence.show_main_ui:
+        typewriter.visible = not typewriter.visible
+        return net
+
+    boot_tick = boot_sequence.skip(typewriter)
+    if boot_tick.start_connect and net is None:
+        return _start_network_client(config, state, typewriter)
+    return net
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog='companion_app')
     parser.add_argument(
@@ -169,8 +193,14 @@ def _run_loop(config: Config) -> int:
         HEADER_SIZE,
         BODY_SIZE,
         STATUS_SIZE,
+        STATUS_TITLE_SIZE,
         STATUS_HP_LABEL_SIZE,
+        STATUS_HP_CHEVRON_SIZE,
         STATUS_HP_VALUE_SIZE,
+        STATUS_BOX_SIZE,
+        STATUS_ROW_SIZE,
+        STATUS_SECTION_SIZE,
+        STATUS_SPECIAL_SIZE,
         CONSOLE_FONT_SIZE,
     }:
         load_font(size)
@@ -235,7 +265,13 @@ def _run_loop(config: Config) -> int:
                 if event.key in (pygame.K_ESCAPE, pygame.K_q):
                     running = False
                 elif event.key == pygame.K_TAB:
-                    typewriter.visible = not typewriter.visible
+                    net = _handle_tab_key(
+                        boot_sequence,
+                        typewriter,
+                        config=config,
+                        state=state,
+                        net=net,
+                    )
 
         input_events = keyboard.poll(pygame_events)
         if boot_sequence.show_main_ui:
@@ -268,17 +304,21 @@ def _run_loop(config: Config) -> int:
         visible_page = next_visible_page
 
         if boot_sequence.show_main_ui:
-            layout.draw(virtual, page_titles[current_page])
-            if body:
-                layout.draw_placeholder(virtual, body)
-            elif current_page is Page.STATUS:
-                status_page.render(virtual, layout.content_rect, state)
-            elif current_page is Page.DATA:
-                data_page.render(virtual, layout.content_rect, state, data_ui)
-            elif current_page is Page.INVENTORY:
-                inventory_page.render(virtual, layout.content_rect, state)
+            if current_page is Page.STATUS and not body:
+                # STATUS owns the full screen, including its own large title;
+                # the shared header band is suppressed for this page.
+                layout.draw(virtual, None)
+                status_page.render(virtual, virtual.get_rect(), state)
             else:
-                map_page.render(virtual, layout.content_rect, state)
+                layout.draw(virtual, page_titles[current_page])
+                if body:
+                    layout.draw_placeholder(virtual, body)
+                elif current_page is Page.DATA:
+                    data_page.render(virtual, layout.content_rect, state, data_ui)
+                elif current_page is Page.INVENTORY:
+                    inventory_page.render(virtual, layout.content_rect, state)
+                else:
+                    map_page.render(virtual, layout.content_rect, state)
         elif boot_sequence.show_boot_console:
             boot_page.render(virtual)
             typewriter.draw(virtual, boot_page.console_rect)

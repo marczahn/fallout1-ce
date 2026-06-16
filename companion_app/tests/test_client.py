@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from companion_app.net.client import NetworkClient
-from companion_app.state import AppState, ConnectionState, WorldInfo
+from companion_app.state import AppState, ConnectionState, PlayerSurface, WorldInfo
 
 
 class _FakeSocket:
@@ -287,6 +287,68 @@ class NetworkClientTest(unittest.TestCase):
         self.assertEqual(self.state.player.hp, 30)
         self.assertEqual(self.state.player.max_hp, 40)
 
+    def test_snapshot_dispatch_applies_status_special_and_location(self) -> None:
+        self.state.connection = ConnectionState.AWAITING_SNAPSHOT
+        self.state.player.available = True
+        self.client._on_snapshot({
+            "type": "snapshot",
+            "playerAvailable": True,
+            "payload": {
+                "player.vitals": {"hp": 30, "maxHp": 40},
+                "player.status": {
+                    "armorClass": 12,
+                    "currentCarryWeight": 132,
+                    "carryWeight": 200,
+                    "meleeDamage": 2,
+                    "damageResistance": 10,
+                    "radiation": 4,
+                    "poison": 2,
+                },
+                "player.special": {
+                    "strength": 5,
+                    "perception": 7,
+                    "endurance": 6,
+                    "charisma": 4,
+                    "intelligence": 8,
+                    "agility": 9,
+                    "luck": 6,
+                },
+                "player.progression": {
+                    "level": 4,
+                    "experience": 7650,
+                    "nextLevelExp": 8000,
+                },
+                "player.localLocation": {
+                    "tile": 1000,
+                    "elevation": 0,
+                    "map": 12,
+                    "location": "Junktown",
+                    "locationId": "JUNKENT",
+                },
+                "player.inventory": [
+                    {"pid": 40, "protoId": "STIMPAK", "name": "Stimpak", "type": "drug", "count": 9, "slot": "none"},
+                    {"pid": 144, "protoId": "SUPERSTIM", "name": "Super Stimpak", "type": "drug", "count": 9, "slot": "none"},
+                ],
+            },
+        })
+        self.assertEqual(self.state.player.armor_class, 12)
+        self.assertEqual(self.state.player.current_carry_weight, 132)
+        self.assertEqual(self.state.player.carry_weight, 200)
+        self.assertEqual(self.state.player.melee_damage, 2)
+        self.assertEqual(self.state.player.damage_resistance, 10)
+        self.assertEqual(self.state.player.radiation, 4)
+        self.assertEqual(self.state.player.poison, 2)
+        self.assertEqual(self.state.player.level, 4)
+        self.assertEqual(self.state.player.experience, 7650)
+        self.assertEqual(self.state.player.next_level_exp, 8000)
+        self.assertEqual(self.state.player.strength, 5)
+        self.assertEqual(self.state.player.luck, 6)
+        self.assertEqual(self.state.player.surface, PlayerSurface.LOCAL)
+        self.assertEqual(self.state.player.location, "Junktown")
+        self.assertEqual(self.state.player.location_id, "JUNKENT")
+        self.assertEqual(len(self.state.player.inventory), 2)
+        self.assertEqual(self.state.player.inventory[0].pid, 40)
+
     def test_snapshot_dispatch_without_player(self) -> None:
         self.state.connection = ConnectionState.AWAITING_SNAPSHOT
         self.state.player.available = False
@@ -363,6 +425,129 @@ class NetworkClientTest(unittest.TestCase):
         self.assertEqual(self.state.player.max_hp, 40)
         self.assertTrue(self.state.player.available)
 
+    def test_update_status(self) -> None:
+        self.state.connection = ConnectionState.READY
+        self.state.player.available = True
+
+        self.client._on_update({
+            "type": "update",
+            "kind": "player.status",
+            "playerAvailable": True,
+            "payload": {
+                "armorClass": 11,
+                "currentCarryWeight": 132,
+                "carryWeight": 200,
+                "meleeDamage": 2,
+                "damageResistance": 10,
+                "radiation": 3,
+                "poison": 1,
+            },
+        })
+        self.assertEqual(self.state.player.armor_class, 11)
+        self.assertEqual(self.state.player.current_carry_weight, 132)
+        self.assertEqual(self.state.player.carry_weight, 200)
+        self.assertEqual(self.state.player.melee_damage, 2)
+        self.assertEqual(self.state.player.damage_resistance, 10)
+        self.assertEqual(self.state.player.radiation, 3)
+        self.assertEqual(self.state.player.poison, 1)
+
+    def test_update_special(self) -> None:
+        self.state.connection = ConnectionState.READY
+        self.state.player.available = True
+
+        self.client._on_update({
+            "type": "update",
+            "kind": "player.special",
+            "playerAvailable": True,
+            "payload": {
+                "strength": 5,
+                "perception": 7,
+                "endurance": 6,
+                "charisma": 4,
+                "intelligence": 8,
+                "agility": 9,
+                "luck": 6,
+            },
+        })
+        self.assertEqual(self.state.player.strength, 5)
+        self.assertEqual(self.state.player.intelligence, 8)
+        self.assertEqual(self.state.player.luck, 6)
+
+    def test_update_progression(self) -> None:
+        self.state.connection = ConnectionState.READY
+        self.state.player.available = True
+
+        self.client._on_update({
+            "type": "update",
+            "kind": "player.progression",
+            "playerAvailable": True,
+            "payload": {"level": 4, "experience": 7650, "nextLevelExp": 8000},
+        })
+        self.assertEqual(self.state.player.level, 4)
+        self.assertEqual(self.state.player.experience, 7650)
+        self.assertEqual(self.state.player.next_level_exp, 8000)
+
+    def test_update_inventory(self) -> None:
+        self.state.connection = ConnectionState.READY
+        self.state.player.available = True
+
+        self.client._on_update({
+            "type": "update",
+            "kind": "player.inventory",
+            "playerAvailable": True,
+            "payload": [
+                {"pid": 40, "protoId": "STIMPAK", "name": "Stimpak", "type": "drug", "count": 9, "slot": "none"},
+                {"pid": 144, "protoId": "SUPERSTIM", "name": "Super Stimpak", "type": "drug", "count": 2, "slot": "none"},
+            ],
+        })
+        self.assertEqual(len(self.state.player.inventory), 2)
+        self.assertEqual(self.state.player.inventory[0].pid, 40)
+        self.assertEqual(self.state.player.inventory[1].count, 2)
+
+    def test_world_location_update_clears_stale_local_location(self) -> None:
+        self.state.connection = ConnectionState.READY
+        self.state.player.available = True
+        self.state.player.surface = PlayerSurface.LOCAL
+        self.state.player.location = "Junktown"
+        self.state.player.location_id = "JUNKENT"
+
+        self.client._on_update({
+            "type": "update",
+            "kind": "player.worldLocation",
+            "playerAvailable": True,
+            "payload": {"x": 120, "y": 240},
+        })
+        self.assertEqual(self.state.player.surface, PlayerSurface.WORLD)
+        self.assertEqual(self.state.player.location, "")
+        self.assertEqual(self.state.player.location_id, "")
+        self.assertEqual(self.state.player.world_x, 120)
+        self.assertEqual(self.state.player.world_y, 240)
+
+    def test_local_location_update_clears_world_coordinates(self) -> None:
+        self.state.connection = ConnectionState.READY
+        self.state.player.available = True
+        self.state.player.surface = PlayerSurface.WORLD
+        self.state.player.world_x = 120
+        self.state.player.world_y = 240
+
+        self.client._on_update({
+            "type": "update",
+            "kind": "player.localLocation",
+            "playerAvailable": True,
+            "payload": {
+                "tile": 1000,
+                "elevation": 0,
+                "map": 12,
+                "location": "Junktown",
+                "locationId": "JUNKENT",
+            },
+        })
+        self.assertEqual(self.state.player.surface, PlayerSurface.LOCAL)
+        self.assertEqual(self.state.player.location, "Junktown")
+        self.assertEqual(self.state.player.location_id, "JUNKENT")
+        self.assertEqual(self.state.player.world_x, 0)
+        self.assertEqual(self.state.player.world_y, 0)
+
     def test_player_unavailable_handler(self) -> None:
         self.state.player.available = True
         self.client._handle_player_unavailable()
@@ -421,7 +606,7 @@ class NetworkClientTest(unittest.TestCase):
 
         self.client._on_update({
             "type": "update",
-            "kind": "player.localLocation",
+            "kind": "player.unknown",
             "payload": {},
         })
         # hp unchanged

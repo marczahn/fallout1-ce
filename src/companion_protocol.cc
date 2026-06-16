@@ -22,6 +22,20 @@
 //
 //   {"type":"snapshot","seq":N,"playerAvailable":bool,"payload":{
 //      "player.vitals":          {"hp":H,"maxHp":M},
+//      "player.status":          {"armorClass":A,"carryWeight":W,
+//                                 "currentCarryWeight":CW,
+//                                 "meleeDamage":MD,
+//                                 "damageResistance":DR,
+//                                 "poisonResistance":P,
+//                                 "radiationResistance":R,
+//                                 "healingRate":HR,
+//                                 "radiation":RAD,"poison":PSN},
+//      "player.special":         {"strength":S,"perception":P,
+//                                 "endurance":E,"charisma":C,
+//                                 "intelligence":I,"agility":A,
+//                                 "luck":L},
+//      "player.progression":     {"level":L,"experience":X,
+//                                 "nextLevelExp":N},
 //      "player.localLocation":  {"tile":T,"elevation":E,"map":M,
 //                                 "location":"<name>","locationId":"<id>"},
 //      "player.worldLocation":  {"x":X,"y":Y},
@@ -40,6 +54,16 @@
 //   object (all schema fields present, not a field-level diff). The
 //   current kinds are:
 //     "player.vitals":          payload fields are {hp, maxHp}
+//     "player.status":          payload fields are {armorClass,
+//                               currentCarryWeight, carryWeight,
+//                               meleeDamage, damageResistance,
+//                               poisonResistance, radiationResistance,
+//                               healingRate, radiation, poison}
+//     "player.special":         payload fields are {strength,
+//                               perception, endurance, charisma,
+//                               intelligence, agility, luck}
+//     "player.progression":     payload fields are {level,
+//                               experience, nextLevelExp}
 //     "player.localLocation":  payload fields are {tile, elevation,
 //                               map, location, locationId}
 //     "player.worldLocation":  payload fields are {x, y}
@@ -100,6 +124,9 @@ constexpr size_t kAuthPrefixLen = sizeof(kAuthPrefix) - 1;
 constexpr size_t kCmdPrefixLen = sizeof(kCmdPrefix) - 1;
 
 constexpr char kVitalsKind[] = "player.vitals";
+constexpr char kStatusKind[] = "player.status";
+constexpr char kSpecialKind[] = "player.special";
+constexpr char kProgressionKind[] = "player.progression";
 constexpr char kLocalLocationKind[] = "player.localLocation";
 constexpr char kWorldLocationKind[] = "player.worldLocation";
 constexpr char kInventoryKind[] = "player.inventory";
@@ -149,6 +176,62 @@ std::string buildVitalsBody(const CompanionPlayerVitals& vitals)
         R"({"hp":%d,"maxHp":%d})",
         vitals.hp,
         vitals.maxHp);
+    if (n < 0 || static_cast<size_t>(n) >= sizeof(body)) {
+        return std::string();
+    }
+    return std::string(body, static_cast<size_t>(n));
+}
+
+std::string buildStatusBody(const CompanionPlayerStatus& status)
+{
+    char body[256];
+    int n = snprintf(body,
+        sizeof(body),
+        R"({"armorClass":%d,"currentCarryWeight":%d,"carryWeight":%d,"meleeDamage":%d,"damageResistance":%d,"poisonResistance":%d,"radiationResistance":%d,"healingRate":%d,"radiation":%d,"poison":%d})",
+        status.armorClass,
+        status.currentCarryWeight,
+        status.carryWeight,
+        status.meleeDamage,
+        status.damageResistance,
+        status.poisonResistance,
+        status.radiationResistance,
+        status.healingRate,
+        status.radiation,
+        status.poison);
+    if (n < 0 || static_cast<size_t>(n) >= sizeof(body)) {
+        return std::string();
+    }
+    return std::string(body, static_cast<size_t>(n));
+}
+
+std::string buildSpecialBody(const CompanionPlayerSpecial& special)
+{
+    char body[160];
+    int n = snprintf(body,
+        sizeof(body),
+        R"({"strength":%d,"perception":%d,"endurance":%d,"charisma":%d,"intelligence":%d,"agility":%d,"luck":%d})",
+        special.strength,
+        special.perception,
+        special.endurance,
+        special.charisma,
+        special.intelligence,
+        special.agility,
+        special.luck);
+    if (n < 0 || static_cast<size_t>(n) >= sizeof(body)) {
+        return std::string();
+    }
+    return std::string(body, static_cast<size_t>(n));
+}
+
+std::string buildProgressionBody(const CompanionPlayerProgression& progression)
+{
+    char body[96];
+    int n = snprintf(body,
+        sizeof(body),
+        R"({"level":%d,"experience":%d,"nextLevelExp":%d})",
+        progression.level,
+        progression.experience,
+        progression.nextLevelExp);
     if (n < 0 || static_cast<size_t>(n) >= sizeof(body)) {
         return std::string();
     }
@@ -407,6 +490,21 @@ std::string companionBuildSnapshotPayload(const CompanionSnapshot& snapshot)
         if (body.empty() || !appendKind(kVitalsKind, body.c_str())) {
             return std::string();
         }
+
+        body = buildStatusBody(snapshot.status);
+        if (body.empty() || !appendKind(kStatusKind, body.c_str())) {
+            return std::string();
+        }
+
+        body = buildSpecialBody(snapshot.special);
+        if (body.empty() || !appendKind(kSpecialKind, body.c_str())) {
+            return std::string();
+        }
+
+        body = buildProgressionBody(snapshot.progression);
+        if (body.empty() || !appendKind(kProgressionKind, body.c_str())) {
+            return std::string();
+        }
     }
 
     if (snapshot.hasPlayer && snapshot.surface == CompanionPlayerSurface::Local) {
@@ -516,6 +614,36 @@ std::string companionBuildVitalsUpdate(unsigned int seq,
         return std::string();
     }
     return wrapUpdate(seq, kVitalsKind, body.c_str());
+}
+
+std::string companionBuildStatusUpdate(unsigned int seq,
+    const CompanionPlayerStatus& current)
+{
+    std::string body = buildStatusBody(current);
+    if (body.empty()) {
+        return std::string();
+    }
+    return wrapUpdate(seq, kStatusKind, body.c_str());
+}
+
+std::string companionBuildSpecialUpdate(unsigned int seq,
+    const CompanionPlayerSpecial& current)
+{
+    std::string body = buildSpecialBody(current);
+    if (body.empty()) {
+        return std::string();
+    }
+    return wrapUpdate(seq, kSpecialKind, body.c_str());
+}
+
+std::string companionBuildProgressionUpdate(unsigned int seq,
+    const CompanionPlayerProgression& current)
+{
+    std::string body = buildProgressionBody(current);
+    if (body.empty()) {
+        return std::string();
+    }
+    return wrapUpdate(seq, kProgressionKind, body.c_str());
 }
 
 std::string companionBuildLocalLocationUpdate(unsigned int seq,

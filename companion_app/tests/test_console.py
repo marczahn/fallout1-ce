@@ -138,6 +138,18 @@ class TypewriterConsoleTests(unittest.TestCase):
             c.tick(CONSOLE_CHAR_INTERVAL_MS * 10)
         self.assertTrue(c.is_idle())
 
+    def test_finish_completes_current_and_pending_lines(self) -> None:
+        c = TypewriterConsole()
+        c.log('first')
+        c.log('second')
+
+        c.finish()
+
+        self.assertTrue(c.is_idle())
+        self.assertEqual([line.text for line in c.lines], ['FIRST', 'SECOND'])
+        self.assertTrue(all(line.typing_complete for line in c.lines))
+        self.assertEqual([line.typed_chars for line in c.lines], [5, 6])
+
     def test_display_state_appends_cursor_glyph_to_active_line(self) -> None:
         state = _display_state(
             ConsoleLine(text='BOOT', typed_chars=2, typing_complete=False),

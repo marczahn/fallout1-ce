@@ -9,6 +9,7 @@ import unittest
 
 from companion_app.app import (
     _body_text,
+    _handle_tab_key,
     _handle_data_input,
     _route_input,
     _start_network_client,
@@ -144,6 +145,50 @@ class VisiblePageTests(unittest.TestCase):
     def test_returns_current_main_page_after_startup(self) -> None:
         sequence = BootSequence(phase=BootPhase.COMPLETE)
         self.assertEqual(_visible_page(sequence, Page.MAP), Page.MAP)
+
+
+class TabKeyHandlingTests(unittest.TestCase):
+    def test_tab_skips_startup_and_starts_network_before_connect_phase(self) -> None:
+        state = AppState()
+        console = TypewriterConsole()
+        sequence = BootSequence(phase=BootPhase.SPLASH)
+        config = Config(
+            server_host="127.0.0.1",
+            server_port=28080,
+            server_password="testpw",
+        )
+
+        net = _handle_tab_key(
+            sequence,
+            console,
+            config=config,
+            state=state,
+            net=None,
+        )
+
+        self.assertIsNotNone(net)
+        self.assertEqual(sequence.phase, BootPhase.COMPLETE)
+
+    def test_tab_toggles_console_after_startup_complete(self) -> None:
+        state = AppState()
+        console = TypewriterConsole(visible=True)
+        sequence = BootSequence(phase=BootPhase.COMPLETE)
+        config = Config(
+            server_host="127.0.0.1",
+            server_port=28080,
+            server_password="testpw",
+        )
+
+        net = _handle_tab_key(
+            sequence,
+            console,
+            config=config,
+            state=state,
+            net=None,
+        )
+
+        self.assertIsNone(net)
+        self.assertFalse(console.visible)
 
 
 if __name__ == "__main__":

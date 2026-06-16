@@ -138,6 +138,22 @@ class TypewriterConsole:
         self._char_timer_ms = 0
         self._line_delay_ms = 0
 
+    def finish(self) -> None:
+        while self._pending:
+            text = self._pending.popleft()
+            self.lines.append(
+                ConsoleLine(
+                    text=text,
+                    typed_chars=len(text),
+                    typing_complete=True,
+                )
+            )
+        for line in self.lines:
+            line.typed_chars = len(line.text)
+            line.typing_complete = True
+        self._char_timer_ms = 0
+        self._line_delay_ms = 0
+
     def _active_line(self) -> ConsoleLine | None:
         for line in reversed(self.lines):
             if not line.typing_complete:

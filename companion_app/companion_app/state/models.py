@@ -18,6 +18,12 @@ class ConnectionState(Enum):
     RECONNECTING = 6
 
 
+class PlayerSurface(Enum):
+    UNKNOWN = 0
+    LOCAL = 1
+    WORLD = 2
+
+
 @dataclass
 class WorldInfo:
     schema_version: int = 0
@@ -26,10 +32,43 @@ class WorldInfo:
 
 
 @dataclass
+class InventoryItem:
+    pid: int = 0
+    proto_id: str = ""
+    name: str = ""
+    item_type: str = ""
+    count: int = 0
+    slot: str = "none"
+
+
+@dataclass
 class PlayerState:
     available: bool = False
     hp: int = 0
     max_hp: int = 0
+    surface: PlayerSurface = PlayerSurface.UNKNOWN
+    location: str = ""
+    location_id: str = ""
+    world_x: int = 0
+    world_y: int = 0
+    armor_class: int = 0
+    current_carry_weight: int = 0
+    carry_weight: int = 0
+    melee_damage: int = 0
+    damage_resistance: int = 0
+    radiation: int = 0
+    poison: int = 0
+    level: int = 0
+    experience: int = 0
+    next_level_exp: int = 0
+    strength: int = 0
+    perception: int = 0
+    endurance: int = 0
+    charisma: int = 0
+    intelligence: int = 0
+    agility: int = 0
+    luck: int = 0
+    inventory: list[InventoryItem] = field(default_factory=list)
 
 
 @dataclass
