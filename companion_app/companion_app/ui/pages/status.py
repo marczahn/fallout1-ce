@@ -22,10 +22,10 @@ STATUS_TITLE_SIZE: int = 16
 STATUS_HP_LABEL_SIZE: int = 14
 STATUS_HP_CHEVRON_SIZE: int = 13
 STATUS_HP_VALUE_SIZE: int = 23
-STATUS_BOX_SIZE: int = 10
-STATUS_ROW_SIZE: int = 11
-STATUS_SPECIAL_SIZE: int = 11
-STATUS_SECTION_SIZE: int = 12
+STATUS_BOX_SIZE: int = 12
+STATUS_ROW_SIZE: int = 13
+STATUS_SPECIAL_SIZE: int = 13
+STATUS_SECTION_SIZE: int = 14
 
 # All Y coordinates below are absolute offsets from the top of the rect the
 # page is rendered into (the full virtual screen).
@@ -41,39 +41,39 @@ _HP_CHEVRON_Y: int = 131
 _HP_DIGITS_X: int = 60
 
 _BOX_LEFT: int = 300
-_BOX_RIGHT: int = 432
+_BOX_RIGHT: int = 434
 _BOX_TOP: int = 92
-_BOX_BOTTOM: int = 186
+_BOX_BOTTOM: int = 180
 _BOX_CORNER: int = 22
 _BOX_LABEL_X: int = 314
-_BOX_VALUE_X: int = 354
-_BOX_TEXT_Y: int = 110
-_BOX_ROW_GAP: int = 26
+_BOX_VALUE_X: int = 362
+_BOX_TEXT_Y: int = 108
+_BOX_ROW_GAP: int = 22
 
 _MID_TOP_Y: int = 236
-_MID_ROW_GAP: int = 37
+_MID_ROW_GAP: int = 32
 _LEFT_LABEL_X: int = 40
-_LEFT_VALUE_X: int = 100
-_RIGHT_LABEL_X: int = 256
-_RIGHT_VALUE_X: int = 338
+_LEFT_VALUE_X: int = 110
+_RIGHT_LABEL_X: int = 248
+_RIGHT_VALUE_X: int = 342
 
 _SPECIAL_TITLE_Y: int = 440
-_SPECIAL_ROW_Y: int = 482
-_SPECIAL_ROW_GAP: int = 28
+_SPECIAL_ROW_Y: int = 480
+_SPECIAL_ROW_GAP: int = 24
 _SPECIAL_LABEL_X: int = 48
-_SPECIAL_VALUE_X: int = 104
-_SPECIAL_BAR_X: int = 132
+_SPECIAL_VALUE_X: int = 110
+_SPECIAL_BAR_X: int = 140
 
 _FX_TITLE_Y: int = 716
 _FX_ROW_Y: int = 752
 
 _SECTION_RULE_GAP: int = 14
-_SECTION_RULE_Y_OFFSET: int = 7
+_SECTION_RULE_Y_OFFSET: int = 8
 
 _STIMPACK_PID: int = 40
 _SUPER_STIMPACK_PID: int = 144
 _BAR_SEGMENT_WIDTH: int = 4
-_BAR_SEGMENT_HEIGHT: int = 12
+_BAR_SEGMENT_HEIGHT: int = 13
 _BAR_SEGMENT_GAP: int = 3
 
 _TITLE_TEXT: str = "—= STATUS =—"
