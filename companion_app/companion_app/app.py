@@ -54,7 +54,13 @@ from companion_app.ui.pages.data import (
     return_to_root,
 )
 from companion_app.ui.pages.inventory import InventoryPage
-from companion_app.ui.pages.map import MapPage
+from companion_app.ui.pages.map import MapPage, default_map_ui
+from companion_app.ui.segmented_header import (
+    SUBHEADER_SIZE,
+    SegmentedHeaderState,
+    cycle_next,
+    cycle_prev,
+)
 from companion_app.ui.pages.status import (
     STATUS_BOX_SIZE,
     STATUS_HP_CHEVRON_SIZE,
@@ -96,21 +102,38 @@ def _handle_data_input(
     return ui_state
 
 
+def _handle_map_input(
+    map_ui: SegmentedHeaderState,
+    input_event: InputEvent,
+) -> SegmentedHeaderState:
+    if isinstance(input_event, EncoderLeftEvent):
+        return cycle_prev(map_ui)
+    if isinstance(input_event, EncoderRightEvent):
+        return cycle_next(map_ui)
+    return map_ui
+
+
 def _route_input(
     current_page: Page,
     data_ui: DataPageUiState,
+    map_ui: SegmentedHeaderState,
     input_event: InputEvent,
-) -> tuple[Page, DataPageUiState]:
+) -> tuple[Page, DataPageUiState, SegmentedHeaderState]:
     if isinstance(input_event, PageButtonEvent):
         target_page = Page(input_event.index)
+        # DATA resets to its root on entry; MAP intentionally preserves its
+        # selection across navigation (TASK-010 decision).
         if target_page is Page.DATA:
-            return target_page, DataPageUiState()
-        return target_page, data_ui
+            return target_page, DataPageUiState(), map_ui
+        return target_page, data_ui, map_ui
 
     if current_page is Page.DATA:
-        return current_page, _handle_data_input(data_ui, input_event)
+        return current_page, _handle_data_input(data_ui, input_event), map_ui
 
-    return current_page, data_ui
+    if current_page is Page.MAP:
+        return current_page, data_ui, _handle_map_input(map_ui, input_event)
+
+    return current_page, data_ui, map_ui
 
 
 def _visible_page(
@@ -201,6 +224,7 @@ def _run_loop(config: Config) -> int:
         STATUS_ROW_SIZE,
         STATUS_SECTION_SIZE,
         STATUS_SPECIAL_SIZE,
+        SUBHEADER_SIZE,
         CONSOLE_FONT_SIZE,
     }:
         load_font(size)
@@ -252,6 +276,7 @@ def _run_loop(config: Config) -> int:
 
     current_page: Page = Page.STATUS
     data_ui = DataPageUiState()
+    map_ui = default_map_ui()
     visible_page: VisiblePage = StartupPage.SPLASH
 
     running = True
@@ -278,7 +303,9 @@ def _run_loop(config: Config) -> int:
             for input_event in input_events:
                 if debug_overlay is not None:
                     debug_overlay.record(input_event)
-                current_page, data_ui = _route_input(current_page, data_ui, input_event)
+                current_page, data_ui, map_ui = _route_input(
+                    current_page, data_ui, map_ui, input_event
+                )
         elif debug_overlay is not None:
             for input_event in input_events:
                 debug_overlay.record(input_event)
@@ -318,7 +345,7 @@ def _run_loop(config: Config) -> int:
                 elif current_page is Page.INVENTORY:
                     inventory_page.render(virtual, layout.content_rect, state)
                 else:
-                    map_page.render(virtual, layout.content_rect, state)
+                    map_page.render(virtual, layout.content_rect, state, map_ui)
         elif boot_sequence.show_boot_console:
             boot_page.render(virtual)
             typewriter.draw(virtual, boot_page.console_rect)

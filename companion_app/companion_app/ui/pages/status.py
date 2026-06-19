@@ -7,6 +7,7 @@ import pygame
 
 from companion_app.render import font, palette
 from companion_app.state import AppState, PlayerState
+from companion_app.ui.shell import HEADER_HEIGHT
 
 if TYPE_CHECKING:
     import pygame
@@ -32,7 +33,9 @@ STATUS_SECTION_SIZE: int = 14
 _LEFT_X: int = 40
 _RIGHT_MARGIN: int = 28
 
-_TITLE_CENTER_Y: int = 40
+# Center the headline in the same band the other pages use, so its vertical
+# position matches the shared header exactly.
+_TITLE_CENTER_Y: int = HEADER_HEIGHT // 2
 
 _HP_LABEL_Y: int = 100
 _HP_VALUE_Y: int = 126
@@ -61,8 +64,8 @@ _SPECIAL_TITLE_Y: int = 440
 _SPECIAL_ROW_Y: int = 480
 _SPECIAL_ROW_GAP: int = 24
 _SPECIAL_LABEL_X: int = 48
-_SPECIAL_VALUE_X: int = 110
-_SPECIAL_BAR_X: int = 140
+_SPECIAL_VALUE_X: int = 122
+_SPECIAL_BAR_X: int = 158
 
 _FX_TITLE_Y: int = 716
 _FX_ROW_Y: int = 752
@@ -75,8 +78,6 @@ _SUPER_STIMPACK_PID: int = 144
 _BAR_SEGMENT_WIDTH: int = 4
 _BAR_SEGMENT_HEIGHT: int = 13
 _BAR_SEGMENT_GAP: int = 3
-
-_TITLE_TEXT: str = "—= STATUS =—"
 
 
 def synthesize_state_label(player: PlayerState) -> str:
@@ -151,18 +152,35 @@ class StatusPage:
         surface: pygame.Surface,
         content_rect: pygame.Rect,
     ) -> None:
-        title_rect = pygame.Rect(
+        title_band = pygame.Rect(
             content_rect.left,
             content_rect.top,
             content_rect.width,
             _TITLE_CENTER_Y * 2,
         )
-        font.draw_text_centered(
+        text_rect = font.draw_text_centered(
             surface,
-            _TITLE_TEXT,
-            title_rect,
+            self.title,
+            title_band,
             STATUS_TITLE_SIZE,
             palette.FOREGROUND,
+        )
+        # Centered headline with a rule on each side, mirroring the
+        # left-anchored sub-headline rules.
+        line_y = text_rect.centery
+        pygame.draw.line(
+            surface,
+            palette.FOREGROUND,
+            (_LEFT_X, line_y),
+            (text_rect.left - _SECTION_RULE_GAP, line_y),
+            1,
+        )
+        pygame.draw.line(
+            surface,
+            palette.FOREGROUND,
+            (text_rect.right + _SECTION_RULE_GAP, line_y),
+            (content_rect.right - _RIGHT_MARGIN, line_y),
+            1,
         )
 
     def _draw_hp(

@@ -56,16 +56,19 @@ class LayoutTest(unittest.TestCase):
         self.assertGreaterEqual(title_rect.top, 0)
         self.assertLess(title_rect.bottom, HEADER_HEIGHT)
 
-    def test_draw_renders_underlined_header(self) -> None:
+    def test_draw_renders_side_ruled_header(self) -> None:
         from companion_app.render.font import _get_font
 
         self.layout.draw(self.surface, "STATUS")
         header_font = _get_font(HEADER_SIZE)
         title_rect = header_font.get_rect('STATUS', size=HEADER_SIZE)
         title_rect.center = (VIRTUAL_WIDTH // 2, HEADER_HEIGHT // 2)
-        underline_y = title_rect.bottom + 4
-        px = tuple(self.surface.get_at((VIRTUAL_WIDTH // 2, underline_y)))[:3]
-        self.assertEqual(px, palette.FOREGROUND)
+        line_y = title_rect.centery
+        # A rule flanks the centered title on both sides at its vertical center.
+        left_px = tuple(self.surface.get_at((60, line_y)))[:3]
+        right_px = tuple(self.surface.get_at((VIRTUAL_WIDTH - 60, line_y)))[:3]
+        self.assertEqual(left_px, palette.FOREGROUND)
+        self.assertEqual(right_px, palette.FOREGROUND)
 
     def test_draw_console_frame_renders_rule(self) -> None:
         from companion_app.render.font import _get_font

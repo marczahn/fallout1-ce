@@ -10,8 +10,9 @@ from companion_app.ui.layout import Layout
 from companion_app.ui.pages.boot import BootPage, SplashPage
 from companion_app.ui.pages.data import DataPage, DataPageUiState, DataTab
 from companion_app.ui.pages.inventory import InventoryPage
-from companion_app.ui.pages.map import MapPage
+from companion_app.ui.pages.map import MapPage, default_map_ui
 from companion_app.ui.pages.status import StatusPage
+from companion_app.ui.segmented_header import cycle_next
 
 
 class PlaceholderPageTests(unittest.TestCase):
@@ -62,8 +63,23 @@ class PlaceholderPageTests(unittest.TestCase):
     def test_inventory_page_renders_placeholder(self) -> None:
         InventoryPage().render(self.surface, self.layout.content_rect, self.state)
 
-    def test_map_page_renders_placeholder(self) -> None:
-        MapPage().render(self.surface, self.layout.content_rect, self.state)
+    def test_map_page_renders_global_segment(self) -> None:
+        MapPage().render(
+            self.surface,
+            self.layout.content_rect,
+            self.state,
+            default_map_ui(),
+        )
+
+    def test_map_page_renders_local_segment(self) -> None:
+        local_ui = cycle_next(default_map_ui())
+        self.assertEqual(local_ui.selected_key, "LOCAL")
+        MapPage().render(
+            self.surface,
+            self.layout.content_rect,
+            self.state,
+            local_ui,
+        )
 
     def test_pages_expose_titles_locally(self) -> None:
         self.assertEqual(StatusPage().title, "STATUS")

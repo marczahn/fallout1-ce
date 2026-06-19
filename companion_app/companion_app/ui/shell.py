@@ -10,6 +10,11 @@ import pygame
 HEADER_HEIGHT: int = 56
 SEPARATOR_Y: int = HEADER_HEIGHT - 1
 
+# Shared horizontal page margin. The header bar's side rules and any page's
+# sub-header (secondary navigation) both anchor to this so their left edges
+# stay aligned.
+PAGE_MARGIN_X: int = 28
+
 HEADER_SIZE: int = 16
 BODY_SIZE: int = 24
 STATUS_SIZE: int = 14

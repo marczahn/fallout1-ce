@@ -8,16 +8,22 @@ from companion_app.ui.shell import (
     BODY_SIZE,
     HEADER_HEIGHT,
     HEADER_SIZE,
+    PAGE_MARGIN_X,
     SEPARATOR_Y,
 )
 
 _CONSOLE_MARGIN_X = 44
 _CONSOLE_MARGIN_TOP = 22
 _CONSOLE_HEIGHT = 170
-_UNDERLINE_GAP = 4
 _CONSOLE_LABEL_GAP = 10
 _CONSOLE_RULE_PADDING = 12
 _CONSOLE_FRAME_BOTTOM_GAP = 12
+
+# Centered page headline flanked by a rule on each side. Margins and gap match
+# the STATUS page headline / sub-headline treatment so every page is consistent.
+_HEADER_RULE_LEFT_X = PAGE_MARGIN_X
+_HEADER_RULE_RIGHT_MARGIN = PAGE_MARGIN_X
+_HEADER_RULE_GAP = 14
 
 
 class Layout:
@@ -69,11 +75,20 @@ class Layout:
             HEADER_SIZE,
             palette.FOREGROUND,
         )
+        # Centered headline with a rule on each side (matches the STATUS page).
+        line_y = title_rect.centery
         pygame.draw.line(
             surface,
             palette.FOREGROUND,
-            (title_rect.left, title_rect.bottom + _UNDERLINE_GAP),
-            (title_rect.right, title_rect.bottom + _UNDERLINE_GAP),
+            (_HEADER_RULE_LEFT_X, line_y),
+            (title_rect.left - _HEADER_RULE_GAP, line_y),
+            1,
+        )
+        pygame.draw.line(
+            surface,
+            palette.FOREGROUND,
+            (title_rect.right + _HEADER_RULE_GAP, line_y),
+            (self._width - _HEADER_RULE_RIGHT_MARGIN, line_y),
             1,
         )
 
