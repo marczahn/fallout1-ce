@@ -5,7 +5,14 @@ import unittest
 
 import pygame
 
-from companion_app.state import AppState, ConnectionState, PlayerState
+from companion_app.state import (
+    AppState,
+    ConnectionState,
+    PlayerState,
+    PlayerSurface,
+    WorldMapState,
+    WorldMapStatus,
+)
 from companion_app.ui.layout import Layout
 from companion_app.ui.pages.boot import BootPage, SplashPage
 from companion_app.ui.pages.data import DataPage, DataPageUiState, DataTab
@@ -63,16 +70,8 @@ class PlaceholderPageTests(unittest.TestCase):
     def test_inventory_page_renders_placeholder(self) -> None:
         InventoryPage().render(self.surface, self.layout.content_rect, self.state)
 
-    def test_map_page_renders_global_segment(self) -> None:
-        MapPage().render(
-            self.surface,
-            self.layout.content_rect,
-            self.state,
-            default_map_ui(),
-        )
-
     def test_map_page_renders_local_segment(self) -> None:
-        local_ui = cycle_next(default_map_ui())
+        local_ui = default_map_ui()
         self.assertEqual(local_ui.selected_key, "LOCAL")
         MapPage().render(
             self.surface,
@@ -80,6 +79,77 @@ class PlaceholderPageTests(unittest.TestCase):
             self.state,
             local_ui,
         )
+
+    def test_map_page_renders_atlas_segment(self) -> None:
+        atlas_ui = cycle_next(default_map_ui())
+        self.assertEqual(atlas_ui.selected_key, "ATLAS")
+        MapPage().render(
+            self.surface,
+            self.layout.content_rect,
+            self.state,
+            atlas_ui,
+        )
+
+    def test_map_page_renders_world_segment(self) -> None:
+        world_ui = cycle_next(cycle_next(default_map_ui()))
+        self.assertEqual(world_ui.selected_key, "WORLD")
+        MapPage().render(
+            self.surface,
+            self.layout.content_rect,
+            self.state,
+            world_ui,
+        )
+
+    def _ready_world_map(self, w: int = 16, h: int = 16) -> WorldMapState:
+        return WorldMapState(
+            status=WorldMapStatus.READY,
+            width=w,
+            height=h,
+            palette=bytes(b for i in range(256) for b in (i, i, i)),
+            pixels=bytes((i * 7) % 256 for i in range(w * h)),
+        )
+
+    def _atlas_ui(self):
+        return cycle_next(default_map_ui())
+
+    def _world_ui(self):
+        return cycle_next(cycle_next(default_map_ui()))
+
+    def test_map_atlas_renders_ready_map_with_live_marker(self) -> None:
+        self.state.world_map = self._ready_world_map()
+        self.state.player.surface = PlayerSurface.WORLD
+        self.state.player.world_x = 8
+        self.state.player.world_y = 8
+        MapPage().render(self.surface, self.layout.content_rect, self.state, self._atlas_ui())
+
+    def test_map_world_renders_ready_map_with_live_marker(self) -> None:
+        self.state.world_map = self._ready_world_map()
+        self.state.player.surface = PlayerSurface.WORLD
+        self.state.player.world_x = 2
+        self.state.player.world_y = 14
+        MapPage().render(self.surface, self.layout.content_rect, self.state, self._world_ui())
+
+    def test_map_atlas_local_fallback_last_known(self) -> None:
+        self.state.world_map = self._ready_world_map()
+        self.state.player.surface = PlayerSurface.LOCAL
+        self.state.has_world_fix = True
+        self.state.last_known_world_x = 4
+        self.state.last_known_world_y = 4
+        MapPage().render(self.surface, self.layout.content_rect, self.state, self._atlas_ui())
+
+    def test_map_world_local_fallback_no_fix(self) -> None:
+        self.state.world_map = self._ready_world_map()
+        self.state.player.surface = PlayerSurface.LOCAL
+        self.state.has_world_fix = False
+        MapPage().render(self.surface, self.layout.content_rect, self.state, self._world_ui())
+
+    def test_map_atlas_unavailable_message(self) -> None:
+        self.state.world_map = WorldMapState(status=WorldMapStatus.UNAVAILABLE)
+        MapPage().render(self.surface, self.layout.content_rect, self.state, self._atlas_ui())
+
+    def test_map_world_loading_message(self) -> None:
+        self.state.world_map = WorldMapState(status=WorldMapStatus.FETCHING)
+        MapPage().render(self.surface, self.layout.content_rect, self.state, self._world_ui())
 
     def test_pages_expose_titles_locally(self) -> None:
         self.assertEqual(StatusPage().title, "STATUS")

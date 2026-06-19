@@ -3783,4 +3783,46 @@ bool worldMapGetPlayerPosition(int* x, int* y)
     return true;
 }
 
+bool companionLockWorldMapImage(const unsigned char** outPixels, int* outWidth, int* outHeight, CacheEntry** outHandle)
+{
+    if (outPixels == nullptr || outWidth == nullptr || outHeight == nullptr || outHandle == nullptr) {
+        return false;
+    }
+
+    // Lock the world-map art with our own cache handle so we are
+    // independent of `wmapidsav[]` (the in-game world-map lifecycle).
+    int fid = art_id(OBJ_TYPE_INTERFACE, wmapids[WORLDMAP_FRM_WORLDMAP], 0, 0, 0);
+    CacheEntry* handle = nullptr;
+    Art* art = art_ptr_lock(fid, &handle);
+    if (art == nullptr) {
+        return false;
+    }
+
+    int width = 0;
+    int height = 0;
+    if (art_frame_width_length(art, 0, 0, &width, &height) != 0 || width <= 0 || height <= 0) {
+        art_ptr_unlock(handle);
+        return false;
+    }
+
+    unsigned char* pixels = art_frame_data(art, 0, 0);
+    if (pixels == nullptr) {
+        art_ptr_unlock(handle);
+        return false;
+    }
+
+    *outPixels = pixels;
+    *outWidth = width;
+    *outHeight = height;
+    *outHandle = handle;
+    return true;
+}
+
+void companionUnlockWorldMapImage(CacheEntry* handle)
+{
+    if (handle != nullptr) {
+        art_ptr_unlock(handle);
+    }
+}
+
 } // namespace fallout

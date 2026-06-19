@@ -18,8 +18,11 @@
 #include "companion_item_catalog.h"
 #include "companion_protocol.h"
 #include "companion_snapshot.h"
+#include "game/cache.h"
 #include "game/gconfig.h"
+#include "game/worldmap.h"
 #include "platform_compat.h"
+#include "plib/color/color.h"
 #include "plib/gnw/debug.h"
 
 #if !defined(_WIN32)
@@ -39,6 +42,10 @@ constexpr size_t kDiscoveryRequestBufferSize = 256;
 constexpr size_t kInboundBufferSize = 4096;
 constexpr size_t kOutboundCap = 256 * 1024;
 constexpr unsigned int kSampleIntervalMs = 500;
+
+// Fixed raw chunk size for the world-map image fetch (144 KiB). Each
+// chunk's base64 (~192 KiB) stays well under `kOutboundCap` (256 KiB).
+constexpr size_t kMapChunkBytes = 147456;
 
 enum class ClientState {
     AwaitingAuth,
@@ -447,6 +454,93 @@ void handleCommandMessage(const char* line, size_t lineLength)
     rejectCommand(request.id, request.name, "unknownCommand");
 }
 
+// Reads the engine's active palette (`cmap`, 6-bit per channel) and
+// normalizes each value to 8-bit (0-63 -> 0-255) into `out` (768 bytes).
+void buildNormalizedPalette(unsigned char out[768])
+{
+    for (size_t i = 0; i < 768; ++i) {
+        out[i] = static_cast<unsigned char>(cmap[i] * 255 / 63);
+    }
+}
+
+void handleGetMapMessage()
+{
+    const unsigned char* pixels = nullptr;
+    int width = 0;
+    int height = 0;
+    CacheEntry* handle = nullptr;
+    if (!companionLockWorldMapImage(&pixels, &width, &height, &handle)) {
+        queueMessage(companionBuildMapError("mapUnavailable"));
+        debug_printf("companion: getMap failed (mapUnavailable)\n");
+        return;
+    }
+
+    unsigned char palette[768];
+    buildNormalizedPalette(palette);
+
+    std::string message = companionBuildMapHeader(width, height, palette, kMapChunkBytes);
+    companionUnlockWorldMapImage(handle);
+
+    if (message.empty()) {
+        queueMessage(companionBuildMapError("mapUnavailable"));
+        debug_printf("companion: getMap failed (header formatting)\n");
+        return;
+    }
+
+    if (!queueMessage(message)) {
+        return;
+    }
+    debug_printf("companion: mapHeader sent (width=%d height=%d)\n", width, height);
+}
+
+void handleGetMapChunkMessage(const char* line, size_t lineLength)
+{
+    int index = 0;
+    if (!companionExtractMapChunkIndex(line, lineLength, index)) {
+        disconnectClient("invalid getMapChunk");
+        return;
+    }
+
+    const unsigned char* pixels = nullptr;
+    int width = 0;
+    int height = 0;
+    CacheEntry* handle = nullptr;
+    if (!companionLockWorldMapImage(&pixels, &width, &height, &handle)) {
+        queueMessage(companionBuildMapError("mapUnavailable"));
+        debug_printf("companion: getMapChunk failed (mapUnavailable)\n");
+        return;
+    }
+
+    size_t total = static_cast<size_t>(width) * static_cast<size_t>(height);
+    size_t start = static_cast<size_t>(index) * kMapChunkBytes;
+    if (index < 0 || start >= total) {
+        companionUnlockWorldMapImage(handle);
+        queueMessage(companionBuildMapError("index"));
+        debug_printf("companion: getMapChunk index out of range (index=%d)\n", index);
+        return;
+    }
+
+    size_t endOffset = start + kMapChunkBytes;
+    if (endOffset > total) {
+        endOffset = total;
+    }
+    size_t length = endOffset - start;
+
+    std::string message = companionBuildMapChunk(index, pixels + start, length);
+    companionUnlockWorldMapImage(handle);
+
+    if (message.empty()) {
+        queueMessage(companionBuildMapError("mapUnavailable"));
+        debug_printf("companion: getMapChunk failed (chunk formatting)\n");
+        return;
+    }
+
+    if (!queueMessage(message)) {
+        return;
+    }
+    debug_printf("companion: mapChunk sent (index=%d bytes=%zu)\n", index, length);
+}
+
 void handleClientMessage(CompanionClientMessage message, const char* line, size_t lineLength)
 {
     if (gConnection.state == ClientState::AwaitingAuth) {
@@ -490,6 +584,16 @@ void handleClientMessage(CompanionClientMessage message, const char* line, size_
 
     if (message == CompanionClientMessage::Cmd) {
         handleCommandMessage(line, lineLength);
+        return;
+    }
+
+    if (message == CompanionClientMessage::GetMap) {
+        handleGetMapMessage();
+        return;
+    }
+
+    if (message == CompanionClientMessage::GetMapChunk) {
+        handleGetMapChunkMessage(line, lineLength);
         return;
     }
 

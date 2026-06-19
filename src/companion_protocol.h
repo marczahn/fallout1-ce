@@ -26,6 +26,8 @@ enum class CompanionClientMessage {
     GetSnapshot,
     Auth,
     Cmd,
+    GetMap,
+    GetMapChunk,
     Invalid,
 };
 
@@ -34,8 +36,8 @@ struct CompanionCommandRequest {
     std::string_view name;
 };
 
-// `world` (handshake response). `schemaVersion` is `4` after the
-// camelCase wire-identifier cleanup.
+// `world` (handshake response). `schemaVersion` is `5` after adding the
+// dedicated world-map image fetch messages.
 std::string companionBuildWorld(bool playerAvailable);
 
 // `snapshot` (full state). `payload` is a kind->object map. Only kinds
@@ -89,9 +91,30 @@ std::string companionBuildCmdAck(int id,
     std::string_view data = {});
 
 // `announce` UDP broadcast. `schemaVersion` follows the live protocol
-// version (`4` after the camelCase cleanup), so discovery and TCP
-// advertise the same wire contract.
+// version (`5` after adding the world-map image fetch), so discovery and
+// TCP advertise the same wire contract.
 std::string companionBuildAnnounce(std::string_view host);
+
+// World-map image fetch builders (pure; no worldmap dependency). They
+// receive raw data and base64-encode it. Each ends with "\n" like the
+// other builders and returns "" only on a formatting failure.
+//
+// `companionBuildMapHeader` emits the `mapHeader` reply to `getMap`.
+// `palette` must point at exactly 768 bytes (256 entries x RGB, already
+// normalized to 8-bit). `chunkBytes` is the fixed raw chunk size;
+// `chunkCount` is computed as ceil(width*height / chunkBytes).
+std::string companionBuildMapHeader(int width,
+    int height,
+    const unsigned char* palette,
+    size_t chunkBytes);
+
+// `companionBuildMapChunk` emits the `mapChunk` reply to `getMapChunk`,
+// base64-encoding `data[0..length)`.
+std::string companionBuildMapChunk(int index, const unsigned char* data, size_t length);
+
+// `companionBuildMapError` emits the `mapError` line. The server must
+// not disconnect the client on a map error.
+std::string companionBuildMapError(const char* reason);
 
 CompanionClientMessage companionParseClientMessage(const char* line, size_t length);
 
@@ -109,6 +132,12 @@ bool companionExtractAuthPassword(const char* line, size_t length, std::string_v
 bool companionExtractCommandRequest(const char* line,
     size_t length,
     CompanionCommandRequest& outRequest);
+
+// Extracts the integer `index` from a line already known to be a
+// `getMapChunk` message. Walks the JSON object like the `cmd` extractor:
+// requires `type` == "getMapChunk" and an int `index`, ignores unknown
+// top-level fields, and returns false on malformed JSON.
+bool companionExtractMapChunkIndex(const char* line, size_t length, int& outIndex);
 
 } // namespace fallout
 

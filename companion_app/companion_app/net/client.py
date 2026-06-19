@@ -5,6 +5,8 @@ dispatch of inbound messages into ``AppState``.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import errno
 import os
 import socket
@@ -13,10 +15,25 @@ import time
 from typing import Any, Callable
 
 from companion_app.net.framing import encode_line, read_line
-from companion_app.state import AppState, ConnectionState, PlayerSurface
+from companion_app.state import (
+    AppState,
+    ConnectionState,
+    PlayerSurface,
+    WorldMapState,
+    WorldMapStatus,
+)
 
 
 RECONNECT_DELAY_SECONDS: float = 1.0
+
+# Schema version that introduced the world-map wire protocol (getMap etc.).
+MAP_MIN_SCHEMA_VERSION: int = 5
+# Seconds to wait for a map reply before re-sending the outstanding request.
+MAP_REQUEST_TIMEOUT_SECONDS: float = 5.0
+# Re-sends before giving up and marking the map UNAVAILABLE.
+MAP_MAX_RETRIES: int = 2
+# 256 RGB triples.
+MAP_PALETTE_BYTES: int = 768
 
 
 class NetworkClient:
@@ -83,6 +100,9 @@ class NetworkClient:
         # Drive connection-completion for non-blocking connect.
         if st is ConnectionState.CONNECTING:
             self._check_connected()
+
+        # Re-send a stalled map request (timeout-based, never busy-spins).
+        self._tick_map_fetch()
 
     def cleanup(self) -> None:
         """Close the socket and reset the state to DISCONNECTED."""
@@ -237,6 +257,12 @@ class NetworkClient:
             self._handle_player_unavailable()
         elif msg_type == "onPlayerAvailable":
             self._handle_player_available()
+        elif msg_type == "mapHeader":
+            self._on_map_header(msg)
+        elif msg_type == "mapChunk":
+            self._on_map_chunk(msg)
+        elif msg_type == "mapError":
+            self._on_map_error(msg)
         elif msg_type == "alreadyConnected":
             self._log("server: another client is already connected")
             self._on_error("another client is already connected")
@@ -283,6 +309,8 @@ class NetworkClient:
 
         self._state.connection = ConnectionState.READY
         self._log(f"snapshot (hp={self._state.player.hp}/{self._state.player.max_hp})")
+
+        self._maybe_start_map_fetch()
 
     def _on_update(self, msg: dict[str, Any]) -> None:
         pa = msg.get("playerAvailable", True)
@@ -331,6 +359,138 @@ class NetworkClient:
         self._queue_snapshot_request()
         self._state.connection = ConnectionState.AWAITING_SNAPSHOT
 
+    # ── world-map fetch ────────────────────────────────────────────
+
+    def _maybe_start_map_fetch(self) -> None:
+        """Kick off the map fetch once per connection on entering READY."""
+        world = self._state.world
+        schema = world.schema_version if world is not None else 0
+        wm = self._state.world_map
+
+        if schema < MAP_MIN_SCHEMA_VERSION:
+            if wm.status is WorldMapStatus.IDLE:
+                wm.status = WorldMapStatus.UNAVAILABLE
+                self._log(f"map unavailable (server schemaVersion {schema} < {MAP_MIN_SCHEMA_VERSION})")
+            return
+
+        if wm.status is not WorldMapStatus.IDLE:
+            return
+
+        wm.status = WorldMapStatus.FETCHING
+        wm.retries = 0
+        wm.last_request_at = time.monotonic()
+        self._queue_line({"type": "getMap"})
+        self._log("map: requesting getMap")
+
+    def _on_map_header(self, msg: dict[str, Any]) -> None:
+        wm = self._state.world_map
+        if wm.status is not WorldMapStatus.FETCHING:
+            return
+
+        width = int(msg.get("width", 0))
+        height = int(msg.get("height", 0))
+        chunk_count = int(msg.get("chunkCount", 0))
+        chunk_bytes = int(msg.get("chunkBytes", 0))
+
+        try:
+            palette = base64.b64decode(msg.get("paletteB64", ""), validate=True)
+        except (binascii.Error, ValueError):
+            self._fail_map("invalid paletteB64")
+            return
+
+        if len(palette) != MAP_PALETTE_BYTES:
+            self._fail_map(f"bad palette length {len(palette)} (expected {MAP_PALETTE_BYTES})")
+            return
+        if width <= 0 or height <= 0 or chunk_count <= 0 or chunk_bytes <= 0:
+            self._fail_map("bad map header dimensions")
+            return
+
+        wm.width = width
+        wm.height = height
+        wm.palette = palette
+        wm.chunk_count = chunk_count
+        wm.chunk_bytes = chunk_bytes
+        wm.accumulator = bytearray()
+        wm.next_index = 0
+        wm.retries = 0
+        wm.last_request_at = time.monotonic()
+        self._log(f"map: header {width}x{height}, {chunk_count} chunks")
+        self._request_map_chunk(0)
+
+    def _on_map_chunk(self, msg: dict[str, Any]) -> None:
+        wm = self._state.world_map
+        if wm.status is not WorldMapStatus.FETCHING:
+            return
+
+        index = int(msg.get("index", -1))
+        if index != wm.next_index:
+            # Out-of-order / stale chunk: ignore and let the timeout re-request.
+            self._log(f"map: ignoring chunk {index} (expected {wm.next_index})")
+            return
+
+        try:
+            data = base64.b64decode(msg.get("dataB64", ""), validate=True)
+        except (binascii.Error, ValueError):
+            self._fail_map("invalid dataB64")
+            return
+
+        wm.accumulator.extend(data)
+        wm.next_index += 1
+        wm.retries = 0
+
+        if wm.next_index < wm.chunk_count:
+            wm.last_request_at = time.monotonic()
+            self._request_map_chunk(wm.next_index)
+            return
+
+        expected = wm.width * wm.height
+        if len(wm.accumulator) != expected:
+            self._fail_map(
+                f"reassembled {len(wm.accumulator)} bytes (expected {expected})"
+            )
+            return
+
+        wm.pixels = bytes(wm.accumulator)
+        wm.accumulator = bytearray()
+        wm.status = WorldMapStatus.READY
+        self._log(f"map: ready ({len(wm.pixels)} px)")
+
+    def _on_map_error(self, msg: dict[str, Any]) -> None:
+        wm = self._state.world_map
+        if wm.status is not WorldMapStatus.FETCHING:
+            return
+        reason = msg.get("reason", "?")
+        self._fail_map(f"server mapError: {reason}")
+
+    def _request_map_chunk(self, index: int) -> None:
+        self._queue_line({"type": "getMapChunk", "index": index})
+
+    def _fail_map(self, reason: str) -> None:
+        self._state.world_map.status = WorldMapStatus.UNAVAILABLE
+        self._log(f"map unavailable: {reason}")
+
+    def _tick_map_fetch(self) -> None:
+        """Re-send a stalled outstanding map request, or give up."""
+        wm = self._state.world_map
+        if wm.status is not WorldMapStatus.FETCHING:
+            return
+        if time.monotonic() - wm.last_request_at <= MAP_REQUEST_TIMEOUT_SECONDS:
+            return
+
+        if wm.retries >= MAP_MAX_RETRIES:
+            self._fail_map("fetch timed out (retries exhausted)")
+            return
+
+        wm.retries += 1
+        wm.last_request_at = time.monotonic()
+        if wm.chunk_count == 0:
+            # No header yet: re-request the whole map.
+            self._queue_line({"type": "getMap"})
+            self._log(f"map: re-requesting getMap (retry {wm.retries})")
+        else:
+            self._request_map_chunk(wm.next_index)
+            self._log(f"map: re-requesting chunk {wm.next_index} (retry {wm.retries})")
+
     # ── reconnection ───────────────────────────────────────────────
 
     def _schedule_reconnect(self, reason: str) -> None:
@@ -358,6 +518,10 @@ class NetworkClient:
             self._sock = None
         self._read_buf.clear()
         self._write_buf.clear()
+        # A reconnect must refetch the map from scratch: reset to a fresh
+        # IDLE state. (last_known_world_* is left alone -- preserving it
+        # across reconnect is not required, but resetting it is not either.)
+        self._state.world_map = WorldMapState()
 
     def _apply_snapshot_payload(self, payload: dict[str, Any]) -> None:
         vitals = payload.get("player.vitals", {}) or {}
@@ -463,3 +627,8 @@ class NetworkClient:
         self._state.player.location_id = ""
         self._state.player.world_x = int(payload.get("x", self._state.player.world_x))
         self._state.player.world_y = int(payload.get("y", self._state.player.world_y))
+        # Remember the most recent world position so the map can show a
+        # "LAST KNOWN" marker after the player drops to a LOCAL surface.
+        self._state.last_known_world_x = self._state.player.world_x
+        self._state.last_known_world_y = self._state.player.world_y
+        self._state.has_world_fix = True

@@ -24,6 +24,46 @@ class PlayerSurface(Enum):
     WORLD = 2
 
 
+class WorldMapStatus(Enum):
+    """Lifecycle of the world-map image fetch.
+
+    IDLE     -- no fetch started yet (initial / post-reconnect).
+    FETCHING -- header/chunks in flight.
+    READY    -- full indexed buffer reassembled and validated.
+    UNAVAILABLE -- server too old, server error, or fetch gave up.
+    """
+
+    IDLE = 0
+    FETCHING = 1
+    READY = 2
+    UNAVAILABLE = 3
+
+
+@dataclass
+class WorldMapState:
+    """Pip-Boy world-map image cache and fetch bookkeeping.
+
+    Pure data: holds the palette-indexed image and the state machine the
+    network client drives. No pygame, no sockets. The rendered (green)
+    ``pygame.Surface`` is built and cached by the UI layer, not here.
+    """
+
+    status: WorldMapStatus = WorldMapStatus.IDLE
+    width: int = 0
+    height: int = 0
+    # 768 bytes RGB (256 entries * 3), 8-bit normalized.
+    palette: bytes = b""
+    # The reassembled width*height 8-bit palette-indexed buffer.
+    pixels: bytes = b""
+    # Fetch bookkeeping (client-only).
+    chunk_count: int = 0
+    next_index: int = 0
+    chunk_bytes: int = 0
+    accumulator: bytearray = field(default_factory=bytearray)
+    last_request_at: float = 0.0
+    retries: int = 0
+
+
 @dataclass
 class WorldInfo:
     schema_version: int = 0
@@ -76,3 +116,10 @@ class AppState:
     connection: ConnectionState = ConnectionState.DISCONNECTED
     world: WorldInfo | None = None
     player: PlayerState = field(default_factory=PlayerState)
+    world_map: WorldMapState = field(default_factory=WorldMapState)
+    # Most recent world position ever seen, in image-pixel space. Persists
+    # while the player is on a LOCAL surface so the map can show a
+    # "LAST KNOWN" marker. ``has_world_fix`` gates whether it is meaningful.
+    last_known_world_x: int = 0
+    last_known_world_y: int = 0
+    has_world_fix: bool = False

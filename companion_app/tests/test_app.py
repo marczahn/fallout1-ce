@@ -143,12 +143,12 @@ class DataInputRoutingTests(unittest.TestCase):
 class MapInputRoutingTests(unittest.TestCase):
     def test_handle_map_input_encoder_right_advances(self) -> None:
         map_ui = _handle_map_input(default_map_ui(), EncoderRightEvent())
-        self.assertEqual(map_ui.selected_key, "LOCAL")
+        self.assertEqual(map_ui.selected_key, "ATLAS")
 
     def test_handle_map_input_encoder_left_wraps(self) -> None:
-        # GLOBAL is first; encoder-left wraps endlessly to the last segment.
+        # LOCAL is first; encoder-left wraps endlessly to the last segment.
         map_ui = _handle_map_input(default_map_ui(), EncoderLeftEvent())
-        self.assertEqual(map_ui.selected_key, "LOCAL")
+        self.assertEqual(map_ui.selected_key, "WORLD")
 
     def test_handle_map_input_confirm_and_back_are_noops(self) -> None:
         base = default_map_ui()
@@ -162,15 +162,15 @@ class MapInputRoutingTests(unittest.TestCase):
         )
         self.assertEqual(page, Page.MAP)
         self.assertEqual(out_data, data_ui)
-        self.assertEqual(out_map.selected_key, "LOCAL")
+        self.assertEqual(out_map.selected_key, "ATLAS")
 
     def test_map_selection_persists_across_navigation(self) -> None:
         data_ui = DataPageUiState()
-        # Cycle MAP to LOCAL, leave to STATUS, then return to MAP.
+        # Cycle MAP to ATLAS, leave to STATUS, then return to MAP.
         _page, data_ui, map_ui = _route_input(
             Page.MAP, data_ui, default_map_ui(), EncoderRightEvent()
         )
-        self.assertEqual(map_ui.selected_key, "LOCAL")
+        self.assertEqual(map_ui.selected_key, "ATLAS")
         page, data_ui, map_ui = _route_input(
             Page.MAP, data_ui, map_ui, PageButtonEvent(1)
         )
@@ -179,7 +179,7 @@ class MapInputRoutingTests(unittest.TestCase):
             Page.STATUS, data_ui, map_ui, PageButtonEvent(4)
         )
         self.assertEqual(page, Page.MAP)
-        self.assertEqual(map_ui.selected_key, "LOCAL")
+        self.assertEqual(map_ui.selected_key, "ATLAS")
 
     def test_data_still_resets_on_entry(self) -> None:
         # Pin the divergence: DATA resets while MAP persists.

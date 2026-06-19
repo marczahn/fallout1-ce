@@ -3,6 +3,8 @@
 
 #include "plib/db/db.h"
 
+#include "game/cache.h"
+
 namespace fallout {
 
 typedef enum MapFlags {
@@ -175,6 +177,25 @@ bool worldMapIsActive();
 // (hex cell) the player is in. Backed by the file-static `world_xpos`
 // and `world_ypos` in `worldmap.cc`.
 bool worldMapGetPlayerPosition(int* x, int* y);
+
+// Companion world-map image accessor (read-only, color-dumb). Locks the
+// engine's 8-bit palette-indexed world-map art (interface FRM
+// `wmapids[WORLDMAP_FRM_WORLDMAP]`, ~1400px wide) independently of the
+// in-game world-map lifecycle, so it works even if the player has never
+// opened the world map. The accessor uses its own `CacheEntry*` handle
+// (NOT the file-static `wmapidsav[]` handles) so it locks/unlocks
+// cleanly regardless of world-map state.
+//
+// On success returns true and sets `*outPixels` to the frame-0,
+// direction-0 indexed pixel buffer, `*outWidth`/`*outHeight` to the
+// frame dimensions, and `*outHandle` to the lock handle the caller must
+// pass back to `companionUnlockWorldMapImage`. On any failure returns
+// false and locks nothing.
+bool companionLockWorldMapImage(const unsigned char** outPixels, int* outWidth, int* outHeight, CacheEntry** outHandle);
+
+// Releases a handle obtained from `companionLockWorldMapImage`. Safe to
+// call with a null handle.
+void companionUnlockWorldMapImage(CacheEntry* handle);
 
 } // namespace fallout
 

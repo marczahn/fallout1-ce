@@ -10,6 +10,8 @@ from companion_app.state.models import (
     PlayerState,
     PlayerSurface,
     WorldInfo,
+    WorldMapState,
+    WorldMapStatus,
 )
 
 __all__ = [
@@ -19,4 +21,6 @@ __all__ = [
     "PlayerState",
     "PlayerSurface",
     "WorldInfo",
+    "WorldMapState",
+    "WorldMapStatus",
 ]

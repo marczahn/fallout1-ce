@@ -8,6 +8,17 @@
 //   {"type":"getSnapshot"}       request a full snapshot
 //   {"type":"cmd","id":N,"name":"X","args":{...}}
 //                                          step-2 command channel (T6)
+//   {"type":"getMap"}             request the world-map image header
+//   {"type":"getMapChunk","index":i}
+//                                          request raw chunk `i` of the
+//                                          world-map image
+//
+// The world-map image is a one-time, chunked fetch over DEDICATED
+// top-level message types (NOT the cmd/cmdAck channel). It carries the
+// engine's 8-bit palette-indexed world-map art (interface FRM id 135,
+// ~1400px wide) as raw indexed bytes plus a 256-entry RGB palette,
+// base64-encoded, in fixed-size chunks. The client does all color and
+// scaling work; the server stays color-dumb.
 //
 // Client -> server (UDP, autodiscovery, T7):
 //   {"type":"discover"}           sent to the configured discovery port
@@ -84,10 +95,32 @@
 //
 //   {"type":"cmdAck","id":N,"ok":bool,"error":"<string>"?,"data":{...}?}
 //
+//   {"type":"mapHeader","width":W,"height":H,
+//      "paletteB64":"<b64 of 768 bytes RGB>","chunkCount":N,"chunkBytes":B}
+//   Reply to `getMap`. `paletteB64` decodes to exactly 768 bytes
+//   (256 entries x RGB), already normalized to 8-bit. `chunkBytes`
+//   (`B`) is the fixed RAW byte size of each chunk; `chunkCount` (`N`)
+//   is `ceil(W*H / B)`.
+//
+//   {"type":"mapChunk","index":i,"dataB64":"<b64 of raw byte range>"}
+//   Reply to `getMapChunk`. The decoded bytes are the contiguous range
+//   [i*B : min((i+1)*B, W*H)] of the raw W*H indexed buffer.
+//
+//   {"type":"mapError","reason":"<short>"}
+//   Emitted on any map failure (image not lockable, index out of
+//   range, formatting failure). The server MUST NOT disconnect the
+//   client on a map error.
+//
 // `world` has no `seq`, no `payload`. `snapshot` has no `kind`; the
 // `payload` *is* the kind dispatch. `update` always has `kind` and
 // `payload`. `onPlayerUnavailable` and `onPlayerAvailable` have
 // neither.
+//
+// `world.schemaVersion` is now `5` (was `4`). The bump marks the
+// addition of the dedicated world-map image fetch messages
+// (`getMap`/`getMapChunk`/`mapHeader`/`mapChunk`/`mapError`). The bump
+// is additive: a `4`-era client still works for everything except the
+// new map fetch, but the version makes the new contract visible.
 //
 // T0 changes from step 1/2:
 //   - `world.schemaVersion` is now `4` (was `1`, then `2`, then `3`).
@@ -116,12 +149,55 @@ namespace {
 
 constexpr char kHello[] = R"({"type":"hello"})";
 constexpr char kGetSnapshot[] = R"({"type":"getSnapshot"})";
+constexpr char kGetMap[] = R"({"type":"getMap"})";
 constexpr char kAuthPrefix[] = R"({"type":"auth")";
 constexpr char kCmdPrefix[] = R"({"type":"cmd")";
+constexpr char kGetMapChunkPrefix[] = R"({"type":"getMapChunk")";
 constexpr size_t kHelloLen = sizeof(kHello) - 1;
 constexpr size_t kGetSnapshotLen = sizeof(kGetSnapshot) - 1;
+constexpr size_t kGetMapLen = sizeof(kGetMap) - 1;
 constexpr size_t kAuthPrefixLen = sizeof(kAuthPrefix) - 1;
 constexpr size_t kCmdPrefixLen = sizeof(kCmdPrefix) - 1;
+constexpr size_t kGetMapChunkPrefixLen = sizeof(kGetMapChunkPrefix) - 1;
+
+// Standard base64 encoder, padded with '='. Dependency-free; appends the
+// encoding of `data[0..length)` to `out`. Three input bytes map to four
+// output characters; the final partial group is padded.
+void base64Encode(const unsigned char* data, size_t length, std::string& out)
+{
+    static constexpr char kAlphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    out.reserve(out.size() + ((length + 2) / 3) * 4);
+
+    size_t i = 0;
+    while (i + 3 <= length) {
+        unsigned int triple = (static_cast<unsigned int>(data[i]) << 16)
+            | (static_cast<unsigned int>(data[i + 1]) << 8)
+            | static_cast<unsigned int>(data[i + 2]);
+        out.push_back(kAlphabet[(triple >> 18) & 0x3F]);
+        out.push_back(kAlphabet[(triple >> 12) & 0x3F]);
+        out.push_back(kAlphabet[(triple >> 6) & 0x3F]);
+        out.push_back(kAlphabet[triple & 0x3F]);
+        i += 3;
+    }
+
+    size_t remaining = length - i;
+    if (remaining == 1) {
+        unsigned int triple = static_cast<unsigned int>(data[i]) << 16;
+        out.push_back(kAlphabet[(triple >> 18) & 0x3F]);
+        out.push_back(kAlphabet[(triple >> 12) & 0x3F]);
+        out.push_back('=');
+        out.push_back('=');
+    } else if (remaining == 2) {
+        unsigned int triple = (static_cast<unsigned int>(data[i]) << 16)
+            | (static_cast<unsigned int>(data[i + 1]) << 8);
+        out.push_back(kAlphabet[(triple >> 18) & 0x3F]);
+        out.push_back(kAlphabet[(triple >> 12) & 0x3F]);
+        out.push_back(kAlphabet[(triple >> 6) & 0x3F]);
+        out.push_back('=');
+    }
+}
 
 constexpr char kVitalsKind[] = "player.vitals";
 constexpr char kStatusKind[] = "player.status";
@@ -452,7 +528,7 @@ std::string companionBuildWorld(bool playerAvailable)
     char buffer[96];
     int n = snprintf(buffer,
         sizeof(buffer),
-        R"({"type":"world","schemaVersion":4,"game":"fallout1-ce","playerAvailable":%s})"
+        R"({"type":"world","schemaVersion":5,"game":"fallout1-ce","playerAvailable":%s})"
         "\n",
         flag);
     if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
@@ -739,11 +815,96 @@ std::string companionBuildAnnounce(std::string_view host)
 {
     std::string message;
     message.reserve(host.size() + 96);
-    message.append(R"({"type":"announce","game":"fallout1-ce","schemaVersion":4,"host":")");
+    message.append(R"({"type":"announce","game":"fallout1-ce","schemaVersion":5,"host":")");
     message.append(host);
     message.append(R"(","port":28080,"authRequired":true})"
                    "\n");
     return message;
+}
+
+std::string companionBuildMapHeader(int width,
+    int height,
+    const unsigned char* palette,
+    size_t chunkBytes)
+{
+    if (palette == nullptr || width <= 0 || height <= 0 || chunkBytes == 0) {
+        return std::string();
+    }
+
+    size_t total = static_cast<size_t>(width) * static_cast<size_t>(height);
+    size_t chunkCount = (total + chunkBytes - 1) / chunkBytes;
+
+    std::string message;
+    message.reserve(256);
+    message.append(R"({"type":"mapHeader","width":)");
+
+    char prefix[96];
+    int prefixLen = snprintf(prefix,
+        sizeof(prefix),
+        R"(%d,"height":%d,"paletteB64":")",
+        width,
+        height);
+    if (prefixLen < 0 || static_cast<size_t>(prefixLen) >= sizeof(prefix)) {
+        return std::string();
+    }
+    message.append(prefix, static_cast<size_t>(prefixLen));
+
+    base64Encode(palette, 768, message);
+
+    char suffix[96];
+    int suffixLen = snprintf(suffix,
+        sizeof(suffix),
+        R"(","chunkCount":%zu,"chunkBytes":%zu})"
+        "\n",
+        chunkCount,
+        chunkBytes);
+    if (suffixLen < 0 || static_cast<size_t>(suffixLen) >= sizeof(suffix)) {
+        return std::string();
+    }
+    message.append(suffix, static_cast<size_t>(suffixLen));
+
+    return message;
+}
+
+std::string companionBuildMapChunk(int index, const unsigned char* data, size_t length)
+{
+    if (data == nullptr) {
+        return std::string();
+    }
+
+    char prefix[64];
+    int prefixLen = snprintf(prefix,
+        sizeof(prefix),
+        R"({"type":"mapChunk","index":%d,"dataB64":")",
+        index);
+    if (prefixLen < 0 || static_cast<size_t>(prefixLen) >= sizeof(prefix)) {
+        return std::string();
+    }
+
+    std::string message;
+    message.reserve(static_cast<size_t>(prefixLen) + ((length + 2) / 3) * 4 + 8);
+    message.append(prefix, static_cast<size_t>(prefixLen));
+    base64Encode(data, length, message);
+    message.append("\"}\n");
+    return message;
+}
+
+std::string companionBuildMapError(const char* reason)
+{
+    if (reason == nullptr) {
+        return std::string();
+    }
+
+    char buffer[128];
+    int n = snprintf(buffer,
+        sizeof(buffer),
+        R"({"type":"mapError","reason":"%s"})"
+        "\n",
+        reason);
+    if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
+        return std::string();
+    }
+    return std::string(buffer, static_cast<size_t>(n));
 }
 
 CompanionClientMessage companionParseClientMessage(const char* line, size_t length)
@@ -791,6 +952,19 @@ CompanionClientMessage companionParseClientMessage(const char* line, size_t leng
         && memcmp(line + start, kCmdPrefixSpaced, kCmdPrefixSpacedLen) == 0) {
         return CompanionClientMessage::Cmd;
     }
+    // `getMapChunk` is a prefix match (like `cmd`/`auth`) because it
+    // carries an `index`. The exact-shape `getMap` match must NOT run
+    // before this, since `getMap` is a prefix of `getMapChunk`.
+    if (length - start >= kGetMapChunkPrefixLen
+        && memcmp(line + start, kGetMapChunkPrefix, kGetMapChunkPrefixLen) == 0) {
+        return CompanionClientMessage::GetMapChunk;
+    }
+    static constexpr char kGetMapChunkPrefixSpaced[] = R"({"type": "getMapChunk")";
+    constexpr size_t kGetMapChunkPrefixSpacedLen = sizeof(kGetMapChunkPrefixSpaced) - 1;
+    if (length - start >= kGetMapChunkPrefixSpacedLen
+        && memcmp(line + start, kGetMapChunkPrefixSpaced, kGetMapChunkPrefixSpacedLen) == 0) {
+        return CompanionClientMessage::GetMapChunk;
+    }
 
     char stripped[64];
     size_t j = 0;
@@ -810,6 +984,9 @@ CompanionClientMessage companionParseClientMessage(const char* line, size_t leng
     }
     if (j == kGetSnapshotLen && memcmp(stripped, kGetSnapshot, kGetSnapshotLen) == 0) {
         return CompanionClientMessage::GetSnapshot;
+    }
+    if (j == kGetMapLen && memcmp(stripped, kGetMap, kGetMapLen) == 0) {
+        return CompanionClientMessage::GetMap;
     }
     return CompanionClientMessage::Invalid;
 }
@@ -1010,6 +1187,85 @@ bool companionExtractCommandRequest(const char* line,
     }
 
     return sawType && sawId && sawName;
+}
+
+bool companionExtractMapChunkIndex(const char* line, size_t length, int& outIndex)
+{
+    if (line == nullptr || length == 0) {
+        return false;
+    }
+
+    const char* p = line;
+    const char* end = line + length;
+    skipWhitespace(p, end);
+    if (p >= end || *p != '{') {
+        return false;
+    }
+    ++p;
+
+    bool sawType = false;
+    bool sawIndex = false;
+
+    while (true) {
+        skipWhitespace(p, end);
+        if (p >= end) {
+            return false;
+        }
+
+        if (*p == '}') {
+            ++p;
+            break;
+        }
+
+        std::string_view key;
+        if (!parseJsonStringView(p, end, key)) {
+            return false;
+        }
+
+        skipWhitespace(p, end);
+        if (p >= end || *p != ':') {
+            return false;
+        }
+        ++p;
+
+        if (key == "type") {
+            std::string_view type;
+            if (!parseJsonStringView(p, end, type) || type != "getMapChunk") {
+                return false;
+            }
+            sawType = true;
+        } else if (key == "index") {
+            if (!parseJsonInt32(p, end, outIndex)) {
+                return false;
+            }
+            sawIndex = true;
+        } else {
+            if (!skipJsonValue(p, end)) {
+                return false;
+            }
+        }
+
+        skipWhitespace(p, end);
+        if (p >= end) {
+            return false;
+        }
+        if (*p == ',') {
+            ++p;
+            continue;
+        }
+        if (*p == '}') {
+            ++p;
+            break;
+        }
+        return false;
+    }
+
+    skipWhitespace(p, end);
+    if (p != end) {
+        return false;
+    }
+
+    return sawType && sawIndex;
 }
 
 } // namespace fallout

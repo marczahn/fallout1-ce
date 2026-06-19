@@ -8,7 +8,7 @@ is enabled only when `fallout.cfg` has both `[companion] bind` and
 environment variable) and uses it for the `auth` step of the handshake.
 
 T0 protocol changes verified:
-- `world.schemaVersion` is `4` (was `3` before the camelCase identifier cleanup).
+- `world.schemaVersion` is `5` (was `4`; bumped when the world-map image fetch was added).
 - `update` carries a `kind` field and a `payload` wrapper (no `entity`,
   no `data`).
 - `update.payload` is the *complete* per-kind object, not a field-level
@@ -41,7 +41,9 @@ Run:
 """
 
 import argparse
+import base64
 import json
+import math
 import os
 import socket
 import sys
@@ -49,6 +51,11 @@ import sys
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 28080
 RECV_TIMEOUT_SECONDS = 2.0
+
+# Must match `kMapChunkBytes` in src/companion_server.cc.
+MAP_CHUNK_BYTES = 147456
+# Must match `kOutboundCap` in src/companion_server.cc.
+OUTBOUND_CAP = 256 * 1024
 
 
 def fail(message):
@@ -125,8 +132,8 @@ def test_auth_then_hello(sock, password):
     msg = json.loads(line)
     assert_equal(msg.get("type"), "world", "type")
     assert_field(msg, "schemaVersion", "world")
-    # Current protocol version after the camelCase identifier cleanup.
-    assert_equal(msg.get("schemaVersion"), 4, "world.schemaVersion")
+    # Current protocol version after the world-map image fetch was added.
+    assert_equal(msg.get("schemaVersion"), 5, "world.schemaVersion")
     assert_field(msg, "game", "world")
     assert_field(msg, "playerAvailable", "world")
     assert_is_bool(msg["playerAvailable"], "world.playerAvailable")
@@ -267,6 +274,100 @@ def test_update_shape(sock, password):
         print("  info: no `update` arrived within 1.5s (player not in real gameplay yet); envelope check deferred")
 
 
+def recv_line_bytes(sock):
+    """Read bytes from the socket until a newline; return the line as raw
+    bytes (without the trailing newline), or None on EOF."""
+    buf = bytearray()
+    while True:
+        chunk = sock.recv(65536)
+        if not chunk:
+            return None
+        buf.extend(chunk)
+        if b"\n" in buf:
+            line, _, _rest = buf.partition(b"\n")
+            return bytes(line)
+
+
+def test_get_map(sock):
+    """Fetch the world-map image header + all chunks over the dedicated
+    getMap/getMapChunk message types, then probe an out-of-range index.
+
+    Requires a running game whose world-map art is lockable; on the main
+    menu / character creation the art is still loadable (it is locked
+    independently of the in-game world-map lifecycle), so this generally
+    works headlessly once the server is up. If the server reports the
+    map is unavailable, the test is skipped rather than failed.
+    """
+    print("test: getMap -> mapHeader -> mapChunk* (dedicated top-level messages)")
+    sock.settimeout(RECV_TIMEOUT_SECONDS)
+    sock.sendall(b'{"type":"getMap"}\n')
+    line = recv_line_bytes(sock)
+    if line is None:
+        fail("server closed connection after getMap")
+    if len(line) + 1 > OUTBOUND_CAP:
+        fail(f"mapHeader line exceeds outbound cap ({len(line) + 1} > {OUTBOUND_CAP})")
+    msg = json.loads(line.decode("utf-8"))
+
+    if msg.get("type") == "mapError":
+        print(f"  skip: server reports mapError reason={msg.get('reason')!r} (world-map art not lockable)")
+        return
+
+    assert_equal(msg.get("type"), "mapHeader", "type")
+    for k in ("width", "height", "paletteB64", "chunkCount", "chunkBytes"):
+        assert_field(msg, k, "mapHeader")
+    assert_is_int(msg["width"], "mapHeader.width")
+    assert_is_int(msg["height"], "mapHeader.height")
+    assert_is_int(msg["chunkCount"], "mapHeader.chunkCount")
+    assert_is_int(msg["chunkBytes"], "mapHeader.chunkBytes")
+    assert_is_str(msg["paletteB64"], "mapHeader.paletteB64")
+
+    width = msg["width"]
+    height = msg["height"]
+    chunk_bytes = msg["chunkBytes"]
+    chunk_count = msg["chunkCount"]
+    print(f"  info: width={width} height={height} chunkBytes={chunk_bytes} chunkCount={chunk_count}")
+
+    palette = base64.b64decode(msg["paletteB64"])
+    assert_equal(len(palette), 768, "decoded paletteB64 length")
+
+    total = width * height
+    expected_chunk_count = math.ceil(total / chunk_bytes)
+    assert_equal(chunk_count, expected_chunk_count, "mapHeader.chunkCount == ceil(width*height/chunkBytes)")
+
+    reassembled = bytearray()
+    for index in range(chunk_count):
+        sock.sendall(json.dumps({"type": "getMapChunk", "index": index}).encode("utf-8") + b"\n")
+        chunk_line = recv_line_bytes(sock)
+        if chunk_line is None:
+            fail(f"server closed connection after getMapChunk index={index}")
+        if len(chunk_line) + 1 > OUTBOUND_CAP:
+            fail(f"mapChunk line exceeds outbound cap ({len(chunk_line) + 1} > {OUTBOUND_CAP}) at index={index}")
+        chunk_msg = json.loads(chunk_line.decode("utf-8"))
+        assert_equal(chunk_msg.get("type"), "mapChunk", f"chunk[{index}].type")
+        assert_equal(chunk_msg.get("index"), index, f"chunk[{index}].index")
+        assert_field(chunk_msg, "dataB64", f"chunk[{index}]")
+        reassembled.extend(base64.b64decode(chunk_msg["dataB64"]))
+    assert_equal(len(reassembled), total, "reassembled chunk length == width*height")
+
+    # Out-of-range index: the server must reply with a mapError and must
+    # NOT disconnect.
+    sock.sendall(json.dumps({"type": "getMapChunk", "index": chunk_count}).encode("utf-8") + b"\n")
+    err_line = recv_line_bytes(sock)
+    if err_line is None:
+        fail("server closed connection on out-of-range getMapChunk (must not disconnect)")
+    err_msg = json.loads(err_line.decode("utf-8"))
+    assert_equal(err_msg.get("type"), "mapError", "out-of-range getMapChunk -> mapError")
+    assert_field(err_msg, "reason", "mapError")
+
+    # The connection must still be usable after a mapError.
+    sock.sendall(b'{"type":"getSnapshot"}\n')
+    after = recv_line_bytes(sock)
+    if after is None:
+        fail("server disconnected after a mapError (must stay connected)")
+    after_msg = json.loads(after.decode("utf-8"))
+    assert_equal(after_msg.get("type"), "snapshot", "connection alive after mapError")
+
+
 def test_post_handshake_hello_is_ignored(sock):
     print("test: post-handshake hello is silently ignored")
     sock.settimeout(RECV_TIMEOUT_SECONDS)
@@ -343,7 +444,7 @@ def test_server_still_listening(host, port, password):
             fail("server did not respond to a new auth + hello after the bad client")
         msg = json.loads(line)
         assert_equal(msg.get("type"), "world", "type after recovery")
-        assert_equal(msg.get("schemaVersion"), 4, "world.schemaVersion (recovery)")
+        assert_equal(msg.get("schemaVersion"), 5, "world.schemaVersion (recovery)")
 
 
 def main():
@@ -366,6 +467,7 @@ def main():
         test_auth_then_hello(sock, args.password)
         test_getSnapshot(sock, expected_seq=1)
         test_update_shape(sock, args.password)
+        test_get_map(sock)
         test_post_handshake_hello_is_ignored(sock)
 
     test_hello_first_message_drops(args.host, args.port)
