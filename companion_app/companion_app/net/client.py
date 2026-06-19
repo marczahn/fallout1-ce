@@ -208,27 +208,42 @@ class NetworkClient:
     # ── recv path ─────────────────────────────────────────────────
 
     def _try_recv(self) -> None:
-        """Read available data from the socket."""
+        """Read all data currently available from the socket.
+
+        Drains the socket in a loop rather than a single read: world-map
+        chunks are ~192 KB, so a single 4 KB read per frame would take dozens
+        of frames per chunk (seconds to fetch the whole map). Looping until
+        the socket would block keeps large transfers to a handful of frames
+        while staying non-blocking.
+        """
         if self._sock is None:
             return
 
-        try:
-            chunk = self._sock.recv(4096)
-        except BlockingIOError:
-            return
-        except OSError as e:
-            err: int = e.args[0] if e.args else 0
-            if err in (errno.ENOTCONN, errno.EAGAIN):
+        got_data = False
+        while True:
+            try:
+                chunk = self._sock.recv(65536)
+            except BlockingIOError:
+                break
+            except OSError as e:
+                err: int = e.args[0] if e.args else 0
+                if err in (errno.ENOTCONN, errno.EAGAIN):
+                    break
+                self._on_error(f"recv failed: {e}")
                 return
-            self._on_error(f"recv failed: {e}")
-            return
 
-        if not chunk:
-            self._on_error("connection closed by peer")
-            return
+            if not chunk:
+                if got_data:
+                    # Process what we read before reporting the close.
+                    self._process_read_buffer()
+                self._on_error("connection closed by peer")
+                return
 
-        self._read_buf.extend(chunk)
-        self._process_read_buffer()
+            self._read_buf.extend(chunk)
+            got_data = True
+
+        if got_data:
+            self._process_read_buffer()
 
     def _process_read_buffer(self) -> None:
         """Split the read buffer on newlines and dispatch messages."""

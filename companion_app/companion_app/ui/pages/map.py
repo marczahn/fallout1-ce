@@ -40,8 +40,12 @@ _LABEL_SIZE: int = 14
 # player's surroundings legible while still scrolling.
 WORLD_ZOOM: float = 2.0
 
-# Marker geometry (screen pixels).
-_MARKER_RADIUS: int = 3
+# Marker: a full-span "plotter" crosshair — one vertical and one horizontal
+# line through the player, spanning the whole map panel. A 1px dark backing
+# keeps the thin bright lines legible over bright-green land. On WORLD the
+# lines stay centered until the view clamps at a map border.
+_MARKER_LINE_W: int = 1
+_MARKER_BACKING_W: int = 3
 
 # Marker draw modes (F7 selector outputs).
 MARKER_LIVE: str = "live"
@@ -257,16 +261,40 @@ class MapPage:
         return False
 
     def _draw_marker(
-        self, surface: pygame.Surface, body_rect: pygame.Rect, view_xy: tuple[int, int]
+        self,
+        surface: pygame.Surface,
+        body_rect: pygame.Rect,
+        view_xy: tuple[int, int],
+        map_rect: "pygame.Rect | None" = None,
     ) -> None:
         import pygame
 
+        # The crosshair spans the drawn MAP rectangle, not the whole panel:
+        # in ATLAS the map is letterboxed, so spanning the panel would run the
+        # lines into the empty bars. Defaults to the panel (WORLD fills it).
+        extent = body_rect if map_rect is None else map_rect
+
         cx = body_rect.left + view_xy[0]
         cy = body_rect.top + view_xy[1]
-        # Only draw if inside the body area.
-        if not body_rect.collidepoint(cx, cy):
+        # Only draw if the player falls within the drawn map area.
+        if not extent.collidepoint(cx, cy):
             return
-        pygame.draw.circle(surface, palette.FOREGROUND, (cx, cy), _MARKER_RADIUS)
+
+        bg = palette.BACKGROUND  # black: the contrast backing
+        fg = palette.FOREGROUND
+
+        # Clip so the lines stay within the map rectangle.
+        prev_clip = surface.get_clip()
+        surface.set_clip(extent)
+
+        # Full-span plotter crosshair: a vertical line through the player's x
+        # and a horizontal line through the player's y, each a thin bright line
+        # over a slightly wider dark backing so it reads on bright-green land.
+        for color, w in ((bg, _MARKER_BACKING_W), (fg, _MARKER_LINE_W)):
+            pygame.draw.line(surface, color, (cx, extent.top), (cx, extent.bottom), w)
+            pygame.draw.line(surface, color, (extent.left, cy), (extent.right, cy), w)
+
+        surface.set_clip(prev_clip)
 
     def _dim_overlay(
         self, surface: pygame.Surface, rect: pygame.Rect
@@ -328,7 +356,13 @@ class MapPage:
             fit.offset_x + int(px * fit.scale),
             fit.offset_y + int(py * fit.scale),
         )
-        self._draw_marker(surface, body_rect, marker_view)
+        map_rect = pygame.Rect(
+            body_rect.left + fit.offset_x,
+            body_rect.top + fit.offset_y,
+            fit.dest_w,
+            fit.dest_h,
+        )
+        self._draw_marker(surface, body_rect, marker_view, map_rect)
 
     # ── WORLD ──────────────────────────────────────────────────────
 

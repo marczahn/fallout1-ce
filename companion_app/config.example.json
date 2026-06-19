@@ -24,5 +24,9 @@
     "host": "127.0.0.1",
     "port": 28080,
     "password": "your-secret"
+  },
+  "map": {
+    "greenLevels": 8,
+    "pixelBlocks": 140
   }
 }

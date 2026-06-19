@@ -22,6 +22,10 @@ class _FakeSocket:
         self.recvbuf = bytearray()
         self._closed = False
         self._connected = False
+        # Models a real non-blocking socket: an empty recv buffer raises
+        # BlockingIOError ("no data right now"); a returned b"" means EOF
+        # (peer closed) and is only produced when ``eof`` is set.
+        self.eof = False
         self.family = 0
         self.type = 0
         self.proto = 0
@@ -48,7 +52,9 @@ class _FakeSocket:
         if not self._connected:
             raise OSError("socket not connected")
         if not self.recvbuf:
-            return b""
+            if self.eof:
+                return b""  # peer closed
+            raise BlockingIOError("no data available")  # would block
         chunk = self.recvbuf[:bufsize]
         self.recvbuf = self.recvbuf[bufsize:]
         return bytes(chunk)
@@ -188,6 +194,35 @@ class NetworkClientTest(unittest.TestCase):
         client._connect()
 
         self.assertEqual(visible, [])
+
+    @patch("companion_app.net.client.socket")
+    def test_recv_drains_large_message_in_one_poll(
+        self, mock_socket_module: MagicMock
+    ) -> None:
+        # Regression: a single small read per poll made ~192 KB world-map
+        # chunks take dozens of frames each. A message larger than one recv
+        # must be fully received and dispatched in a single _try_recv.
+        fake = _FakeSocket()
+        mock_socket_module.socket.return_value = fake
+        mock_socket_module.AF_INET = socket.AF_INET
+        mock_socket_module.SOCK_STREAM = socket.SOCK_STREAM
+        self.client._connect()
+        self.client._check_connected()
+        self.assert_connection(ConnectionState.AWAITING_WORLD)
+
+        pad = "A" * 200_000  # far larger than the 65536-byte recv size
+        fake.recvbuf = bytearray(
+            (
+                '{"type":"world","schemaVersion":5,"game":"fallout1-ce",'
+                f'"playerAvailable":true,"pad":"{pad}"}}\n'
+            ).encode("utf-8")
+        )
+        self.client._try_recv()
+
+        # Fully drained and parsed in ONE poll (not left buffered).
+        self.assertEqual(len(self.client._read_buf), 0)
+        self.assert_connection(ConnectionState.AWAITING_SNAPSHOT)
+        self.assertEqual(self.state.world.schema_version, 5)
 
     @patch("companion_app.net.client.socket")
     def test_full_handshake(self, mock_socket_module: MagicMock) -> None:
