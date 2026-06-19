@@ -68,6 +68,18 @@ DEFAULT_KEYMAP_NAMES: dict[str, list[str]] = {
 SERVER_DEFAULT_HOST: str = "127.0.0.1"
 SERVER_DEFAULT_PORT: int = 28080
 
+# World-map rendering knobs (tunable so the "limited Pip-Boy hardware" look
+# can be dialed in). `greenLevels` posterizes the green ramp to N shades
+# (2..256; lower = fewer, chunkier brightness steps). `pixelBlocks` pixelates
+# the displayed map to roughly N coarse blocks across its width (lower =
+# blockier). Defaults aim at a low-fidelity green-terminal look.
+DEFAULT_MAP_GREEN_LEVELS: int = 4
+DEFAULT_MAP_PIXEL_BLOCKS: int = 110
+MAP_GREEN_LEVELS_MIN: int = 2
+MAP_GREEN_LEVELS_MAX: int = 256
+MAP_PIXEL_BLOCKS_MIN: int = 2
+MAP_PIXEL_BLOCKS_MAX: int = 2000
+
 DEFAULT_CONFIG_FILENAME = "companion_app.config.json"
 
 
@@ -89,6 +101,8 @@ class Config:
     server_host: str = SERVER_DEFAULT_HOST
     server_port: int = SERVER_DEFAULT_PORT
     server_password: str = ""
+    map_green_levels: int = DEFAULT_MAP_GREEN_LEVELS
+    map_pixel_blocks: int = DEFAULT_MAP_PIXEL_BLOCKS
 
 
 def _warn(msg: str) -> None:
@@ -163,7 +177,7 @@ def _require_bool(key: str, value: Any) -> bool:
 def _extract_fields(
     raw: dict[str, Any],
     source: Path | None,
-) -> tuple[float, bool, bool, bool, bool, bool, dict[str, list[str]], str, int, str]:
+) -> tuple[float, bool, bool, bool, bool, bool, dict[str, list[str]], str, int, str, int, int]:
     """Pull only the keys the app honors. Warn on the rest."""
     scale: float = DEFAULT_DISPLAY_SCALE
     crt_overlay: bool = DEFAULT_DISPLAY_CRT_OVERLAY
@@ -176,6 +190,8 @@ def _extract_fields(
     server_host: str = SERVER_DEFAULT_HOST
     server_port: int = SERVER_DEFAULT_PORT
     server_password: str | None = None
+    map_green_levels: int = DEFAULT_MAP_GREEN_LEVELS
+    map_pixel_blocks: int = DEFAULT_MAP_PIXEL_BLOCKS
 
     for top_key, top_value in raw.items():
         if top_key == "display":
@@ -248,6 +264,34 @@ def _extract_fields(
                     server_password = v
                 else:
                     _warn(f"ignoring unknown config key server.{k}")
+        elif top_key == "map":
+            if not isinstance(top_value, dict):
+                raise ConfigError("map section must be an object")
+            for k, v in top_value.items():
+                if k == "greenLevels":
+                    if isinstance(v, bool) or not isinstance(v, int):
+                        raise ConfigError(
+                            f"map.greenLevels must be an integer, got {v!r}"
+                        )
+                    if v < MAP_GREEN_LEVELS_MIN or v > MAP_GREEN_LEVELS_MAX:
+                        raise ConfigError(
+                            f"map.greenLevels must be between {MAP_GREEN_LEVELS_MIN} "
+                            f"and {MAP_GREEN_LEVELS_MAX}, got {v}"
+                        )
+                    map_green_levels = v
+                elif k == "pixelBlocks":
+                    if isinstance(v, bool) or not isinstance(v, int):
+                        raise ConfigError(
+                            f"map.pixelBlocks must be an integer, got {v!r}"
+                        )
+                    if v < MAP_PIXEL_BLOCKS_MIN or v > MAP_PIXEL_BLOCKS_MAX:
+                        raise ConfigError(
+                            f"map.pixelBlocks must be between {MAP_PIXEL_BLOCKS_MIN} "
+                            f"and {MAP_PIXEL_BLOCKS_MAX}, got {v}"
+                        )
+                    map_pixel_blocks = v
+                else:
+                    _warn(f"ignoring unknown config key map.{k}")
         else:
             _warn(f"ignoring unknown config key {top_key}")
 
@@ -261,6 +305,7 @@ def _extract_fields(
         scale, crt_overlay, power_on_effect, vertical_sweep,
         vignette, rounded_crt, debug_event_log,
         resolved_names, server_host, server_port, server_password,
+        map_green_levels, map_pixel_blocks,
     )
 
 
@@ -303,6 +348,7 @@ def load_config(path: str | None) -> Config:
         scale, crt_overlay, power_on_effect, vertical_sweep,
         vignette, rounded_crt, debug_event_log,
         _names, server_host, server_port, server_password,
+        map_green_levels, map_pixel_blocks,
     ) = _extract_fields(raw, source)
     return Config(
         display_scale=scale,
@@ -316,6 +362,8 @@ def load_config(path: str | None) -> Config:
         server_host=server_host,
         server_port=server_port,
         server_password=server_password,
+        map_green_levels=map_green_levels,
+        map_pixel_blocks=map_pixel_blocks,
     )
 
 
@@ -331,6 +379,7 @@ def load_and_resolve_config(path: str | None) -> Config:
         scale, crt_overlay, power_on_effect, vertical_sweep,
         vignette, rounded_crt, debug_event_log,
         keymap_names, server_host, server_port, server_password,
+        map_green_levels, map_pixel_blocks,
     ) = _extract_fields(raw, source)
 
     # pygame must be initialized before key_code lookups.
@@ -351,4 +400,6 @@ def load_and_resolve_config(path: str | None) -> Config:
         server_host=server_host,
         server_port=server_port,
         server_password=server_password,
+        map_green_levels=map_green_levels,
+        map_pixel_blocks=map_pixel_blocks,
     )

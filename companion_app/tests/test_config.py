@@ -18,6 +18,8 @@ import pygame
 
 from companion_app.config import (
     DEFAULT_DISPLAY_SCALE,
+    DEFAULT_MAP_GREEN_LEVELS,
+    DEFAULT_MAP_PIXEL_BLOCKS,
     SERVER_DEFAULT_HOST,
     SERVER_DEFAULT_PORT,
     Config,
@@ -112,6 +114,38 @@ class LoadConfigTests(unittest.TestCase):
                 load_and_resolve_config(str(p))
             self.assertIn(str(p), str(ctx.exception))
             self.assertIn("malformed JSON", str(ctx.exception))
+
+    def test_map_defaults_when_absent(self) -> None:
+        with _Tempdir() as td:
+            cfg = load_and_resolve_config(str(self._write_pw(td, {})))
+        self.assertEqual(cfg.map_green_levels, DEFAULT_MAP_GREEN_LEVELS)
+        self.assertEqual(cfg.map_pixel_blocks, DEFAULT_MAP_PIXEL_BLOCKS)
+
+    def test_map_values_honored(self) -> None:
+        with _Tempdir() as td:
+            p = self._write_pw(td, {"map": {"greenLevels": 8, "pixelBlocks": 64}})
+            cfg = load_and_resolve_config(str(p))
+        self.assertEqual(cfg.map_green_levels, 8)
+        self.assertEqual(cfg.map_pixel_blocks, 64)
+
+    def test_map_green_levels_out_of_range_aborts(self) -> None:
+        for bad in (1, 257):
+            with _Tempdir() as td:
+                p = self._write_pw(td, {"map": {"greenLevels": bad}})
+                with self.assertRaises(ConfigError):
+                    load_and_resolve_config(str(p))
+
+    def test_map_green_levels_bool_rejected(self) -> None:
+        with _Tempdir() as td:
+            p = self._write_pw(td, {"map": {"greenLevels": True}})
+            with self.assertRaises(ConfigError):
+                load_and_resolve_config(str(p))
+
+    def test_map_pixel_blocks_out_of_range_aborts(self) -> None:
+        with _Tempdir() as td:
+            p = self._write_pw(td, {"map": {"pixelBlocks": 1}})
+            with self.assertRaises(ConfigError):
+                load_and_resolve_config(str(p))
 
     def test_unknown_event_name_aborts(self) -> None:
         with _Tempdir() as td:

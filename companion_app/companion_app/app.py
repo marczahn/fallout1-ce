@@ -266,7 +266,10 @@ def _run_loop(config: Config) -> int:
     status_page = StatusPage()
     data_page = DataPage()
     inventory_page = InventoryPage()
-    map_page = MapPage()
+    map_page = MapPage(
+        green_levels=config.map_green_levels,
+        pixel_blocks=config.map_pixel_blocks,
+    )
     page_titles = {
         Page.STATUS: status_page.title,
         Page.DATA: data_page.title,

@@ -22,11 +22,16 @@ from companion_app.render import worldmap_image
 from companion_app.state import AppState, PlayerSurface, WorldMapStatus
 from companion_app.ui import segmented_header
 from companion_app.ui.segmented_header import Segment, SegmentedHeaderState
+from companion_app.ui.shell import PAGE_MARGIN_X
+from companion_app.config import DEFAULT_MAP_GREEN_LEVELS, DEFAULT_MAP_PIXEL_BLOCKS
 
 if TYPE_CHECKING:
     import pygame
 
 _MAP_BODY_TOP: int = 56
+# Keep the map inset from the screen border like the other pages: the same
+# horizontal page margin on the left/right, and a matching bottom margin.
+_MAP_MARGIN_BOTTOM: int = PAGE_MARGIN_X
 _BODY_SIZE: int = 22
 _LABEL_SIZE: int = 14
 
@@ -163,7 +168,15 @@ class MapPage:
 
     title = "MAP"
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        green_levels: int = DEFAULT_MAP_GREEN_LEVELS,
+        pixel_blocks: int = DEFAULT_MAP_PIXEL_BLOCKS,
+    ) -> None:
+        # Rendering knobs (config-driven; see config.map.greenLevels /
+        # config.map.pixelBlocks). Fixed per run.
+        self._green_levels = green_levels
+        self._pixel_blocks = pixel_blocks
         # Cached green surface plus the identity of the pixels it was built
         # from, so we rebuild only when a fresh buffer arrives.
         self._surface: "pygame.Surface | None" = None
@@ -179,9 +192,13 @@ class MapPage:
     ) -> None:
         segmented_header.render(surface, content_rect, ui_state)
 
+        # Inset the map body from the screen border to match the other pages:
+        # PAGE_MARGIN_X on the left/right and a matching bottom margin.
         body_rect = content_rect.copy()
         body_rect.top += _MAP_BODY_TOP
-        body_rect.height = content_rect.height - _MAP_BODY_TOP
+        body_rect.left += PAGE_MARGIN_X
+        body_rect.width = content_rect.width - 2 * PAGE_MARGIN_X
+        body_rect.height = content_rect.height - _MAP_BODY_TOP - _MAP_MARGIN_BOTTOM
 
         key = ui_state.selected_key
         if key == "ATLAS":
@@ -213,7 +230,7 @@ class MapPage:
         ):
             return self._surface
         self._surface = worldmap_image.build_surface(
-            wm.pixels, wm.width, wm.height, wm.palette
+            wm.pixels, wm.width, wm.height, wm.palette, self._green_levels
         )
         self._built_pixels_id = id(wm.pixels)
         self._built_len = len(wm.pixels)
@@ -281,7 +298,9 @@ class MapPage:
         if fit.scale <= 0.0:
             return
 
-        scaled = pygame.transform.scale(green, (fit.dest_w, fit.dest_h))
+        scaled = worldmap_image.pixelate(
+            green, fit.dest_w, fit.dest_h, self._pixel_blocks
+        )
         dest = (body_rect.left + fit.offset_x, body_rect.top + fit.offset_y)
         surface.blit(scaled, dest)
 
@@ -336,7 +355,9 @@ class MapPage:
                 wm.width, wm.height, body_rect.width, body_rect.height
             )
             if fit.scale > 0.0:
-                scaled = pygame.transform.scale(green, (fit.dest_w, fit.dest_h))
+                scaled = worldmap_image.pixelate(
+                    green, fit.dest_w, fit.dest_h, self._pixel_blocks
+                )
                 surface.blit(
                     scaled, (body_rect.left + fit.offset_x, body_rect.top + fit.offset_y)
                 )
@@ -360,7 +381,9 @@ class MapPage:
         cropped = green.subsurface(pygame.Rect(left, top, src_w, src_h))
         dest_w = int(src_w * WORLD_ZOOM)
         dest_h = int(src_h * WORLD_ZOOM)
-        scaled = pygame.transform.scale(cropped, (max(1, dest_w), max(1, dest_h)))
+        scaled = worldmap_image.pixelate(
+            cropped, max(1, dest_w), max(1, dest_h), self._pixel_blocks
+        )
         # The scaled region may be larger than the body; clip the blit.
         surface.blit(scaled, body_rect.topleft, area=pygame.Rect(0, 0, body_rect.width, body_rect.height))
 

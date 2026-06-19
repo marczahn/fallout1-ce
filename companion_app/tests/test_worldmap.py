@@ -192,6 +192,45 @@ class GreenLutTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_green_lut(bytes(10))
 
+    def test_posterize_collapses_to_n_distinct_shades(self) -> None:
+        pal = bytes(b for i in range(256) for b in (i, i, i))
+        lut = build_green_lut(pal, levels=4)
+        # A 256-entry grayscale ramp posterized to 4 levels yields exactly 4
+        # distinct output colors, and still spans BACKGROUND..FOREGROUND.
+        distinct = {rgb for rgb in lut}
+        self.assertEqual(len(distinct), 4)
+        self.assertEqual(lut[0], palette.BACKGROUND)
+        self.assertEqual(lut[255], palette.FOREGROUND)
+
+    def test_posterize_two_levels_is_one_bit(self) -> None:
+        pal = bytes(b for i in range(256) for b in (i, i, i))
+        lut = build_green_lut(pal, levels=2)
+        self.assertEqual({rgb for rgb in lut}, {palette.BACKGROUND, palette.FOREGROUND})
+
+    def test_levels_256_is_smooth(self) -> None:
+        pal = bytes(b for i in range(256) for b in (i, i, i))
+        self.assertEqual(build_green_lut(pal, levels=256), build_green_lut(pal))
+
+
+class CoarseDimsTests(unittest.TestCase):
+    def test_blocks_across_sets_width_and_keeps_aspect(self) -> None:
+        from companion_app.render.worldmap_image import coarse_dims
+
+        cw, ch = coarse_dims(400, 200, 100)
+        self.assertEqual(cw, 100)
+        self.assertEqual(ch, 50)  # 100 * 200/400
+
+    def test_never_upsamples(self) -> None:
+        from companion_app.render.worldmap_image import coarse_dims
+
+        # blocks larger than the destination clamp to the destination size.
+        self.assertEqual(coarse_dims(40, 20, 1000), (40, 20))
+
+    def test_degenerate(self) -> None:
+        from companion_app.render.worldmap_image import coarse_dims
+
+        self.assertEqual(coarse_dims(0, 0, 10), (1, 1))
+
 
 # ── F5: atlas fit math ─────────────────────────────────────────────────
 

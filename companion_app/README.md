@@ -76,6 +76,10 @@ Config resolution order:
     "host": "127.0.0.1",
     "port": 28080,
     "password": "changeme"
+  },
+  "map": {
+    "greenLevels": 4,
+    "pixelBlocks": 110
   }
 }
 ```
@@ -119,6 +123,12 @@ Honored keys:
 - `server.password` — companion server auth password. **Required**.
   Must be a non-empty string. The app aborts at startup (before
   pygame init) if this key is missing or empty.
+- `map.greenLevels` — number of distinct green shades the world map is
+  posterized to (the "limited Pip-Boy hardware" look). Integer 2–256;
+  lower is chunkier (`2` is 1-bit black/green). Default `4`.
+- `map.pixelBlocks` — pixelation coarseness: roughly how many chunky
+  blocks span the displayed map width. Integer 2–2000; lower is blockier.
+  Default `110`.
 
 ## Dev keys
 
