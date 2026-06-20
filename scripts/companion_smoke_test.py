@@ -8,7 +8,7 @@ is enabled only when `fallout.cfg` has both `[companion] bind` and
 environment variable) and uses it for the `auth` step of the handshake.
 
 T0 protocol changes verified:
-- `world.schemaVersion` is `5` (was `4`; bumped when the world-map image fetch was added).
+- `world.schemaVersion` is `7` (was `6`; bumped when localLocation.worldX/worldY were added).
 - `update` carries a `kind` field and a `payload` wrapper (no `entity`,
   no `data`).
 - `update.payload` is the *complete* per-kind object, not a field-level
@@ -133,7 +133,7 @@ def test_auth_then_hello(sock, password):
     assert_equal(msg.get("type"), "world", "type")
     assert_field(msg, "schemaVersion", "world")
     # Current protocol version after the world-map image fetch was added.
-    assert_equal(msg.get("schemaVersion"), 5, "world.schemaVersion")
+    assert_equal(msg.get("schemaVersion"), 7, "world.schemaVersion")
     assert_field(msg, "game", "world")
     assert_field(msg, "playerAvailable", "world")
     assert_is_bool(msg["playerAvailable"], "world.playerAvailable")
@@ -195,7 +195,7 @@ def test_getSnapshot(sock, expected_seq):
         return
     if has_local:
         local = payload["player.localLocation"]
-        for k in ("tile", "elevation", "map", "location", "locationId"):
+        for k in ("tile", "elevation", "map", "location", "locationId", "worldX", "worldY"):
             assert_field(local, k, f"snapshot.payload.player.localLocation.{k}")
         assert_is_int(local["tile"], "snapshot.payload.player.localLocation.tile")
         assert_is_int(local["elevation"], "snapshot.payload.player.localLocation.elevation")
@@ -204,7 +204,12 @@ def test_getSnapshot(sock, expected_seq):
         if local["location"] is not None:
             assert_is_str(local["location"], "snapshot.payload.player.localLocation.location")
         assert_is_str(local["locationId"], "snapshot.payload.player.localLocation.locationId")
-        print(f"  info: local tile={local['tile']} elev={local['elevation']} map={local['map']} locationId={local['locationId']!r}")
+        # The overworld position is reported even on a local surface (TASK-013)
+        # so the companion can show a world-map fix immediately.
+        assert_is_int(local["worldX"], "snapshot.payload.player.localLocation.worldX")
+        assert_is_int(local["worldY"], "snapshot.payload.player.localLocation.worldY")
+        print(f"  info: local tile={local['tile']} elev={local['elevation']} map={local['map']} "
+              f"locationId={local['locationId']!r} world=({local['worldX']},{local['worldY']})")
     else:
         world = payload["player.worldLocation"]
         assert_field(world, "x", "snapshot.payload.player.worldLocation.x")
@@ -256,7 +261,9 @@ def test_update_shape(sock, password):
         if kind == "player.vitals":
             expected_fields = {"hp", "maxHp"}
         elif kind == "player.localLocation":
-            expected_fields = {"tile", "elevation", "map", "location", "locationId"}
+            expected_fields = {
+                "tile", "elevation", "map", "location", "locationId", "worldX", "worldY",
+            }
         elif kind == "player.worldLocation":
             expected_fields = {"x", "y"}
         else:
@@ -368,6 +375,113 @@ def test_get_map(sock):
     assert_equal(after_msg.get("type"), "snapshot", "connection alive after mapError")
 
 
+def test_get_local_map(sock):
+    """Fetch the local automap image over getLocalMap/getLocalMapChunk.
+
+    The server serves the *current* map+elevation from a live seen-object
+    scan (it does NOT read AUTOMAP.DB), so this works even if the in-game
+    Pip-Boy automap was never opened this session. When the player is not on
+    a real local map (main menu, character creation, or on the world map),
+    the server replies `localMapError` and MUST stay connected -- this test
+    validates whichever path the live game is in, and always checks that the
+    connection survives the error.
+    """
+    print("test: getLocalMap -> localMapHeader -> localMapChunk* (current map+elevation)")
+    sock.settimeout(RECV_TIMEOUT_SECONDS)
+    sock.sendall(b'{"type":"getLocalMap"}\n')
+    line = recv_line_bytes(sock)
+    if line is None:
+        fail("server closed connection after getLocalMap")
+    if len(line) + 1 > OUTBOUND_CAP:
+        fail(f"localMapHeader line exceeds outbound cap ({len(line) + 1} > {OUTBOUND_CAP})")
+    msg = json.loads(line.decode("utf-8"))
+
+    if msg.get("type") == "localMapError":
+        # No local map available (not playing / on the world map). Verify the
+        # error shape and that the connection is NOT dropped.
+        assert_field(msg, "reason", "localMapError")
+        print(f"  info: localMapError reason={msg.get('reason')!r} (no local map in this state)")
+        sock.sendall(b'{"type":"getSnapshot"}\n')
+        after = recv_line_bytes(sock)
+        if after is None:
+            fail("server disconnected after a localMapError (must stay connected)")
+        after_msg = json.loads(after.decode("utf-8"))
+        assert_equal(after_msg.get("type"), "snapshot", "connection alive after localMapError")
+        return
+
+    assert_equal(msg.get("type"), "localMapHeader", "type")
+    for k in ("map", "elevation", "width", "height", "paletteB64", "chunkCount", "chunkBytes"):
+        assert_field(msg, k, "localMapHeader")
+    assert_is_int(msg["map"], "localMapHeader.map")
+    assert_is_int(msg["elevation"], "localMapHeader.elevation")
+    assert_is_int(msg["width"], "localMapHeader.width")
+    assert_is_int(msg["height"], "localMapHeader.height")
+    assert_equal(msg["width"], 200, "localMapHeader.width == 200")
+    assert_equal(msg["height"], 200, "localMapHeader.height == 200")
+    assert_is_int(msg["chunkCount"], "localMapHeader.chunkCount")
+    assert_is_int(msg["chunkBytes"], "localMapHeader.chunkBytes")
+    assert_is_str(msg["paletteB64"], "localMapHeader.paletteB64")
+
+    header_map = msg["map"]
+    header_elevation = msg["elevation"]
+    width = msg["width"]
+    height = msg["height"]
+    chunk_bytes = msg["chunkBytes"]
+    chunk_count = msg["chunkCount"]
+    print(f"  info: map={header_map} elevation={header_elevation} "
+          f"width={width} height={height} chunkCount={chunk_count}")
+
+    palette = base64.b64decode(msg["paletteB64"])
+    assert_equal(len(palette), 768, "decoded localMap paletteB64 length")
+
+    total = width * height
+    expected_chunk_count = math.ceil(total / chunk_bytes)
+    assert_equal(chunk_count, expected_chunk_count,
+                 "localMapHeader.chunkCount == ceil(width*height/chunkBytes)")
+
+    reassembled = bytearray()
+    for index in range(chunk_count):
+        sock.sendall(json.dumps({"type": "getLocalMapChunk", "index": index}).encode("utf-8") + b"\n")
+        chunk_line = recv_line_bytes(sock)
+        if chunk_line is None:
+            fail(f"server closed connection after getLocalMapChunk index={index}")
+        if len(chunk_line) + 1 > OUTBOUND_CAP:
+            fail(f"localMapChunk exceeds outbound cap ({len(chunk_line) + 1} > {OUTBOUND_CAP}) at index={index}")
+        chunk_msg = json.loads(chunk_line.decode("utf-8"))
+        assert_equal(chunk_msg.get("type"), "localMapChunk", f"chunk[{index}].type")
+        assert_equal(chunk_msg.get("index"), index, f"chunk[{index}].index")
+        # Each chunk echoes the current map/elevation so the client can detect
+        # a mid-fetch change; here they must match the header we received.
+        assert_equal(chunk_msg.get("map"), header_map, f"chunk[{index}].map echo")
+        assert_equal(chunk_msg.get("elevation"), header_elevation, f"chunk[{index}].elevation echo")
+        assert_field(chunk_msg, "dataB64", f"chunk[{index}]")
+        reassembled.extend(base64.b64decode(chunk_msg["dataB64"]))
+    assert_equal(len(reassembled), total, "reassembled localMap length == width*height")
+
+    # Every tile classifies as empty(0), wall(1), or scenery(2).
+    bad = [b for b in set(reassembled) if b not in (0, 1, 2)]
+    if bad:
+        fail(f"localMap contains classes outside {{0,1,2}}: {sorted(bad)}")
+
+    # Out-of-range index: the server must reply with a localMapError and must
+    # NOT disconnect.
+    sock.sendall(json.dumps({"type": "getLocalMapChunk", "index": chunk_count}).encode("utf-8") + b"\n")
+    err_line = recv_line_bytes(sock)
+    if err_line is None:
+        fail("server closed connection on out-of-range getLocalMapChunk (must not disconnect)")
+    err_msg = json.loads(err_line.decode("utf-8"))
+    assert_equal(err_msg.get("type"), "localMapError", "out-of-range getLocalMapChunk -> localMapError")
+    assert_field(err_msg, "reason", "localMapError")
+
+    # The connection must still be usable after a localMapError.
+    sock.sendall(b'{"type":"getSnapshot"}\n')
+    after = recv_line_bytes(sock)
+    if after is None:
+        fail("server disconnected after a localMapError (must stay connected)")
+    after_msg = json.loads(after.decode("utf-8"))
+    assert_equal(after_msg.get("type"), "snapshot", "connection alive after localMapError")
+
+
 def test_post_handshake_hello_is_ignored(sock):
     print("test: post-handshake hello is silently ignored")
     sock.settimeout(RECV_TIMEOUT_SECONDS)
@@ -444,7 +558,7 @@ def test_server_still_listening(host, port, password):
             fail("server did not respond to a new auth + hello after the bad client")
         msg = json.loads(line)
         assert_equal(msg.get("type"), "world", "type after recovery")
-        assert_equal(msg.get("schemaVersion"), 5, "world.schemaVersion (recovery)")
+        assert_equal(msg.get("schemaVersion"), 7, "world.schemaVersion (recovery)")
 
 
 def main():
@@ -468,6 +582,7 @@ def main():
         test_getSnapshot(sock, expected_seq=1)
         test_update_shape(sock, args.password)
         test_get_map(sock)
+        test_get_local_map(sock)
         test_post_handshake_hello_is_ignored(sock)
 
     test_hello_first_message_drops(args.host, args.port)

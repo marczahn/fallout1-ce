@@ -43,6 +43,30 @@ int automap_pip_save();
 int YesWriteIndex(int mapIndex, int elevation);
 int ReadAMList(AutomapHeader** automapHeaderPtr);
 
+// Companion local-map image accessor (read-only). Builds a top-down
+// automap image of the *currently loaded* map at `elevation` as a
+// row-major `width`*`height` (HEX_GRID_WIDTH x HEX_GRID_HEIGHT) buffer
+// with one byte per hex tile: 0 = empty, 1 = wall, 2 = scenery. The pixel
+// order matches the in-game Pip-Boy automap (`draw_top_down_map_pipboy`)
+// so orientation is consistent. Reads objects' already-set `OBJECT_SEEN`
+// flags and does NOT call `obj_process_seen()` (which would consume the
+// game's shared seen state). Uses its own buffers (does not touch the
+// in-game automap globals).
+//
+// On success returns true, sets `*outPixels` to a freshly allocated buffer
+// the caller must release via `companionFreeLocalMapImage`, and sets
+// `*outWidth`/`*outHeight`. The caller is responsible for gating on real
+// local gameplay before calling (a map must be loaded; pass the current
+// `map_elevation`). Returns false (allocating nothing) on bad args or
+// allocation failure.
+bool companionBuildLocalMapImage(int elevation,
+    unsigned char** outPixels,
+    int* outWidth,
+    int* outHeight);
+
+// Releases a buffer returned by `companionBuildLocalMapImage`. Safe with null.
+void companionFreeLocalMapImage(unsigned char* pixels);
+
 } // namespace fallout
 
 #endif /* FALLOUT_GAME_AUTOMAP_H_ */

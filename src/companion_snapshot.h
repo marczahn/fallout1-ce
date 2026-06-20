@@ -89,15 +89,20 @@ struct CompanionPlayerProgression {
 
 // `player.localLocation` payload. Meaningful when
 // `surface == CompanionPlayerSurface::Local`. Wire keys: `tile`,
-// `elevation`, `map`, `location`, `locationId`. `location` is the engine's
-// localized short name; `locationId` is a stable identifier from the
-// `kMapLocationIds` table in `companion_snapshot.cc`.
+// `elevation`, `map`, `location`, `locationId`, `worldX`, `worldY`.
+// `location` is the engine's localized short name; `locationId` is a stable
+// identifier from the `kMapLocationIds` table in `companion_snapshot.cc`.
+// `worldX`/`worldY` are the player's overworld position (same scale as
+// `worldLocation`); the engine always knows it, so it is reported even on a
+// local surface so the companion can show a world-map fix immediately.
 struct CompanionPlayerLocalLocation {
     int tile;
     int elevation;
     int map;
     char location[kCompanionLocationSize];
     char locationId[kCompanionLocationIdSize];
+    int worldX;
+    int worldY;
 };
 
 // `player.worldLocation` payload. Meaningful when

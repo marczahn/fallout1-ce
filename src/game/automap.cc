@@ -1075,4 +1075,79 @@ int ReadAMList(AutomapHeader** automapHeaderPtr)
     return 0;
 }
 
+bool companionBuildLocalMapImage(int elevation,
+    unsigned char** outPixels,
+    int* outWidth,
+    int* outHeight)
+{
+    if (outPixels == NULL || outWidth == NULL || outHeight == NULL) {
+        return false;
+    }
+
+    // Pack the currently loaded map's seen wall/scenery into a local
+    // 2-bit-per-tile buffer using the same layout the in-game automap uses
+    // (see `decode_map_data`/`draw_top_down_map_pipboy`), then expand it
+    // below. We deliberately *replicate* the classify/pack instead of
+    // calling `decode_map_data` so we (a) never call `obj_process_seen()`,
+    // which consumes and clears the game's shared seen state, and (b) never
+    // touch the file-static `ambuf`/`cmpbuf` the in-game automap UI owns.
+    // 11024 bytes mirrors the engine's own allocation and gives headroom for
+    // the layout's known top-edge overflow (`v2` can reach SQUARE_GRID_SIZE).
+    unsigned char packed[11024];
+    memset(packed, 0, sizeof(packed));
+
+    Object* object = obj_find_first_at(elevation);
+    while (object != NULL) {
+        if (object->tile != -1 && (object->flags & OBJECT_SEEN) != 0) {
+            int contentType;
+
+            int objectType = FID_TYPE(object->fid);
+            if (objectType == OBJ_TYPE_SCENERY && object->pid != PROTO_ID_0x2000158) {
+                contentType = 2;
+            } else if (objectType == OBJ_TYPE_WALL) {
+                contentType = 1;
+            } else {
+                contentType = 0;
+            }
+
+            if (contentType != 0) {
+                int v1 = 200 - object->tile % 200;
+                int v2 = v1 / 4 + 50 * (object->tile / 200);
+                int v3 = 2 * (3 - v1 % 4);
+                packed[v2] &= ~(0x03 << v3);
+                packed[v2] |= (contentType << v3);
+            }
+        }
+        object = obj_find_next_at();
+    }
+
+    // Expand to one byte per tile in the engine's automap read order
+    // (`draw_top_down_map_pipboy`): bytes are consumed sequentially, four
+    // tiles per byte, the most-significant 2-bit pair first. Pixel linear
+    // index L maps to (x = L % HEX_GRID_WIDTH, y = L / HEX_GRID_WIDTH), so
+    // orientation matches the in-game Pip-Boy automap.
+    int total = HEX_GRID_WIDTH * HEX_GRID_HEIGHT;
+    unsigned char* pixels = (unsigned char*)mem_malloc(total);
+    if (pixels == NULL) {
+        return false;
+    }
+    for (int L = 0; L < total; L++) {
+        unsigned char byte = packed[L >> 2];
+        int shift = 6 - 2 * (L & 3);
+        pixels[L] = (byte >> shift) & 0x03;
+    }
+
+    *outPixels = pixels;
+    *outWidth = HEX_GRID_WIDTH;
+    *outHeight = HEX_GRID_HEIGHT;
+    return true;
+}
+
+void companionFreeLocalMapImage(unsigned char* pixels)
+{
+    if (pixels != NULL) {
+        mem_free(pixels);
+    }
+}
+
 } // namespace fallout

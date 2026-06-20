@@ -16,10 +16,13 @@
 #include <string_view>
 
 #include "companion_item_catalog.h"
+#include "companion_player_state.h"
 #include "companion_protocol.h"
 #include "companion_snapshot.h"
+#include "game/automap.h"
 #include "game/cache.h"
 #include "game/gconfig.h"
+#include "game/map.h"
 #include "game/worldmap.h"
 #include "platform_compat.h"
 #include "plib/color/color.h"
@@ -365,7 +368,9 @@ bool localLocationDiffer(const CompanionPlayerLocalLocation& a, const CompanionP
         || a.elevation != b.elevation
         || a.map != b.map
         || strcmp(a.location, b.location) != 0
-        || strcmp(a.locationId, b.locationId) != 0;
+        || strcmp(a.locationId, b.locationId) != 0
+        || a.worldX != b.worldX
+        || a.worldY != b.worldY;
 }
 
 bool worldLocationDiffer(const CompanionPlayerWorldLocation& a, const CompanionPlayerWorldLocation& b)
@@ -541,6 +546,133 @@ void handleGetMapChunkMessage(const char* line, size_t lineLength)
     debug_printf("companion: mapChunk sent (index=%d bytes=%zu)\n", index, length);
 }
 
+// Fixed palette for the local automap image. Only the three meaningful
+// indices are populated, with increasing luminance so the app's
+// luminance->green LUT renders them as distinct Pip-Boy shades: empty maps
+// to the background, scenery to a mid green, and walls (brightest) to the
+// foreground green. The remaining 253 entries are black and unused.
+void buildLocalMapPalette(unsigned char out[768])
+{
+    memset(out, 0, 768);
+    // index 0 = empty -> black (background)
+    // index 1 = wall -> bright (walls stand out, like colorTable[992])
+    out[3] = 230;
+    out[4] = 230;
+    out[5] = 230;
+    // index 2 = scenery -> mid (like colorTable[480])
+    out[6] = 120;
+    out[7] = 120;
+    out[8] = 120;
+}
+
+// True only when a real local map (town/dungeon/vault) is loaded and the
+// player is actually playing -- the same gate the snapshot uses to pick the
+// Local surface (`companionIsPlayerReallyPlaying()` + not on the world map),
+// NOT `!worldMapIsActive()` alone.
+bool localMapAvailable()
+{
+    return companionIsPlayerReallyPlaying() && !worldMapIsActive();
+}
+
+void handleGetLocalMapMessage()
+{
+    if (!localMapAvailable()) {
+        queueMessage(companionBuildLocalMapError("noLocalMap"));
+        debug_printf("companion: getLocalMap failed (noLocalMap)\n");
+        return;
+    }
+
+    unsigned char* pixels = nullptr;
+    int width = 0;
+    int height = 0;
+    if (!companionBuildLocalMapImage(map_elevation, &pixels, &width, &height)) {
+        queueMessage(companionBuildLocalMapError("mapUnavailable"));
+        debug_printf("companion: getLocalMap failed (mapUnavailable)\n");
+        return;
+    }
+
+    unsigned char palette[768];
+    buildLocalMapPalette(palette);
+
+    std::string message = companionBuildLocalMapHeader(map_get_index_number(),
+        map_elevation,
+        width,
+        height,
+        palette,
+        kMapChunkBytes);
+    companionFreeLocalMapImage(pixels);
+
+    if (message.empty()) {
+        queueMessage(companionBuildLocalMapError("mapUnavailable"));
+        debug_printf("companion: getLocalMap failed (header formatting)\n");
+        return;
+    }
+
+    if (!queueMessage(message)) {
+        return;
+    }
+    debug_printf("companion: localMapHeader sent (map=%d elevation=%d)\n",
+        map_get_index_number(),
+        map_elevation);
+}
+
+void handleGetLocalMapChunkMessage(const char* line, size_t lineLength)
+{
+    int index = 0;
+    if (!companionExtractLocalMapChunkIndex(line, lineLength, index)) {
+        disconnectClient("invalid getLocalMapChunk");
+        return;
+    }
+
+    if (!localMapAvailable()) {
+        queueMessage(companionBuildLocalMapError("noLocalMap"));
+        debug_printf("companion: getLocalMapChunk failed (noLocalMap)\n");
+        return;
+    }
+
+    unsigned char* pixels = nullptr;
+    int width = 0;
+    int height = 0;
+    if (!companionBuildLocalMapImage(map_elevation, &pixels, &width, &height)) {
+        queueMessage(companionBuildLocalMapError("mapUnavailable"));
+        debug_printf("companion: getLocalMapChunk failed (mapUnavailable)\n");
+        return;
+    }
+
+    size_t total = static_cast<size_t>(width) * static_cast<size_t>(height);
+    size_t start = static_cast<size_t>(index) * kMapChunkBytes;
+    if (index < 0 || start >= total) {
+        companionFreeLocalMapImage(pixels);
+        queueMessage(companionBuildLocalMapError("index"));
+        debug_printf("companion: getLocalMapChunk index out of range (index=%d)\n", index);
+        return;
+    }
+
+    size_t endOffset = start + kMapChunkBytes;
+    if (endOffset > total) {
+        endOffset = total;
+    }
+    size_t length = endOffset - start;
+
+    std::string message = companionBuildLocalMapChunk(index,
+        map_get_index_number(),
+        map_elevation,
+        pixels + start,
+        length);
+    companionFreeLocalMapImage(pixels);
+
+    if (message.empty()) {
+        queueMessage(companionBuildLocalMapError("mapUnavailable"));
+        debug_printf("companion: getLocalMapChunk failed (chunk formatting)\n");
+        return;
+    }
+
+    if (!queueMessage(message)) {
+        return;
+    }
+    debug_printf("companion: localMapChunk sent (index=%d bytes=%zu)\n", index, length);
+}
+
 void handleClientMessage(CompanionClientMessage message, const char* line, size_t lineLength)
 {
     if (gConnection.state == ClientState::AwaitingAuth) {
@@ -594,6 +726,16 @@ void handleClientMessage(CompanionClientMessage message, const char* line, size_
 
     if (message == CompanionClientMessage::GetMapChunk) {
         handleGetMapChunkMessage(line, lineLength);
+        return;
+    }
+
+    if (message == CompanionClientMessage::GetLocalMap) {
+        handleGetLocalMapMessage();
+        return;
+    }
+
+    if (message == CompanionClientMessage::GetLocalMapChunk) {
+        handleGetLocalMapChunkMessage(line, lineLength);
         return;
     }
 

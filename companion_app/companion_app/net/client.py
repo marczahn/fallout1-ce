@@ -18,6 +18,7 @@ from companion_app.net.framing import encode_line, read_line
 from companion_app.state import (
     AppState,
     ConnectionState,
+    LocalMapState,
     PlayerSurface,
     WorldMapState,
     WorldMapStatus,
@@ -34,6 +35,12 @@ MAP_REQUEST_TIMEOUT_SECONDS: float = 5.0
 MAP_MAX_RETRIES: int = 2
 # 256 RGB triples.
 MAP_PALETTE_BYTES: int = 768
+
+# Schema version that introduced the local-map wire protocol (getLocalMap).
+LOCAL_MAP_MIN_SCHEMA_VERSION: int = 6
+# While on a LOCAL surface, re-fetch the (unchanged-map) automap at most this
+# often to pick up newly explored tiles -- and only after the player moved.
+LOCAL_MAP_REFRESH_SECONDS: float = 4.0
 
 
 class NetworkClient:
@@ -103,6 +110,9 @@ class NetworkClient:
 
         # Re-send a stalled map request (timeout-based, never busy-spins).
         self._tick_map_fetch()
+        # Drive the local-map fetch: (re)start on map/elevation change or a
+        # throttled refresh, and re-send stalled requests.
+        self._tick_local_map_fetch()
 
     def cleanup(self) -> None:
         """Close the socket and reset the state to DISCONNECTED."""
@@ -278,6 +288,12 @@ class NetworkClient:
             self._on_map_chunk(msg)
         elif msg_type == "mapError":
             self._on_map_error(msg)
+        elif msg_type == "localMapHeader":
+            self._on_local_map_header(msg)
+        elif msg_type == "localMapChunk":
+            self._on_local_map_chunk(msg)
+        elif msg_type == "localMapError":
+            self._on_local_map_error(msg)
         elif msg_type == "alreadyConnected":
             self._log("server: another client is already connected")
             self._on_error("another client is already connected")
@@ -506,6 +522,238 @@ class NetworkClient:
             self._request_map_chunk(wm.next_index)
             self._log(f"map: re-requesting chunk {wm.next_index} (retry {wm.retries})")
 
+    # ── local-map fetch ────────────────────────────────────────────
+
+    def _tick_local_map_fetch(self) -> None:
+        """Drive the local-map fetch for the player's current map+elevation.
+
+        Unlike the once-per-connection world map, the local map is re-fetched
+        when the player's ``(map, elevation)`` changes and, while unchanged,
+        on a throttled interval after the player has moved (to pick up newly
+        explored tiles). Cancels and restarts an in-flight fetch if the target
+        changes mid-fetch.
+        """
+        if self._state.connection is not ConnectionState.READY:
+            return
+
+        player = self._state.player
+        # The local map is only meaningful on a LOCAL surface; on the world
+        # map the LOCAL view shows "ON WORLD MAP" and no fetch runs.
+        if player.surface is not PlayerSurface.LOCAL:
+            return
+
+        lm = self._state.local_map
+        world = self._state.world
+        schema = world.schema_version if world is not None else 0
+        if schema < LOCAL_MAP_MIN_SCHEMA_VERSION:
+            if lm.status is WorldMapStatus.IDLE:
+                lm.status = WorldMapStatus.UNAVAILABLE
+                self._log(
+                    f"local map unavailable (server schemaVersion {schema} "
+                    f"< {LOCAL_MAP_MIN_SCHEMA_VERSION})"
+                )
+            return
+
+        target = (player.local_map_index, player.elevation)
+
+        if lm.status is WorldMapStatus.FETCHING:
+            if (lm.fetch_map, lm.fetch_elevation) != target:
+                # Player changed map/elevation mid-fetch: restart for the new
+                # target rather than finishing a now-stale image.
+                self._start_local_map_fetch()
+            else:
+                self._tick_local_map_timeout()
+            return
+
+        now = time.monotonic()
+        cached = (lm.map_index, lm.elevation)
+
+        if lm.status is WorldMapStatus.READY:
+            if cached != target:
+                self._start_local_map_fetch()
+            elif (
+                now - lm.last_ready_at >= LOCAL_MAP_REFRESH_SECONDS
+                and player.tile != lm.image_tile
+            ):
+                self._start_local_map_fetch()
+            return
+
+        if lm.status is WorldMapStatus.UNAVAILABLE:
+            # Recover from a transient error (e.g. a race that produced
+            # localMapError). Retry immediately if the player has moved to a
+            # different map/elevation than the failed attempt; otherwise back
+            # off by the refresh interval so a persistently-failing fetch does
+            # NOT busy-loop sending getLocalMap every frame. Keyed off the last
+            # *attempt* (fetch_map/elevation), not the last *success* (cached),
+            # which stays the sentinel (-1,-1) when no fetch ever succeeded.
+            last_attempt = (lm.fetch_map, lm.fetch_elevation)
+            if (
+                last_attempt != target
+                or now - lm.last_request_at >= LOCAL_MAP_REFRESH_SECONDS
+            ):
+                self._start_local_map_fetch()
+            return
+
+        # IDLE: first fetch on this connection while on a local map.
+        self._start_local_map_fetch()
+
+    def _start_local_map_fetch(self) -> None:
+        lm = self._state.local_map
+        player = self._state.player
+        lm.status = WorldMapStatus.FETCHING
+        lm.fetch_map = player.local_map_index
+        lm.fetch_elevation = player.elevation
+        lm.chunk_count = 0
+        lm.next_index = 0
+        lm.accumulator = bytearray()
+        lm.retries = 0
+        lm.last_request_at = time.monotonic()
+        self._queue_line({"type": "getLocalMap"})
+        self._log(
+            f"localmap: requesting getLocalMap (map={lm.fetch_map} elev={lm.fetch_elevation})"
+        )
+
+    def _on_local_map_header(self, msg: dict[str, Any]) -> None:
+        lm = self._state.local_map
+        if lm.status is not WorldMapStatus.FETCHING:
+            return
+
+        hdr_map = int(msg.get("map", -1))
+        hdr_elevation = int(msg.get("elevation", -1))
+        # The server serves the player's current map+elevation. Accept the
+        # header only if it still matches the target we requested; otherwise
+        # the player moved -- ignore and let the tick restart for the right
+        # target. The chunks are then validated against this same identity.
+        if (hdr_map, hdr_elevation) != (lm.fetch_map, lm.fetch_elevation):
+            self._log(
+                f"localmap: ignoring header for {hdr_map}/{hdr_elevation} "
+                f"(want {lm.fetch_map}/{lm.fetch_elevation})"
+            )
+            return
+
+        width = int(msg.get("width", 0))
+        height = int(msg.get("height", 0))
+        chunk_count = int(msg.get("chunkCount", 0))
+        chunk_bytes = int(msg.get("chunkBytes", 0))
+
+        try:
+            palette = base64.b64decode(msg.get("paletteB64", ""), validate=True)
+        except (binascii.Error, ValueError):
+            self._fail_local_map("invalid paletteB64")
+            return
+
+        if len(palette) != MAP_PALETTE_BYTES:
+            self._fail_local_map(
+                f"bad palette length {len(palette)} (expected {MAP_PALETTE_BYTES})"
+            )
+            return
+        if width <= 0 or height <= 0 or chunk_count <= 0 or chunk_bytes <= 0:
+            self._fail_local_map("bad local map header dimensions")
+            return
+
+        lm.width = width
+        lm.height = height
+        lm.palette = palette
+        lm.chunk_count = chunk_count
+        lm.chunk_bytes = chunk_bytes
+        lm.accumulator = bytearray()
+        lm.next_index = 0
+        lm.retries = 0
+        lm.last_request_at = time.monotonic()
+        self._log(f"localmap: header {width}x{height}, {chunk_count} chunks")
+        self._request_local_map_chunk(0)
+
+    def _on_local_map_chunk(self, msg: dict[str, Any]) -> None:
+        lm = self._state.local_map
+        if lm.status is not WorldMapStatus.FETCHING:
+            return
+
+        # Coherence: the server re-scans per chunk request, so a chunk that
+        # echoes a different map/elevation than the in-flight header means the
+        # player moved -- restart the fetch for the current target.
+        chunk_map = int(msg.get("map", -1))
+        chunk_elevation = int(msg.get("elevation", -1))
+        if (chunk_map, chunk_elevation) != (lm.fetch_map, lm.fetch_elevation):
+            self._log(
+                f"localmap: chunk target drift {chunk_map}/{chunk_elevation} "
+                f"!= {lm.fetch_map}/{lm.fetch_elevation}; restarting"
+            )
+            self._start_local_map_fetch()
+            return
+
+        index = int(msg.get("index", -1))
+        if index != lm.next_index:
+            self._log(f"localmap: ignoring chunk {index} (expected {lm.next_index})")
+            return
+
+        try:
+            data = base64.b64decode(msg.get("dataB64", ""), validate=True)
+        except (binascii.Error, ValueError):
+            self._fail_local_map("invalid dataB64")
+            return
+
+        lm.accumulator.extend(data)
+        lm.next_index += 1
+        lm.retries = 0
+
+        if lm.next_index < lm.chunk_count:
+            lm.last_request_at = time.monotonic()
+            self._request_local_map_chunk(lm.next_index)
+            return
+
+        expected = lm.width * lm.height
+        if len(lm.accumulator) != expected:
+            self._fail_local_map(
+                f"reassembled {len(lm.accumulator)} bytes (expected {expected})"
+            )
+            return
+
+        lm.pixels = bytes(lm.accumulator)
+        lm.accumulator = bytearray()
+        lm.map_index = lm.fetch_map
+        lm.elevation = lm.fetch_elevation
+        lm.status = WorldMapStatus.READY
+        lm.last_ready_at = time.monotonic()
+        lm.image_tile = self._state.player.tile
+        self._log(f"localmap: ready ({len(lm.pixels)} px, map={lm.map_index})")
+
+    def _on_local_map_error(self, msg: dict[str, Any]) -> None:
+        lm = self._state.local_map
+        if lm.status is not WorldMapStatus.FETCHING:
+            return
+        reason = msg.get("reason", "?")
+        self._fail_local_map(f"server localMapError: {reason}")
+
+    def _request_local_map_chunk(self, index: int) -> None:
+        self._queue_line({"type": "getLocalMapChunk", "index": index})
+
+    def _fail_local_map(self, reason: str) -> None:
+        self._state.local_map.status = WorldMapStatus.UNAVAILABLE
+        self._log(f"local map unavailable: {reason}")
+
+    def _tick_local_map_timeout(self) -> None:
+        """Re-send a stalled outstanding local-map request, or give up."""
+        lm = self._state.local_map
+        if lm.status is not WorldMapStatus.FETCHING:
+            return
+        if time.monotonic() - lm.last_request_at <= MAP_REQUEST_TIMEOUT_SECONDS:
+            return
+
+        if lm.retries >= MAP_MAX_RETRIES:
+            self._fail_local_map("fetch timed out (retries exhausted)")
+            return
+
+        lm.retries += 1
+        lm.last_request_at = time.monotonic()
+        if lm.chunk_count == 0:
+            self._queue_line({"type": "getLocalMap"})
+            self._log(f"localmap: re-requesting getLocalMap (retry {lm.retries})")
+        else:
+            self._request_local_map_chunk(lm.next_index)
+            self._log(
+                f"localmap: re-requesting chunk {lm.next_index} (retry {lm.retries})"
+            )
+
     # ── reconnection ───────────────────────────────────────────────
 
     def _schedule_reconnect(self, reason: str) -> None:
@@ -537,6 +785,7 @@ class NetworkClient:
         # IDLE state. (last_known_world_* is left alone -- preserving it
         # across reconnect is not required, but resetting it is not either.)
         self._state.world_map = WorldMapState()
+        self._state.local_map = LocalMapState()
 
     def _apply_snapshot_payload(self, payload: dict[str, Any]) -> None:
         vitals = payload.get("player.vitals", {}) or {}
@@ -635,6 +884,24 @@ class NetworkClient:
         )
         self._state.player.world_x = 0
         self._state.player.world_y = 0
+        # Local-map position (drives the LOCAL map render + its fetch driver).
+        self._state.player.tile = int(payload.get("tile", self._state.player.tile))
+        self._state.player.elevation = int(
+            payload.get("elevation", self._state.player.elevation)
+        )
+        self._state.player.local_map_index = int(
+            payload.get("map", self._state.player.local_map_index)
+        )
+        # The server reports the overworld position even on a local surface
+        # (schema 7+). When present, record it as the world fix so ATLAS/WORLD
+        # can place the marker immediately on connect in a town. The fields are
+        # optional: an older server omits them and prior behavior is preserved.
+        world_x = payload.get("worldX")
+        world_y = payload.get("worldY")
+        if world_x is not None and world_y is not None:
+            self._state.last_known_world_x = int(world_x)
+            self._state.last_known_world_y = int(world_y)
+            self._state.has_world_fix = True
 
     def _apply_world_location(self, payload: dict[str, Any]) -> None:
         self._state.player.surface = PlayerSurface.WORLD

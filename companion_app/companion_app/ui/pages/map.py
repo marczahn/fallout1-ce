@@ -150,6 +150,69 @@ def compute_world_viewport(
     return (left, top, src_w, src_h), (marker_x, marker_y)
 
 
+# Local automap grid: HEX_GRID_WIDTH x HEX_GRID_HEIGHT tiles (engine
+# map_defs.h). The server ships one byte per tile in this grid.
+LOCAL_MAP_GRID: int = 200
+
+
+def local_marker_pixel(tile: int) -> tuple[int, int]:
+    """Map a hex-tile index to its (x, y) pixel in the local automap image.
+
+    The server builds the image by replaying the engine's automap read order
+    (`draw_top_down_map_pipboy`), so a tile's pixel is the composition of the
+    engine *write* formula (`automap.cc` `decode_map_data`) and that read
+    order -- NOT the naive ``(tile % 200, tile // 200)``. The boundary
+    off-by-ones are inherent to the engine layout (its own FIXME), so this
+    transform is locked by unit tests on edge tiles and visually confirmed in
+    QA; if the marker is offset, cross-check against the engine `tile_coord`.
+    """
+    col = tile % LOCAL_MAP_GRID
+    row = tile // LOCAL_MAP_GRID
+    v1 = LOCAL_MAP_GRID - col
+    byte_w = v1 // 4 + 50 * row
+    linear = byte_w * 4 + (v1 % 4)
+    return (linear % LOCAL_MAP_GRID, linear // LOCAL_MAP_GRID)
+
+
+# LOCAL view states (select_local_view outputs).
+LOCAL_VIEW_WORLD: str = "on-world-map"
+LOCAL_VIEW_UNAVAILABLE: str = "unavailable"
+LOCAL_VIEW_LOADING: str = "loading"
+LOCAL_VIEW_NOT_EXPLORED: str = "not-explored"
+LOCAL_VIEW_MAP: str = "map"
+
+
+def select_local_view(
+    surface: PlayerSurface,
+    status: WorldMapStatus,
+    has_current_image: bool,
+    is_empty: bool,
+) -> str:
+    """Decide what the LOCAL segment shows.
+
+    The displayed view is decoupled from the fetch status: once we hold an
+    image for the player's *current* map+elevation we keep showing it, even
+    while a background refresh is in flight (status FETCHING) or after a
+    transient error (status UNAVAILABLE). This is what stops the periodic
+    refresh from flickering the map to "LOADING" and back.
+
+    * On the WORLD surface there is no local map -> advise.
+    * Have a current-map image -> render it (or "NOT EXPLORED" if all-empty),
+      regardless of an in-flight refresh / transient error.
+    * No usable image yet + UNAVAILABLE (old server / error / gave up) ->
+      "MAP UNAVAILABLE".
+    * No usable image yet, still IDLE/FETCHING (or just changed maps) ->
+      "LOADING".
+    """
+    if surface is PlayerSurface.WORLD:
+        return LOCAL_VIEW_WORLD
+    if has_current_image:
+        return LOCAL_VIEW_NOT_EXPLORED if is_empty else LOCAL_VIEW_MAP
+    if status is WorldMapStatus.UNAVAILABLE:
+        return LOCAL_VIEW_UNAVAILABLE
+    return LOCAL_VIEW_LOADING
+
+
 def select_marker_mode(surface: PlayerSurface, has_world_fix: bool) -> str:
     """Decide which marker to draw on ATLAS/WORLD.
 
@@ -186,6 +249,11 @@ class MapPage:
         self._surface: "pygame.Surface | None" = None
         self._built_pixels_id: int | None = None
         self._built_len: int = 0
+        # Separate cache for the LOCAL automap surface (different buffer,
+        # rebuilt as the player's map/elevation changes or the map evolves).
+        self._local_surface: "pygame.Surface | None" = None
+        self._local_built_pixels_id: int | None = None
+        self._local_built_len: int = 0
 
     def render(
         self,
@@ -210,15 +278,104 @@ class MapPage:
         elif key == "WORLD":
             self._render_world(surface, body_rect, state)
         else:
-            self._render_local(surface, body_rect)
+            self._render_local(surface, body_rect, state)
 
     # ── LOCAL ──────────────────────────────────────────────────────
 
-    def _render_local(self, surface: pygame.Surface, body_rect: pygame.Rect) -> None:
-        font.draw_text_centered(
-            surface, "LOCAL MAP - NOT YET IMPLEMENTED", body_rect, _BODY_SIZE,
-            palette.FOREGROUND,
+    def _ensure_local_surface(self, state: AppState) -> "pygame.Surface | None":
+        """Return the cached green LOCAL surface, rebuilding if pixels changed.
+
+        Keyed only on the presence/identity of ``lm.pixels`` -- NOT on the fetch
+        status -- so a background refresh (status FETCHING, but the previous
+        image still cached) keeps showing the last image until the new buffer
+        atomically replaces it on completion. This avoids a fetch->blank->render
+        flicker on every periodic refresh.
+        """
+        lm = state.local_map
+        if not lm.pixels:
+            return None
+        if (
+            self._local_surface is not None
+            and self._local_built_pixels_id == id(lm.pixels)
+            and self._local_built_len == len(lm.pixels)
+        ):
+            return self._local_surface
+        self._local_surface = worldmap_image.build_surface(
+            lm.pixels, lm.width, lm.height, lm.palette, self._green_levels
         )
+        self._local_built_pixels_id = id(lm.pixels)
+        self._local_built_len = len(lm.pixels)
+        return self._local_surface
+
+    def _render_local(
+        self, surface: pygame.Surface, body_rect: pygame.Rect, state: AppState
+    ) -> None:
+        import pygame
+
+        player = state.player
+        lm = state.local_map
+        # We have a usable image only if its identity matches where the player
+        # is NOW -- otherwise a refetch after a map change would briefly show
+        # the previous map. While on the same map, the cached image persists
+        # across a background refresh (no flicker).
+        has_current_image = bool(lm.pixels) and (
+            lm.map_index == player.local_map_index
+            and lm.elevation == player.elevation
+        )
+        view = select_local_view(
+            player.surface, lm.status, has_current_image, not any(lm.pixels)
+        )
+
+        if view == LOCAL_VIEW_WORLD:
+            font.draw_text_centered(
+                surface, "ON WORLD MAP", body_rect, _BODY_SIZE, palette.DIM
+            )
+            return
+        if view == LOCAL_VIEW_UNAVAILABLE:
+            font.draw_text_centered(
+                surface, "MAP UNAVAILABLE", body_rect, _BODY_SIZE, palette.DIM
+            )
+            return
+        if view == LOCAL_VIEW_LOADING:
+            font.draw_text_centered(
+                surface, "LOADING MAP...", body_rect, _BODY_SIZE, palette.DIM
+            )
+            return
+        if view == LOCAL_VIEW_NOT_EXPLORED:
+            font.draw_text_centered(
+                surface, "NOT EXPLORED", body_rect, _BODY_SIZE, palette.DIM
+            )
+            return
+
+        green = self._ensure_local_surface(state)
+        if green is None:
+            font.draw_text_centered(
+                surface, "MAP UNAVAILABLE", body_rect, _BODY_SIZE, palette.DIM
+            )
+            return
+
+        fit = compute_atlas_fit(lm.width, lm.height, body_rect.width, body_rect.height)
+        if fit.scale <= 0.0:
+            return
+
+        scaled = worldmap_image.pixelate(
+            green, fit.dest_w, fit.dest_h, self._pixel_blocks
+        )
+        surface.blit(scaled, (body_rect.left + fit.offset_x, body_rect.top + fit.offset_y))
+
+        # Player marker at the current tile, mapped into the automap image.
+        mcol, mrow = local_marker_pixel(player.tile)
+        marker_view = (
+            fit.offset_x + int(mcol * fit.scale),
+            fit.offset_y + int(mrow * fit.scale),
+        )
+        map_rect = pygame.Rect(
+            body_rect.left + fit.offset_x,
+            body_rect.top + fit.offset_y,
+            fit.dest_w,
+            fit.dest_h,
+        )
+        self._draw_marker(surface, body_rect, marker_view, map_rect)
 
     # ── shared map-surface plumbing ────────────────────────────────
 

@@ -28,6 +28,8 @@ enum class CompanionClientMessage {
     Cmd,
     GetMap,
     GetMapChunk,
+    GetLocalMap,
+    GetLocalMapChunk,
     Invalid,
 };
 
@@ -36,8 +38,9 @@ struct CompanionCommandRequest {
     std::string_view name;
 };
 
-// `world` (handshake response). `schemaVersion` is `5` after adding the
-// dedicated world-map image fetch messages.
+// `world` (handshake response). `schemaVersion` is `7` after adding the
+// additive `player.localLocation.worldX/worldY` fields (was `6` for the
+// local-map image fetch, `5` for the world-map image fetch).
 std::string companionBuildWorld(bool playerAvailable);
 
 // `snapshot` (full state). `payload` is a kind->object map. Only kinds
@@ -91,7 +94,7 @@ std::string companionBuildCmdAck(int id,
     std::string_view data = {});
 
 // `announce` UDP broadcast. `schemaVersion` follows the live protocol
-// version (`5` after adding the world-map image fetch), so discovery and
+// version (`6` after adding the local-map image fetch), so discovery and
 // TCP advertise the same wire contract.
 std::string companionBuildAnnounce(std::string_view host);
 
@@ -116,6 +119,28 @@ std::string companionBuildMapChunk(int index, const unsigned char* data, size_t 
 // not disconnect the client on a map error.
 std::string companionBuildMapError(const char* reason);
 
+// Local-map (automap) image fetch builders. Mirror the world-map builders
+// but carry the engine's automap wall/scenery classes (one byte per tile:
+// 0=empty, 1=wall, 2=scenery) for the *current* map+elevation, which both
+// the header and each chunk echo so the client can detect a mid-fetch
+// map/elevation change. `palette` is exactly 768 bytes (256 entries x RGB,
+// 8-bit; only indices 0/1/2 are meaningful). Each ends with "\n" and
+// returns "" only on a formatting failure.
+std::string companionBuildLocalMapHeader(int map,
+    int elevation,
+    int width,
+    int height,
+    const unsigned char* palette,
+    size_t chunkBytes);
+
+std::string companionBuildLocalMapChunk(int index,
+    int map,
+    int elevation,
+    const unsigned char* data,
+    size_t length);
+
+std::string companionBuildLocalMapError(const char* reason);
+
 CompanionClientMessage companionParseClientMessage(const char* line, size_t length);
 
 // Extracts the `password` field from a line already known to be an
@@ -138,6 +163,10 @@ bool companionExtractCommandRequest(const char* line,
 // requires `type` == "getMapChunk" and an int `index`, ignores unknown
 // top-level fields, and returns false on malformed JSON.
 bool companionExtractMapChunkIndex(const char* line, size_t length, int& outIndex);
+
+// As `companionExtractMapChunkIndex`, but for a line already known to be a
+// `getLocalMapChunk` message (requires `type` == "getLocalMapChunk").
+bool companionExtractLocalMapChunkIndex(const char* line, size_t length, int& outIndex);
 
 } // namespace fallout
 

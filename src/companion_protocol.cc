@@ -29,7 +29,7 @@
 //                                 normal auth/hello handshake.
 //
 // Server -> client:
-//   {"type":"world","schemaVersion":4,"game":"fallout1-ce","playerAvailable":bool}
+//   {"type":"world","schemaVersion":7,"game":"fallout1-ce","playerAvailable":bool}
 //
 //   {"type":"snapshot","seq":N,"playerAvailable":bool,"payload":{
 //      "player.vitals":          {"hp":H,"maxHp":M},
@@ -48,7 +48,8 @@
 //      "player.progression":     {"level":L,"experience":X,
 //                                 "nextLevelExp":N},
 //      "player.localLocation":  {"tile":T,"elevation":E,"map":M,
-//                                 "location":"<name>","locationId":"<id>"},
+//                                 "location":"<name>","locationId":"<id>",
+//                                 "worldX":WX,"worldY":WY},
 //      "player.worldLocation":  {"x":X,"y":Y},
 //      "player.inventory":       [{"pid":P,"protoId":"<id>","name":"<name>",
 //                                   "type":"<type>","count":N,"slot":"<slot>"}]
@@ -76,7 +77,7 @@
 //     "player.progression":     payload fields are {level,
 //                               experience, nextLevelExp}
 //     "player.localLocation":  payload fields are {tile, elevation,
-//                               map, location, locationId}
+//                               map, location, locationId, worldX, worldY}
 //     "player.worldLocation":  payload fields are {x, y}
 //     "player.inventory":       payload is the complete inventory array
 //   `playerAvailable` in the envelope is always `true` for an `update`:
@@ -111,16 +112,34 @@
 //   range, formatting failure). The server MUST NOT disconnect the
 //   client on a map error.
 //
+//   {"type":"localMapHeader","map":M,"elevation":E,"width":W,"height":H,
+//      "paletteB64":"<b64 of 768 bytes RGB>","chunkCount":N,"chunkBytes":B}
+//   Reply to `getLocalMap`. Like `mapHeader` but for the engine automap
+//   of the CURRENT map+elevation (echoed as `map`/`elevation`). The
+//   decoded image is one byte per hex tile: 0=empty, 1=wall, 2=scenery.
+//
+//   {"type":"localMapChunk","index":i,"map":M,"elevation":E,
+//      "dataB64":"<b64 of raw byte range>"}
+//   Reply to `getLocalMapChunk`. Echoes `map`/`elevation` so the client
+//   can discard a chunk that no longer matches the in-flight header.
+//
+//   {"type":"localMapError","reason":"<short>"}
+//   Emitted when no local map is available (player on the world map, no
+//   map loaded), on an out-of-range index, or a formatting failure. The
+//   server MUST NOT disconnect the client.
+//
 // `world` has no `seq`, no `payload`. `snapshot` has no `kind`; the
 // `payload` *is* the kind dispatch. `update` always has `kind` and
 // `payload`. `onPlayerUnavailable` and `onPlayerAvailable` have
 // neither.
 //
-// `world.schemaVersion` is now `5` (was `4`). The bump marks the
-// addition of the dedicated world-map image fetch messages
-// (`getMap`/`getMapChunk`/`mapHeader`/`mapChunk`/`mapError`). The bump
-// is additive: a `4`-era client still works for everything except the
-// new map fetch, but the version makes the new contract visible.
+// `world.schemaVersion` is now `6` (was `5`). Version 5 added the
+// world-map image fetch (`getMap`/`getMapChunk`/`mapHeader`/`mapChunk`/
+// `mapError`); version 6 adds the local-map (automap) image fetch
+// (`getLocalMap`/`getLocalMapChunk`/`localMapHeader`/`localMapChunk`/
+// `localMapError`). The bumps are additive: an older client still works
+// for everything except the newer fetch, but the version makes the new
+// contract visible.
 //
 // T0 changes from step 1/2:
 //   - `world.schemaVersion` is now `4` (was `1`, then `2`, then `3`).
@@ -153,12 +172,16 @@ constexpr char kGetMap[] = R"({"type":"getMap"})";
 constexpr char kAuthPrefix[] = R"({"type":"auth")";
 constexpr char kCmdPrefix[] = R"({"type":"cmd")";
 constexpr char kGetMapChunkPrefix[] = R"({"type":"getMapChunk")";
+constexpr char kGetLocalMap[] = R"({"type":"getLocalMap"})";
+constexpr char kGetLocalMapChunkPrefix[] = R"({"type":"getLocalMapChunk")";
 constexpr size_t kHelloLen = sizeof(kHello) - 1;
 constexpr size_t kGetSnapshotLen = sizeof(kGetSnapshot) - 1;
 constexpr size_t kGetMapLen = sizeof(kGetMap) - 1;
 constexpr size_t kAuthPrefixLen = sizeof(kAuthPrefix) - 1;
 constexpr size_t kCmdPrefixLen = sizeof(kCmdPrefix) - 1;
 constexpr size_t kGetMapChunkPrefixLen = sizeof(kGetMapChunkPrefix) - 1;
+constexpr size_t kGetLocalMapLen = sizeof(kGetLocalMap) - 1;
+constexpr size_t kGetLocalMapChunkPrefixLen = sizeof(kGetLocalMapChunkPrefix) - 1;
 
 // Standard base64 encoder, padded with '='. Dependency-free; appends the
 // encoding of `data[0..length)` to `out`. Three input bytes map to four
@@ -321,20 +344,24 @@ std::string buildLocalLocationBody(const CompanionPlayerLocalLocation& loc)
     if (loc.location[0] == '\0') {
         n = snprintf(body,
             sizeof(body),
-            R"({"tile":%d,"elevation":%d,"map":%d,"location":null,"locationId":"%s"})",
+            R"({"tile":%d,"elevation":%d,"map":%d,"location":null,"locationId":"%s","worldX":%d,"worldY":%d})",
             loc.tile,
             loc.elevation,
             loc.map,
-            loc.locationId);
+            loc.locationId,
+            loc.worldX,
+            loc.worldY);
     } else {
         n = snprintf(body,
             sizeof(body),
-            R"({"tile":%d,"elevation":%d,"map":%d,"location":"%s","locationId":"%s"})",
+            R"({"tile":%d,"elevation":%d,"map":%d,"location":"%s","locationId":"%s","worldX":%d,"worldY":%d})",
             loc.tile,
             loc.elevation,
             loc.map,
             loc.location,
-            loc.locationId);
+            loc.locationId,
+            loc.worldX,
+            loc.worldY);
     }
     if (n < 0 || static_cast<size_t>(n) >= sizeof(body)) {
         return std::string();
@@ -528,7 +555,7 @@ std::string companionBuildWorld(bool playerAvailable)
     char buffer[96];
     int n = snprintf(buffer,
         sizeof(buffer),
-        R"({"type":"world","schemaVersion":5,"game":"fallout1-ce","playerAvailable":%s})"
+        R"({"type":"world","schemaVersion":7,"game":"fallout1-ce","playerAvailable":%s})"
         "\n",
         flag);
     if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
@@ -815,7 +842,7 @@ std::string companionBuildAnnounce(std::string_view host)
 {
     std::string message;
     message.reserve(host.size() + 96);
-    message.append(R"({"type":"announce","game":"fallout1-ce","schemaVersion":5,"host":")");
+    message.append(R"({"type":"announce","game":"fallout1-ce","schemaVersion":7,"host":")");
     message.append(host);
     message.append(R"(","port":28080,"authRequired":true})"
                    "\n");
@@ -907,6 +934,100 @@ std::string companionBuildMapError(const char* reason)
     return std::string(buffer, static_cast<size_t>(n));
 }
 
+std::string companionBuildLocalMapHeader(int map,
+    int elevation,
+    int width,
+    int height,
+    const unsigned char* palette,
+    size_t chunkBytes)
+{
+    if (palette == nullptr || width <= 0 || height <= 0 || chunkBytes == 0) {
+        return std::string();
+    }
+
+    size_t total = static_cast<size_t>(width) * static_cast<size_t>(height);
+    size_t chunkCount = (total + chunkBytes - 1) / chunkBytes;
+
+    std::string message;
+    message.reserve(256);
+
+    char prefix[128];
+    int prefixLen = snprintf(prefix,
+        sizeof(prefix),
+        R"({"type":"localMapHeader","map":%d,"elevation":%d,"width":%d,"height":%d,"paletteB64":")",
+        map,
+        elevation,
+        width,
+        height);
+    if (prefixLen < 0 || static_cast<size_t>(prefixLen) >= sizeof(prefix)) {
+        return std::string();
+    }
+    message.append(prefix, static_cast<size_t>(prefixLen));
+
+    base64Encode(palette, 768, message);
+
+    char suffix[96];
+    int suffixLen = snprintf(suffix,
+        sizeof(suffix),
+        R"(","chunkCount":%zu,"chunkBytes":%zu})"
+        "\n",
+        chunkCount,
+        chunkBytes);
+    if (suffixLen < 0 || static_cast<size_t>(suffixLen) >= sizeof(suffix)) {
+        return std::string();
+    }
+    message.append(suffix, static_cast<size_t>(suffixLen));
+
+    return message;
+}
+
+std::string companionBuildLocalMapChunk(int index,
+    int map,
+    int elevation,
+    const unsigned char* data,
+    size_t length)
+{
+    if (data == nullptr) {
+        return std::string();
+    }
+
+    char prefix[128];
+    int prefixLen = snprintf(prefix,
+        sizeof(prefix),
+        R"({"type":"localMapChunk","index":%d,"map":%d,"elevation":%d,"dataB64":")",
+        index,
+        map,
+        elevation);
+    if (prefixLen < 0 || static_cast<size_t>(prefixLen) >= sizeof(prefix)) {
+        return std::string();
+    }
+
+    std::string message;
+    message.reserve(static_cast<size_t>(prefixLen) + ((length + 2) / 3) * 4 + 8);
+    message.append(prefix, static_cast<size_t>(prefixLen));
+    base64Encode(data, length, message);
+    message.append("\"}\n");
+    return message;
+}
+
+std::string companionBuildLocalMapError(const char* reason)
+{
+    if (reason == nullptr) {
+        return std::string();
+    }
+
+    char buffer[128];
+    int n = snprintf(buffer,
+        sizeof(buffer),
+        R"({"type":"localMapError","reason":"%s"})"
+        "\n",
+        reason);
+    if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
+        return std::string();
+    }
+    return std::string(buffer, static_cast<size_t>(n));
+}
+
 CompanionClientMessage companionParseClientMessage(const char* line, size_t length)
 {
     if (line == nullptr || length == 0) {
@@ -965,6 +1086,19 @@ CompanionClientMessage companionParseClientMessage(const char* line, size_t leng
         && memcmp(line + start, kGetMapChunkPrefixSpaced, kGetMapChunkPrefixSpacedLen) == 0) {
         return CompanionClientMessage::GetMapChunk;
     }
+    // `getLocalMapChunk` is a prefix match (carries an `index`) and must be
+    // checked before the exact-shape `getLocalMap`, since `getLocalMap` is a
+    // prefix of `getLocalMapChunk`.
+    if (length - start >= kGetLocalMapChunkPrefixLen
+        && memcmp(line + start, kGetLocalMapChunkPrefix, kGetLocalMapChunkPrefixLen) == 0) {
+        return CompanionClientMessage::GetLocalMapChunk;
+    }
+    static constexpr char kGetLocalMapChunkPrefixSpaced[] = R"({"type": "getLocalMapChunk")";
+    constexpr size_t kGetLocalMapChunkPrefixSpacedLen = sizeof(kGetLocalMapChunkPrefixSpaced) - 1;
+    if (length - start >= kGetLocalMapChunkPrefixSpacedLen
+        && memcmp(line + start, kGetLocalMapChunkPrefixSpaced, kGetLocalMapChunkPrefixSpacedLen) == 0) {
+        return CompanionClientMessage::GetLocalMapChunk;
+    }
 
     char stripped[64];
     size_t j = 0;
@@ -987,6 +1121,9 @@ CompanionClientMessage companionParseClientMessage(const char* line, size_t leng
     }
     if (j == kGetMapLen && memcmp(stripped, kGetMap, kGetMapLen) == 0) {
         return CompanionClientMessage::GetMap;
+    }
+    if (j == kGetLocalMapLen && memcmp(stripped, kGetLocalMap, kGetLocalMapLen) == 0) {
+        return CompanionClientMessage::GetLocalMap;
     }
     return CompanionClientMessage::Invalid;
 }
@@ -1189,7 +1326,10 @@ bool companionExtractCommandRequest(const char* line,
     return sawType && sawId && sawName;
 }
 
-bool companionExtractMapChunkIndex(const char* line, size_t length, int& outIndex)
+static bool extractTypedChunkIndex(const char* line,
+    size_t length,
+    std::string_view expectedType,
+    int& outIndex)
 {
     if (line == nullptr || length == 0) {
         return false;
@@ -1230,7 +1370,7 @@ bool companionExtractMapChunkIndex(const char* line, size_t length, int& outInde
 
         if (key == "type") {
             std::string_view type;
-            if (!parseJsonStringView(p, end, type) || type != "getMapChunk") {
+            if (!parseJsonStringView(p, end, type) || type != expectedType) {
                 return false;
             }
             sawType = true;
@@ -1266,6 +1406,16 @@ bool companionExtractMapChunkIndex(const char* line, size_t length, int& outInde
     }
 
     return sawType && sawIndex;
+}
+
+bool companionExtractMapChunkIndex(const char* line, size_t length, int& outIndex)
+{
+    return extractTypedChunkIndex(line, length, "getMapChunk", outIndex);
+}
+
+bool companionExtractLocalMapChunkIndex(const char* line, size_t length, int& outIndex)
+{
+    return extractTypedChunkIndex(line, length, "getLocalMapChunk", outIndex);
 }
 
 } // namespace fallout

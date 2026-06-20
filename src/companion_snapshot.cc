@@ -212,6 +212,16 @@ CompanionSnapshot companionCollectSnapshot()
             strncpy(snapshot.localLocation.locationId, kMapLocationIds[m], kCompanionLocationIdSize - 1);
             snapshot.localLocation.locationId[kCompanionLocationIdSize - 1] = '\0';
         }
+
+        // The engine always knows the player's overworld position (the town's
+        // location on the world map), even on a local surface. Report it so
+        // the companion can show a world-map fix immediately on connect.
+        int wx;
+        int wy;
+        if (worldMapGetPlayerPosition(&wx, &wy)) {
+            snapshot.localLocation.worldX = wx;
+            snapshot.localLocation.worldY = wy;
+        }
     }
 
     return snapshot;

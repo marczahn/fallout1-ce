@@ -65,6 +65,43 @@ class WorldMapState:
 
 
 @dataclass
+class LocalMapState:
+    """Pip-Boy local-map (automap) image cache and fetch bookkeeping.
+
+    Analogous to ``WorldMapState`` (and reuses ``WorldMapStatus``), but the
+    local map is per-(map, elevation) and is re-fetched as the player moves
+    to a new map/elevation and periodically to pick up newly explored tiles.
+    ``map_index``/``elevation`` identify the cached image; ``fetch_map``/
+    ``fetch_elevation`` identify the in-flight fetch so a mid-fetch target
+    change can be detected and the fetch restarted. Pure data: the rendered
+    green ``pygame.Surface`` is built and cached by the UI layer.
+    """
+
+    status: WorldMapStatus = WorldMapStatus.IDLE
+    # Identity of the cached (READY) image.
+    map_index: int = -1
+    elevation: int = -1
+    width: int = 0
+    height: int = 0
+    palette: bytes = b""
+    pixels: bytes = b""
+    # The (map, elevation) the in-flight fetch is for (matches header echo).
+    fetch_map: int = -1
+    fetch_elevation: int = -1
+    # Fetch bookkeeping (client-only).
+    chunk_count: int = 0
+    next_index: int = 0
+    chunk_bytes: int = 0
+    accumulator: bytearray = field(default_factory=bytearray)
+    last_request_at: float = 0.0
+    retries: int = 0
+    # When the current READY image was captured (for throttled refresh) and
+    # the player tile at that time (only refresh after movement).
+    last_ready_at: float = 0.0
+    image_tile: int = -1
+
+
+@dataclass
 class WorldInfo:
     schema_version: int = 0
     game: str = ""
@@ -91,6 +128,10 @@ class PlayerState:
     location_id: str = ""
     world_x: int = 0
     world_y: int = 0
+    # Local-surface position: hex-tile index, elevation, and map enum index.
+    tile: int = 0
+    elevation: int = 0
+    local_map_index: int = -1
     armor_class: int = 0
     current_carry_weight: int = 0
     carry_weight: int = 0
@@ -117,6 +158,7 @@ class AppState:
     world: WorldInfo | None = None
     player: PlayerState = field(default_factory=PlayerState)
     world_map: WorldMapState = field(default_factory=WorldMapState)
+    local_map: LocalMapState = field(default_factory=LocalMapState)
     # Most recent world position ever seen, in image-pixel space. Persists
     # while the player is on a LOCAL surface so the map can show a
     # "LAST KNOWN" marker. ``has_world_fix`` gates whether it is meaningful.
