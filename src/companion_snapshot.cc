@@ -110,6 +110,36 @@ CompanionInventorySlot companionInventorySlotForObject(const Object* item)
     return CompanionInventorySlot::None;
 }
 
+// Single construction path for a payload item, so the items collected from
+// the inventory list and the equipped items appended after it cannot drift
+// apart in their metadata lookup or their string bounds.
+CompanionInventoryItem makeInventoryItem(Object* item, int count, CompanionInventorySlot slot)
+{
+    CompanionItemMetadata metadata = {};
+    companionLookupItemMetadata(item->pid, metadata);
+
+    CompanionInventoryItem snapshotItem = {};
+    snapshotItem.pid = item->pid;
+    snapshotItem.type = metadata.type;
+    snapshotItem.count = count;
+    snapshotItem.slot = slot;
+    strncpy(snapshotItem.protoId, metadata.protoId, sizeof(snapshotItem.protoId) - 1);
+    strncpy(snapshotItem.name, metadata.name, sizeof(snapshotItem.name) - 1);
+
+    return snapshotItem;
+}
+
+bool containsObject(const std::vector<Object*>& objects, const Object* item)
+{
+    for (Object* candidate : objects) {
+        if (candidate == item) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void collectInventorySnapshot(CompanionInventorySnapshot& inventory)
 {
     inventory.items.clear();
@@ -117,22 +147,67 @@ void collectInventorySnapshot(CompanionInventorySnapshot& inventory)
     Inventory* source = &(obj_dude->data.inventory);
     inventory.items.reserve(source->length);
 
+    // Object identities already emitted. The equipped items appended below are
+    // reachable through the UI's slot pointers *and* present in the list
+    // whenever the inventory screen is closed, so they are deduped by identity
+    // -- not by pid, which would wrongly collapse an equipped and a stashed
+    // copy of the same weapon.
+    std::vector<Object*> collected;
+    collected.reserve(source->length);
+
     for (int index = 0; index < source->length; ++index) {
         InventoryItem* sourceItem = &(source->items[index]);
         Object* item = sourceItem->item;
 
-        CompanionItemMetadata metadata = {};
-        companionLookupItemMetadata(item->pid, metadata);
+        inventory.items.push_back(makeInventoryItem(item, sourceItem->quantity, companionInventorySlotForObject(item)));
+        collected.push_back(item);
+    }
 
-        CompanionInventoryItem snapshotItem = {};
-        snapshotItem.pid = item->pid;
-        snapshotItem.type = metadata.type;
-        snapshotItem.count = sourceItem->quantity;
-        snapshotItem.slot = companionInventorySlotForObject(item);
-        strncpy(snapshotItem.protoId, metadata.protoId, sizeof(snapshotItem.protoId) - 1);
-        strncpy(snapshotItem.name, metadata.name, sizeof(snapshotItem.name) - 1);
+    // While the in-game inventory screen is open the engine lifts the equipped
+    // items out of `data.inventory` and holds them in the UI's slot pointers,
+    // so the loop above cannot see them at all. Append them here, taking the
+    // slot from *which pointer the object arrived in* rather than from its
+    // flags: the screen's drag/drop flow does not set `OBJECT_IN_*_HAND` /
+    // `OBJECT_WORN` until `exit_inventory` runs, so classifying an item the
+    // player just dragged into a slot by flag would report `None` for it.
+    Object* heldOwner = nullptr;
+    Object* heldRightHand = nullptr;
+    Object* heldLeftHand = nullptr;
+    Object* heldWorn = nullptr;
+    inven_ui_held_slots(&heldOwner, &heldRightHand, &heldLeftHand, &heldWorn);
 
-        inventory.items.push_back(snapshotItem);
+    // Owner guard. Loot, barter and container sessions lift the player's own
+    // equipped items the same way, and those belong on the wire; a steal
+    // session's *target* items must never be attributed to the player.
+    if (heldOwner != obj_dude) {
+        return;
+    }
+
+    // A two-handed weapon aliases both hand pointers (`setup_inventory`), and
+    // must be listed once. Right hand wins, matching the precedence
+    // `companionInventorySlotForObject` already uses.
+    if (heldLeftHand == heldRightHand) {
+        heldLeftHand = nullptr;
+    }
+
+    const struct {
+        Object* item;
+        CompanionInventorySlot slot;
+    } heldSlots[] = {
+        { heldRightHand, CompanionInventorySlot::RightHand },
+        { heldLeftHand, CompanionInventorySlot::LeftHand },
+        { heldWorn, CompanionInventorySlot::Worn },
+    };
+
+    for (const auto& heldSlot : heldSlots) {
+        if (heldSlot.item == nullptr || containsObject(collected, heldSlot.item)) {
+            continue;
+        }
+
+        // Equipped items never stack, and every removal path removes exactly
+        // one, so the count is 1.
+        inventory.items.push_back(makeInventoryItem(heldSlot.item, 1, heldSlot.slot));
+        collected.push_back(heldSlot.item);
     }
 }
 

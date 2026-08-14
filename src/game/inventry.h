@@ -67,6 +67,26 @@ void use_inventory_on(Object* a1);
 Object* inven_right_hand(Object* obj);
 Object* inven_left_hand(Object* obj);
 Object* inven_worn(Object* obj);
+
+// Reports the items the inventory UI has temporarily lifted out of a
+// critter's inventory, together with the critter they belong to.
+//
+// While an inventory, loot or barter session is open the equipped items are
+// removed from the owner's `data.inventory` (`setup_inventory`) and live only
+// in the UI's slot pointers until `exit_inventory` puts them back. This is a
+// pure getter over those pointers: it scans nothing, inspects no flags, and
+// mutates nothing.
+//
+// Unlike `inven_right_hand` / `inven_left_hand` / `inven_worn` it does not key
+// on `inven_dude`, which the UI retargets to a container when the player opens
+// one from inside their own inventory.
+//
+// All out-params are optional. Every item is NULL when no session is active;
+// `owner` is only meaningful while one is, so the caller **must** check it
+// before attributing the items to anyone. A two-handed weapon is reported in
+// both hands, as the engine holds it.
+void inven_ui_held_slots(Object** owner, Object** rightHand, Object** leftHand, Object** worn);
+
 int inven_pid_is_carried(Object* obj, int pid);
 Object* inven_pid_is_carried_ptr(Object* obj, int pid);
 int inven_pid_quantity_carried(Object* obj, int pid);

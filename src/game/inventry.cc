@@ -2464,6 +2464,25 @@ Object* inven_worn(Object* critter)
     return NULL;
 }
 
+void inven_ui_held_slots(Object** owner, Object** rightHand, Object** leftHand, Object** worn)
+{
+    if (owner != NULL) {
+        *owner = stack[0];
+    }
+
+    if (rightHand != NULL) {
+        *rightHand = i_rhand;
+    }
+
+    if (leftHand != NULL) {
+        *leftHand = i_lhand;
+    }
+
+    if (worn != NULL) {
+        *worn = i_worn;
+    }
+}
+
 // 0x4651A8
 int inven_pid_is_carried(Object* obj, int pid)
 {
