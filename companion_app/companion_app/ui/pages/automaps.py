@@ -25,6 +25,8 @@ from companion_app.config import DEFAULT_MAP_GREEN_LEVELS, DEFAULT_MAP_PIXEL_BLO
 
 if TYPE_CHECKING:
     import pygame
+
+    from companion_app.ui.sections import SubSectionFocus
     from companion_app.state import PlayerState
 
 # Keep the map inset from the screen border like the other pages: the same
@@ -265,7 +267,9 @@ class AutomapsSection:
         content_rect: pygame.Rect,
         state: AppState,
         selected_key: str,
+        focus: SubSectionFocus,
     ) -> None:
+        _ = focus  # no AUTOMAPS sub-section is activatable
         # The sub-header itself is drawn once by the frame loop for every
         # section (TASK-017); this section only lays out its body below it.
         body_rect = content_rect.copy()

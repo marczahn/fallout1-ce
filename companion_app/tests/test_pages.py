@@ -22,6 +22,10 @@ from companion_app.ui.pages.archives import ArchivesSection
 from companion_app.ui.pages.automaps import AutomapsSection
 from companion_app.ui.pages.boot import BootPage, SplashPage
 from companion_app.ui.pages.status import StatusSection
+from companion_app.ui.scroll_list import ListCursor
+
+# A deactivated focus: these renders exercise layout, not activation.
+_FOCUS = sections.SubSectionFocus(activated=False, cursor=ListCursor())
 
 
 class SectionRenderTests(unittest.TestCase):
@@ -46,37 +50,37 @@ class SectionRenderTests(unittest.TestCase):
 
     def test_status_renders_character_subsection(self) -> None:
         StatusSection().render(
-            self.surface, self.layout.content_rect, self.state, "CHARACTER"
+            self.surface, self.layout.content_rect, self.state, "CHARACTER", _FOCUS
         )
 
     def test_status_renders_inventory_subsection(self) -> None:
         StatusSection().render(
-            self.surface, self.layout.content_rect, self.state, "INVENTORY"
+            self.surface, self.layout.content_rect, self.state, "INVENTORY", _FOCUS
         )
 
     def test_archives_renders_quests_subsection(self) -> None:
         ArchivesSection().render(
-            self.surface, self.layout.content_rect, self.state, "QUESTS"
+            self.surface, self.layout.content_rect, self.state, "QUESTS", _FOCUS
         )
 
     def test_archives_renders_holodisks_subsection(self) -> None:
         ArchivesSection().render(
-            self.surface, self.layout.content_rect, self.state, "HOLODISKS"
+            self.surface, self.layout.content_rect, self.state, "HOLODISKS", _FOCUS
         )
 
     def test_automaps_renders_local_subsection(self) -> None:
         AutomapsSection().render(
-            self.surface, self.layout.content_rect, self.state, "LOCAL"
+            self.surface, self.layout.content_rect, self.state, "LOCAL", _FOCUS
         )
 
     def test_automaps_renders_world_subsection(self) -> None:
         AutomapsSection().render(
-            self.surface, self.layout.content_rect, self.state, "WORLD"
+            self.surface, self.layout.content_rect, self.state, "WORLD", _FOCUS
         )
 
     def test_automaps_renders_atlas_subsection(self) -> None:
         AutomapsSection().render(
-            self.surface, self.layout.content_rect, self.state, "ATLAS"
+            self.surface, self.layout.content_rect, self.state, "ATLAS", _FOCUS
         )
 
     # ── map states (unchanged behavior, new call shape) ────────────
@@ -92,7 +96,7 @@ class SectionRenderTests(unittest.TestCase):
 
     def _render_automaps(self, key: str) -> None:
         AutomapsSection().render(
-            self.surface, self.layout.content_rect, self.state, key
+            self.surface, self.layout.content_rect, self.state, key, _FOCUS
         )
 
     def test_map_atlas_renders_ready_map_with_live_marker(self) -> None:

@@ -44,8 +44,13 @@ from companion_app.ui.pages.boot import (
 )
 from companion_app.ui.pages.archives import ArchivesSection
 from companion_app.ui.pages.automaps import AutomapsSection
-from companion_app.ui import sections, segmented_header
-from companion_app.ui.sections import SECTION_TITLES, SectionsUiState
+from companion_app.ui import inventory_list, sections, segmented_header
+from companion_app.ui.scroll_list import ListRow
+from companion_app.ui.sections import (
+    SECTION_TITLES,
+    STATUS_INVENTORY,
+    SectionsUiState,
+)
 from companion_app.ui.segmented_header import SUBHEADER_SIZE
 from companion_app.ui.pages.status import (
     STATUS_BOX_SIZE,
@@ -75,16 +80,35 @@ def _body_text(state: AppState) -> str:
     return ''
 
 
+def _active_rows(
+    current_page: Page,
+    sections_ui: SectionsUiState,
+    state: AppState,
+) -> tuple[ListRow, ...]:
+    """Content rows for the active sub-section, or empty if it has none.
+
+    Derived per call rather than stored: the network client replaces
+    ``player.inventory`` wholesale on every update, so cached rows would
+    need invalidating on each one. Only the cursor is state.
+    """
+    seg = sections.for_page(sections_ui, current_page)
+    if current_page is Page.STATUS and seg.selected_key == STATUS_INVENTORY:
+        return inventory_list.build_rows(state.player.inventory)
+    return ()
+
+
 def _route_input(
     current_page: Page,
     sections_ui: SectionsUiState,
     input_event: InputEvent,
+    state: AppState,
 ) -> tuple[Page, SectionsUiState]:
     """Route one input event to the section model.
 
-    Section buttons switch sections and never reset anything: each
-    section's selected sub-section is preserved across navigation
-    (TASK-010's MAP behavior, generalized in TASK-017).
+    Section buttons switch sections and preserve every sub-section
+    selection and the content cursor (TASK-010's MAP behavior, generalized
+    in TASK-017). The one thing they reset is **activation**: leaving a
+    section always hands the encoder back to the sub-section row.
     """
     if isinstance(input_event, PageButtonEvent):
         try:
@@ -94,12 +118,13 @@ def _route_input(
             # (its action is out of scope). Catching ValueError rather than
             # testing for 4 keeps any future index inert too.
             return current_page, sections_ui
-        return target_page, sections_ui
+        return target_page, sections.deactivated(sections_ui)
 
-    # Encoder events move the active section's sub-header. Confirm/Back
-    # fall through unchanged — nothing is activatable yet (TASK-018).
-    return current_page, sections.handle_encoder(
-        sections_ui, current_page, input_event
+    return current_page, sections.handle_input(
+        sections_ui,
+        current_page,
+        input_event,
+        rows=_active_rows(current_page, sections_ui, state),
     )
 
 
@@ -130,9 +155,19 @@ def _render_section(
 
     content_rect = layout.content_rect
     seg = sections.for_page(sections_ui, current_page)
-    segmented_header.render(surface, content_rect, seg)
+    # The solid inverse fill always marks whatever the encoder currently
+    # drives: the sub-header segment when at the sub-section row, the
+    # content's selected row once activated. Exactly one filled element on
+    # screen, which is the whole focus indicator — no breadcrumb needed.
+    segmented_header.render(
+        surface, content_rect, seg, focused=not sections_ui.activated
+    )
     section_renderers[current_page].render(
-        surface, content_rect, state, seg.selected_key
+        surface,
+        content_rect,
+        state,
+        seg.selected_key,
+        sections.focus_for(sections_ui),
     )
 
 
@@ -303,7 +338,7 @@ def _run_loop(config: Config) -> int:
                 if debug_overlay is not None:
                     debug_overlay.record(input_event)
                 current_page, sections_ui = _route_input(
-                    current_page, sections_ui, input_event
+                    current_page, sections_ui, input_event, state
                 )
         elif debug_overlay is not None:
             for input_event in input_events:

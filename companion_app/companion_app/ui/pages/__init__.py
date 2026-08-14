@@ -22,6 +22,9 @@ if TYPE_CHECKING:
     import pygame
 
     from companion_app.state import AppState
+    # TYPE_CHECKING only: ``ui.sections`` imports ``Page`` from this module
+    # at runtime, so a runtime import here would close the cycle.
+    from companion_app.ui.sections import SubSectionFocus
 
 
 class Page(Enum):
@@ -45,6 +48,10 @@ class SectionRenderer(Protocol):
     It does **not** draw the segmented sub-header — the frame loop does
     that for all sections — but it must leave the first
     ``SUBHEADER_BAND_HEIGHT`` pixels of the rect clear for it.
+
+    ``focus`` carries whether the encoder has been handed to this
+    sub-section's content, and the content cursor if so. A section with
+    nothing activatable accepts and ignores it.
     """
 
     def render(
@@ -53,6 +60,7 @@ class SectionRenderer(Protocol):
         content_rect: pygame.Rect,
         state: AppState,
         selected_key: str,
+        focus: SubSectionFocus,
     ) -> None: ...
 
     @property

@@ -13,7 +13,9 @@ from companion_app.state import (
     PlayerState,
 )
 from companion_app.ui import shell
+from companion_app.ui import sections
 from companion_app.ui.layout import Layout
+from companion_app.ui.scroll_list import ListCursor
 from companion_app.ui.pages import status as status_page_module
 from companion_app.ui.pages.status import (
     StatusSection,
@@ -22,6 +24,9 @@ from companion_app.ui.pages.status import (
     synthesize_status_fx_label,
     synthesize_stim_counts,
 )
+
+# A deactivated focus: these renders exercise layout, not activation.
+_FOCUS = sections.SubSectionFocus(activated=False, cursor=ListCursor())
 
 
 class StatusSectionTests(unittest.TestCase):
@@ -109,6 +114,7 @@ class StatusSectionTests(unittest.TestCase):
             self.layout.content_rect,
             self._make_state(radiation=4, poison=2),
             "CHARACTER",
+            _FOCUS,
         )
 
     def test_render_handles_empty_inventory(self) -> None:
@@ -117,6 +123,7 @@ class StatusSectionTests(unittest.TestCase):
             self.layout.content_rect,
             self._make_state(inventory=[]),
             "CHARACTER",
+            _FOCUS,
         )
 
     def test_render_handles_irradiated_state_without_column_overlap(self) -> None:
@@ -127,6 +134,7 @@ class StatusSectionTests(unittest.TestCase):
             self.layout.content_rect,
             self._make_state(hp=43, max_hp=43, radiation=12),
             "CHARACTER",
+            _FOCUS,
         )
 
     def test_character_content_fits_inside_the_content_rect(self) -> None:
@@ -155,6 +163,7 @@ class StatusSectionTests(unittest.TestCase):
             content_rect,
             self._make_state(),
             "CHARACTER",
+            _FOCUS,
         )
         rule_y = (
             content_rect.top

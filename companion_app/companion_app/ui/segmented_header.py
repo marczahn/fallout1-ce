@@ -32,6 +32,8 @@ _SUBHEADER_LEFT_X: int = PAGE_MARGIN_X
 _SEG_PAD_X: int = 8
 _SEG_PAD_Y: int = 4
 _SEG_GAP: int = 12
+# Border width for the active segment when the row is not focused.
+_OUTLINE_WIDTH: int = 1
 
 # Sentinel selected_key meaning "no active segment". Intentionally not a
 # valid segment key.
@@ -104,11 +106,17 @@ def cycle_prev(state: SegmentedHeaderState) -> SegmentedHeaderState:
     return _cycle(state, -1)
 
 
-def _segment_text_color(seg: Segment, selected_key: str) -> tuple[int, int, int]:
+def _segment_text_color(
+    seg: Segment,
+    selected_key: str,
+    focused: bool,
+) -> tuple[int, int, int]:
     if not seg.enabled:
         return palette.DIM
     if seg.key == selected_key:
-        return palette.BACKGROUND
+        # Inverse-filled only while the row holds the encoder; unfocused
+        # the box becomes an outline, so the label goes back to phosphor.
+        return palette.BACKGROUND if focused else palette.FOREGROUND
     return palette.FOREGROUND
 
 
@@ -118,20 +126,29 @@ def render(
     state: SegmentedHeaderState,
     *,
     top_gap: int = _SUBHEADER_TOP_GAP,
+    focused: bool = True,
 ) -> None:
     """Draw the segmented control left-aligned beneath the page headline.
 
     The active segment is inverse-filled; inactive enabled segments are
     plain foreground text; disabled segments are dimmed. Layout is stable
-    regardless of which segment is active because each segment advances by
-    the same padded width whether or not it carries the active box.
+    regardless of which segment is active, **or of whether the row is
+    focused**, because each segment advances by the same padded width
+    whether it carries a filled box, an outlined box, or neither.
+
+    ``focused=False`` means the encoder has moved into the sub-section's
+    content: the active segment keeps its box but draws it as an outline
+    with a phosphor label. It is deliberately *not* dimmed — ``DIM``
+    already means "disabled" here, and an unfocused row is still the thing
+    ``Back`` returns to. A disabled segment draws no box at all, which is
+    what keeps the two unambiguous.
     """
     x = content_rect.left + _SUBHEADER_LEFT_X
     y = content_rect.top + top_gap
 
     for seg in state.segments:
         is_active = seg.enabled and seg.key == state.selected_key
-        text_color = _segment_text_color(seg, state.selected_key)
+        text_color = _segment_text_color(seg, state.selected_key, focused)
         text_surf = font.font_render_surface(seg.label, SUBHEADER_SIZE, text_color)
         if text_surf is None:
             continue
@@ -141,7 +158,12 @@ def render(
 
         if is_active:
             box = pygame.Rect(x, y, box_w, text_h + 2 * _SEG_PAD_Y)
-            pygame.draw.rect(surface, palette.FOREGROUND, box)
+            pygame.draw.rect(
+                surface,
+                palette.FOREGROUND,
+                box,
+                0 if focused else _OUTLINE_WIDTH,
+            )
 
         # Inactive labels sit at the same inset as the active label so the
         # row does not shift when the selection changes.

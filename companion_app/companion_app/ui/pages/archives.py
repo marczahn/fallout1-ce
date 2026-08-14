@@ -17,6 +17,8 @@ from companion_app.ui.shell import SUBHEADER_BAND_HEIGHT
 if TYPE_CHECKING:
     import pygame
 
+    from companion_app.ui.sections import SubSectionFocus
+
 _PLACEHOLDER_TEXT: str = "NOT YET IMPLEMENTED"
 _PLACEHOLDER_SIZE: int = 24
 
@@ -32,9 +34,11 @@ class ArchivesSection:
         content_rect: pygame.Rect,
         state: AppState,
         selected_key: str,
+        focus: SubSectionFocus,
     ) -> None:
         _ = state
         _ = selected_key
+        _ = focus  # nothing in ARCHIVES is activatable yet
         body_rect = content_rect.copy()
         body_rect.top += SUBHEADER_BAND_HEIGHT
         body_rect.height = content_rect.height - SUBHEADER_BAND_HEIGHT

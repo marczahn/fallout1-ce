@@ -20,6 +20,8 @@ from companion_app.ui.shell import SUBHEADER_BAND_HEIGHT
 if TYPE_CHECKING:
     import pygame
 
+    from companion_app.ui.sections import SubSectionFocus
+
 # Font sizes (the vendored Fallout face is the only typeface; sizes are tuned
 # to the concept art proportions).
 # Font sizes are anchored to the shared page-headline size (HEADER_SIZE = 16,
@@ -156,14 +158,16 @@ class StatusSection:
         content_rect: pygame.Rect,
         state: AppState,
         selected_key: str,
+        focus: SubSectionFocus,
     ) -> None:
         if selected_key == STATUS_INVENTORY:
             body_rect = content_rect.copy()
             body_rect.top += SUBHEADER_BAND_HEIGHT
             body_rect.height = content_rect.height - SUBHEADER_BAND_HEIGHT
-            render_inventory(surface, body_rect, state)
+            render_inventory(surface, body_rect, state, focus)
             return
 
+        _ = focus  # CHARACTER is not activatable
         player = state.player
         top = content_rect.top
 
