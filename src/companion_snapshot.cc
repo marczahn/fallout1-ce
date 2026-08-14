@@ -149,6 +149,7 @@ CompanionSnapshot companionCollectSnapshot()
     snapshot.progression = CompanionPlayerProgression{ 0, 0, 0 };
     snapshot.localLocation = CompanionPlayerLocalLocation{};
     snapshot.localLocation.location[0] = '\0';
+    snapshot.localLocation.mapName[0] = '\0';
     snapshot.localLocation.locationId[0] = '\0';
     snapshot.worldLocation = CompanionPlayerWorldLocation{ 0, 0 };
     snapshot.inventory.items.clear();
@@ -196,19 +197,25 @@ CompanionSnapshot companionCollectSnapshot()
         snapshot.localLocation.elevation = obj_dude->elevation;
         snapshot.localLocation.map = map_get_index_number();
 
-        // Localized display name. The engine returns a `char*` owned by
-        // the message list; copy into our own buffer so the snapshot
-        // outlives any subsequent message-list activity.
-        char* shortName = map_get_short_name(snapshot.localLocation.map);
-        if (companionIsSafeJsonString(shortName)) {
-            strncpy(snapshot.localLocation.location, shortName, kCompanionLocationSize - 1);
-            snapshot.localLocation.location[kCompanionLocationSize - 1] = '\0';
-        }
-
-        // Stable identifier from our static table. Out-of-range indices
-        // (defensive) leave the field empty.
         int m = snapshot.localLocation.map;
         if (m >= 0 && m < MAP_COUNT) {
+            // Localized display names. The engine returns `char*`s owned
+            // by the message list; copy them into our own buffers so the
+            // snapshot outlives any subsequent message-list activity.
+            char* shortName = map_get_short_name(m);
+            if (companionIsSafeJsonString(shortName)) {
+                strncpy(snapshot.localLocation.location, shortName, kCompanionLocationSize - 1);
+                snapshot.localLocation.location[kCompanionLocationSize - 1] = '\0';
+            }
+
+            char* mapName = map_get_elev_idx(m, snapshot.localLocation.elevation);
+            if (mapName != nullptr && companionIsSafeJsonString(mapName)) {
+                strncpy(snapshot.localLocation.mapName, mapName, kCompanionLocationSize - 1);
+                snapshot.localLocation.mapName[kCompanionLocationSize - 1] = '\0';
+            }
+
+            // Stable identifier from our static table. Out-of-range indices
+            // (defensive) leave the field empty.
             strncpy(snapshot.localLocation.locationId, kMapLocationIds[m], kCompanionLocationIdSize - 1);
             snapshot.localLocation.locationId[kCompanionLocationIdSize - 1] = '\0';
         }

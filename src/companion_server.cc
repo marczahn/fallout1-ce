@@ -368,6 +368,7 @@ bool localLocationDiffer(const CompanionPlayerLocalLocation& a, const CompanionP
         || a.elevation != b.elevation
         || a.map != b.map
         || strcmp(a.location, b.location) != 0
+        || strcmp(a.mapName, b.mapName) != 0
         || strcmp(a.locationId, b.locationId) != 0
         || a.worldX != b.worldX
         || a.worldY != b.worldY;
@@ -585,7 +586,8 @@ void handleGetLocalMapMessage()
     unsigned char* pixels = nullptr;
     int width = 0;
     int height = 0;
-    if (!companionBuildLocalMapImage(map_elevation, &pixels, &width, &height)) {
+    bool explored = false;
+    if (!companionBuildLocalMapImage(map_elevation, &pixels, &width, &height, &explored)) {
         queueMessage(companionBuildLocalMapError("mapUnavailable"));
         debug_printf("companion: getLocalMap failed (mapUnavailable)\n");
         return;
@@ -598,6 +600,7 @@ void handleGetLocalMapMessage()
         map_elevation,
         width,
         height,
+        explored,
         palette,
         kMapChunkBytes);
     companionFreeLocalMapImage(pixels);

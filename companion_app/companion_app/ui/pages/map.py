@@ -27,6 +27,7 @@ from companion_app.config import DEFAULT_MAP_GREEN_LEVELS, DEFAULT_MAP_PIXEL_BLO
 
 if TYPE_CHECKING:
     import pygame
+    from companion_app.state import PlayerState
 
 _MAP_BODY_TOP: int = 56
 # Keep the map inset from the screen border like the other pages: the same
@@ -34,6 +35,9 @@ _MAP_BODY_TOP: int = 56
 _MAP_MARGIN_BOTTOM: int = PAGE_MARGIN_X
 _BODY_SIZE: int = 22
 _LABEL_SIZE: int = 14
+_LABEL_INSET_X: int = 12
+_LABEL_INSET_BOTTOM: int = 28
+_LABEL_ROW_STEP: int = 20
 
 # WORLD zoom: 1 map pixel -> this many screen pixels. ~448px content width
 # over a ~1400px-wide Fallout world map: a modest zoom that keeps the
@@ -179,6 +183,7 @@ LOCAL_VIEW_WORLD: str = "on-world-map"
 LOCAL_VIEW_UNAVAILABLE: str = "unavailable"
 LOCAL_VIEW_LOADING: str = "loading"
 LOCAL_VIEW_NOT_EXPLORED: str = "not-explored"
+LOCAL_VIEW_NO_DATA: str = "no-data"
 LOCAL_VIEW_MAP: str = "map"
 
 
@@ -187,6 +192,7 @@ def select_local_view(
     status: WorldMapStatus,
     has_current_image: bool,
     is_empty: bool,
+    explored: bool,
 ) -> str:
     """Decide what the LOCAL segment shows.
 
@@ -197,8 +203,8 @@ def select_local_view(
     refresh from flickering the map to "LOADING" and back.
 
     * On the WORLD surface there is no local map -> advise.
-    * Have a current-map image -> render it (or "NOT EXPLORED" if all-empty),
-      regardless of an in-flight refresh / transient error.
+    * Have a current-map image -> render it (or a distinct empty-state view if
+      all-empty), regardless of an in-flight refresh / transient error.
     * No usable image yet + UNAVAILABLE (old server / error / gave up) ->
       "MAP UNAVAILABLE".
     * No usable image yet, still IDLE/FETCHING (or just changed maps) ->
@@ -207,7 +213,9 @@ def select_local_view(
     if surface is PlayerSurface.WORLD:
         return LOCAL_VIEW_WORLD
     if has_current_image:
-        return LOCAL_VIEW_NOT_EXPLORED if is_empty else LOCAL_VIEW_MAP
+        if is_empty:
+            return LOCAL_VIEW_NO_DATA if explored else LOCAL_VIEW_NOT_EXPLORED
+        return LOCAL_VIEW_MAP
     if status is WorldMapStatus.UNAVAILABLE:
         return LOCAL_VIEW_UNAVAILABLE
     return LOCAL_VIEW_LOADING
@@ -225,6 +233,16 @@ def select_marker_mode(surface: PlayerSurface, has_world_fix: bool) -> str:
     if has_world_fix:
         return MARKER_LAST_KNOWN
     return MARKER_NONE
+
+
+def local_label_lines(player: "PlayerState") -> tuple[str, ...]:
+    """Return the non-empty LOCAL label lines in engine display order."""
+    lines: list[str] = []
+    for raw in (player.location, player.map_name):
+        text = raw.strip()
+        if text:
+            lines.append(text)
+    return tuple(lines)
 
 
 # ── page ────────────────────────────────────────────────────────────
@@ -323,7 +341,7 @@ class MapPage:
             and lm.elevation == player.elevation
         )
         view = select_local_view(
-            player.surface, lm.status, has_current_image, not any(lm.pixels)
+            player.surface, lm.status, has_current_image, not any(lm.pixels), lm.explored
         )
 
         if view == LOCAL_VIEW_WORLD:
@@ -341,13 +359,12 @@ class MapPage:
                 surface, "LOADING MAP...", body_rect, _BODY_SIZE, palette.DIM
             )
             return
+        green = self._ensure_local_surface(state)
         if view == LOCAL_VIEW_NOT_EXPLORED:
             font.draw_text_centered(
                 surface, "NOT EXPLORED", body_rect, _BODY_SIZE, palette.DIM
             )
             return
-
-        green = self._ensure_local_surface(state)
         if green is None:
             font.draw_text_centered(
                 surface, "MAP UNAVAILABLE", body_rect, _BODY_SIZE, palette.DIM
@@ -376,6 +393,36 @@ class MapPage:
             fit.dest_h,
         )
         self._draw_marker(surface, body_rect, marker_view, map_rect)
+        if view == LOCAL_VIEW_NO_DATA:
+            font.draw_text_centered(
+                surface, "NO MAP DATA", body_rect, _BODY_SIZE, palette.DIM
+            )
+            return
+
+        location = player.location.strip()
+        map_name = player.map_name.strip()
+        if location:
+            font.draw_text_left(
+                surface,
+                location,
+                (
+                    map_rect.left + _LABEL_INSET_X,
+                    map_rect.bottom - _LABEL_INSET_BOTTOM - _LABEL_ROW_STEP,
+                ),
+                _LABEL_SIZE,
+                palette.FOREGROUND,
+            )
+        if map_name:
+            font.draw_text_left(
+                surface,
+                map_name,
+                (
+                    map_rect.left + _LABEL_INSET_X,
+                    map_rect.bottom - _LABEL_INSET_BOTTOM,
+                ),
+                _LABEL_SIZE,
+                palette.FOREGROUND,
+            )
 
     # ── shared map-surface plumbing ────────────────────────────────
 

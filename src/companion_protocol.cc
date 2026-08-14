@@ -29,7 +29,7 @@
 //                                 normal auth/hello handshake.
 //
 // Server -> client:
-//   {"type":"world","schemaVersion":7,"game":"fallout1-ce","playerAvailable":bool}
+//   {"type":"world","schemaVersion":9,"game":"fallout1-ce","playerAvailable":bool}
 //
 //   {"type":"snapshot","seq":N,"playerAvailable":bool,"payload":{
 //      "player.vitals":          {"hp":H,"maxHp":M},
@@ -48,8 +48,8 @@
 //      "player.progression":     {"level":L,"experience":X,
 //                                 "nextLevelExp":N},
 //      "player.localLocation":  {"tile":T,"elevation":E,"map":M,
-//                                 "location":"<name>","locationId":"<id>",
-//                                 "worldX":WX,"worldY":WY},
+//                                 "location":"<name>","mapName":"<name>",
+//                                 "locationId":"<id>","worldX":WX,"worldY":WY},
 //      "player.worldLocation":  {"x":X,"y":Y},
 //      "player.inventory":       [{"pid":P,"protoId":"<id>","name":"<name>",
 //                                   "type":"<type>","count":N,"slot":"<slot>"}]
@@ -77,7 +77,8 @@
 //     "player.progression":     payload fields are {level,
 //                               experience, nextLevelExp}
 //     "player.localLocation":  payload fields are {tile, elevation,
-//                               map, location, locationId, worldX, worldY}
+//                               map, location, mapName, locationId,
+//                               worldX, worldY}
 //     "player.worldLocation":  payload fields are {x, y}
 //     "player.inventory":       payload is the complete inventory array
 //   `playerAvailable` in the envelope is always `true` for an `update`:
@@ -113,10 +114,13 @@
 //   client on a map error.
 //
 //   {"type":"localMapHeader","map":M,"elevation":E,"width":W,"height":H,
-//      "paletteB64":"<b64 of 768 bytes RGB>","chunkCount":N,"chunkBytes":B}
+//      "explored":bool,"paletteB64":"<b64 of 768 bytes RGB>",
+//      "chunkCount":N,"chunkBytes":B}
 //   Reply to `getLocalMap`. Like `mapHeader` but for the engine automap
 //   of the CURRENT map+elevation (echoed as `map`/`elevation`). The
 //   decoded image is one byte per hex tile: 0=empty, 1=wall, 2=scenery.
+//   `explored` is true when the map has seen data even if the rendered
+//   image is still all-zero because there is nothing drawable on it.
 //
 //   {"type":"localMapChunk","index":i,"map":M,"elevation":E,
 //      "dataB64":"<b64 of raw byte range>"}
@@ -133,13 +137,15 @@
 // `payload`. `onPlayerUnavailable` and `onPlayerAvailable` have
 // neither.
 //
-// `world.schemaVersion` is now `6` (was `5`). Version 5 added the
+// `world.schemaVersion` is now `9` (was `5`). Version 5 added the
 // world-map image fetch (`getMap`/`getMapChunk`/`mapHeader`/`mapChunk`/
 // `mapError`); version 6 adds the local-map (automap) image fetch
 // (`getLocalMap`/`getLocalMapChunk`/`localMapHeader`/`localMapChunk`/
-// `localMapError`). The bumps are additive: an older client still works
-// for everything except the newer fetch, but the version makes the new
-// contract visible.
+// `localMapError`); version 7 adds `player.localLocation.worldX/worldY`;
+// version 8 adds the additive `localMapHeader.explored` field; version 9
+// adds the additive `player.localLocation.mapName` field. The bumps are
+// additive: an older client still works for everything except the newer
+// fetch/field, but the version makes the new contract visible.
 //
 // T0 changes from step 1/2:
 //   - `world.schemaVersion` is now `4` (was `1`, then `2`, then `3`).
@@ -229,6 +235,12 @@ constexpr char kProgressionKind[] = "player.progression";
 constexpr char kLocalLocationKind[] = "player.localLocation";
 constexpr char kWorldLocationKind[] = "player.worldLocation";
 constexpr char kInventoryKind[] = "player.inventory";
+
+constexpr size_t kLocalLocationBodySize = 512;
+static_assert(
+    kLocalLocationBodySize
+            > 79 + 13 + (kCompanionLocationSize - 1) * 2 + (kCompanionLocationIdSize - 1) + 5 * 11 + 1,
+    "localLocation JSON body must fit the maximum-length fields");
 
 const char* inventoryTypeName(int type)
 {
@@ -339,26 +351,49 @@ std::string buildProgressionBody(const CompanionPlayerProgression& progression)
 
 std::string buildLocalLocationBody(const CompanionPlayerLocalLocation& loc)
 {
-    char body[256];
+    char body[kLocalLocationBodySize];
     int n;
-    if (loc.location[0] == '\0') {
+    if (loc.location[0] == '\0' && loc.mapName[0] == '\0') {
         n = snprintf(body,
             sizeof(body),
-            R"({"tile":%d,"elevation":%d,"map":%d,"location":null,"locationId":"%s","worldX":%d,"worldY":%d})",
+            R"({"tile":%d,"elevation":%d,"map":%d,"location":null,"mapName":null,"locationId":"%s","worldX":%d,"worldY":%d})",
             loc.tile,
             loc.elevation,
             loc.map,
             loc.locationId,
             loc.worldX,
             loc.worldY);
-    } else {
+    } else if (loc.location[0] == '\0') {
         n = snprintf(body,
             sizeof(body),
-            R"({"tile":%d,"elevation":%d,"map":%d,"location":"%s","locationId":"%s","worldX":%d,"worldY":%d})",
+            R"({"tile":%d,"elevation":%d,"map":%d,"location":null,"mapName":"%s","locationId":"%s","worldX":%d,"worldY":%d})",
+            loc.tile,
+            loc.elevation,
+            loc.map,
+            loc.mapName,
+            loc.locationId,
+            loc.worldX,
+            loc.worldY);
+    } else if (loc.mapName[0] == '\0') {
+        n = snprintf(body,
+            sizeof(body),
+            R"({"tile":%d,"elevation":%d,"map":%d,"location":"%s","mapName":null,"locationId":"%s","worldX":%d,"worldY":%d})",
             loc.tile,
             loc.elevation,
             loc.map,
             loc.location,
+            loc.locationId,
+            loc.worldX,
+            loc.worldY);
+    } else {
+        n = snprintf(body,
+            sizeof(body),
+            R"({"tile":%d,"elevation":%d,"map":%d,"location":"%s","mapName":"%s","locationId":"%s","worldX":%d,"worldY":%d})",
+            loc.tile,
+            loc.elevation,
+            loc.map,
+            loc.location,
+            loc.mapName,
             loc.locationId,
             loc.worldX,
             loc.worldY);
@@ -555,7 +590,7 @@ std::string companionBuildWorld(bool playerAvailable)
     char buffer[96];
     int n = snprintf(buffer,
         sizeof(buffer),
-        R"({"type":"world","schemaVersion":7,"game":"fallout1-ce","playerAvailable":%s})"
+        R"({"type":"world","schemaVersion":9,"game":"fallout1-ce","playerAvailable":%s})"
         "\n",
         flag);
     if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
@@ -842,7 +877,7 @@ std::string companionBuildAnnounce(std::string_view host)
 {
     std::string message;
     message.reserve(host.size() + 96);
-    message.append(R"({"type":"announce","game":"fallout1-ce","schemaVersion":7,"host":")");
+    message.append(R"({"type":"announce","game":"fallout1-ce","schemaVersion":9,"host":")");
     message.append(host);
     message.append(R"(","port":28080,"authRequired":true})"
                    "\n");
@@ -938,6 +973,7 @@ std::string companionBuildLocalMapHeader(int map,
     int elevation,
     int width,
     int height,
+    bool explored,
     const unsigned char* palette,
     size_t chunkBytes)
 {
@@ -954,11 +990,12 @@ std::string companionBuildLocalMapHeader(int map,
     char prefix[128];
     int prefixLen = snprintf(prefix,
         sizeof(prefix),
-        R"({"type":"localMapHeader","map":%d,"elevation":%d,"width":%d,"height":%d,"paletteB64":")",
+        R"({"type":"localMapHeader","map":%d,"elevation":%d,"width":%d,"height":%d,"explored":%s,"paletteB64":")",
         map,
         elevation,
         width,
-        height);
+        height,
+        explored ? "true" : "false");
     if (prefixLen < 0 || static_cast<size_t>(prefixLen) >= sizeof(prefix)) {
         return std::string();
     }

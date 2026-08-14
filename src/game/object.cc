@@ -260,10 +260,10 @@ static int buf_width;
 Object* obj_dude;
 
 // 0x65F61C
-static char obj_seen_check[5001];
+static char obj_seen_check[OBJ_SEEN_BITMASK_SIZE];
 
 // 0x6609A5
-static char obj_seen[5001];
+static char obj_seen[OBJ_SEEN_BITMASK_SIZE];
 
 // 0x47A590
 int obj_init(unsigned char* buf, int width, int height, int pitch)
@@ -271,7 +271,7 @@ int obj_init(unsigned char* buf, int width, int height, int pitch)
     int dudeFid;
     int eggFid;
 
-    memset(obj_seen, 0, 5001);
+    memset(obj_seen, 0, OBJ_SEEN_BITMASK_SIZE);
     updateAreaPixelBounds.lrx = width + 320;
     updateAreaPixelBounds.ulx = -320;
     updateAreaPixelBounds.lry = height + 240;
@@ -360,7 +360,7 @@ void obj_reset()
     if (objInitialized) {
         text_object_reset();
         obj_remove_all();
-        memset(obj_seen, 0, 5001);
+        memset(obj_seen, 0, OBJ_SEEN_BITMASK_SIZE);
         light_reset();
     }
 }
@@ -2798,6 +2798,48 @@ void obj_set_seen(int tile)
     obj_seen[tile >> 3] |= 1 << (tile & 7);
 }
 
+// Expands the tiles recorded in `obj_seen` into the set of tiles whose objects
+// count as seen, writing into `out` (OBJ_SEEN_BITMASK_SIZE bytes). Extracted
+// verbatim from `obj_process_seen` so the read-only accessor below can share it.
+static void obj_expand_seen(char* out)
+{
+    int i;
+    int v0;
+    int v3;
+
+    memset(out, 0, OBJ_SEEN_BITMASK_SIZE);
+
+    v0 = 400;
+    for (i = 0; i < OBJ_SEEN_BITMASK_SIZE; i++) {
+        if (obj_seen[i] != 0) {
+            for (v3 = i - 400; v3 != v0; v3 += 25) {
+                if (v3 >= 0 && v3 < 5001) {
+                    out[v3] = -1;
+                    if (v3 > 0) {
+                        out[v3 - 1] = -1;
+                    }
+                    if (v3 < 5000) {
+                        out[v3 + 1] = -1;
+                    }
+                    if (v3 > 1) {
+                        out[v3 - 2] = -1;
+                    }
+                    if (v3 < 4999) {
+                        out[v3 + 2] = -1;
+                    }
+                }
+            }
+        }
+        v0++;
+    }
+}
+
+// Read-only counterpart of `obj_process_seen`: see object.h.
+void obj_seen_pending_tiles(char* out)
+{
+    obj_expand_seen(out);
+}
+
 // 0x47DE84
 void obj_process_seen()
 {
@@ -2805,38 +2847,12 @@ void obj_process_seen()
     int v7;
     int v8;
     int v5;
-    int v0;
-    int v3;
     ObjectListNode* obj_entry;
 
-    memset(obj_seen_check, 0, 5001);
-
-    v0 = 400;
-    for (i = 0; i < 5001; i++) {
-        if (obj_seen[i] != 0) {
-            for (v3 = i - 400; v3 != v0; v3 += 25) {
-                if (v3 >= 0 && v3 < 5001) {
-                    obj_seen_check[v3] = -1;
-                    if (v3 > 0) {
-                        obj_seen_check[v3 - 1] = -1;
-                    }
-                    if (v3 < 5000) {
-                        obj_seen_check[v3 + 1] = -1;
-                    }
-                    if (v3 > 1) {
-                        obj_seen_check[v3 - 2] = -1;
-                    }
-                    if (v3 < 4999) {
-                        obj_seen_check[v3 + 2] = -1;
-                    }
-                }
-            }
-        }
-        v0++;
-    }
+    obj_expand_seen(obj_seen_check);
 
     v7 = 0;
-    for (i = 0; i < 5001; i++) {
+    for (i = 0; i < OBJ_SEEN_BITMASK_SIZE; i++) {
         if (obj_seen_check[i] != 0) {
             v8 = 1;
             for (v5 = v7; v5 < v7 + 8; v5++) {
@@ -2855,7 +2871,7 @@ void obj_process_seen()
         v7 += 8;
     }
 
-    memset(obj_seen, 0, 5001);
+    memset(obj_seen, 0, OBJ_SEEN_BITMASK_SIZE);
 }
 
 // 0x47DFC8

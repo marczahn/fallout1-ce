@@ -85,9 +85,11 @@ class LocalMapState:
     height: int = 0
     palette: bytes = b""
     pixels: bytes = b""
+    explored: bool = False
     # The (map, elevation) the in-flight fetch is for (matches header echo).
     fetch_map: int = -1
     fetch_elevation: int = -1
+    fetch_explored: bool = False
     # Fetch bookkeeping (client-only).
     chunk_count: int = 0
     next_index: int = 0
@@ -125,6 +127,7 @@ class PlayerState:
     max_hp: int = 0
     surface: PlayerSurface = PlayerSurface.UNKNOWN
     location: str = ""
+    map_name: str = ""
     location_id: str = ""
     world_x: int = 0
     world_y: int = 0

@@ -8,7 +8,7 @@ is enabled only when `fallout.cfg` has both `[companion] bind` and
 environment variable) and uses it for the `auth` step of the handshake.
 
 T0 protocol changes verified:
-- `world.schemaVersion` is `7` (was `6`; bumped when localLocation.worldX/worldY were added).
+- `world.schemaVersion` is `9` (was `8`; bumped when player.localLocation.mapName was added).
 - `update` carries a `kind` field and a `payload` wrapper (no `entity`,
   no `data`).
 - `update.payload` is the *complete* per-kind object, not a field-level
@@ -132,8 +132,8 @@ def test_auth_then_hello(sock, password):
     msg = json.loads(line)
     assert_equal(msg.get("type"), "world", "type")
     assert_field(msg, "schemaVersion", "world")
-    # Current protocol version after the world-map image fetch was added.
-    assert_equal(msg.get("schemaVersion"), 7, "world.schemaVersion")
+    # Current protocol version after player.localLocation.mapName was added.
+    assert_equal(msg.get("schemaVersion"), 9, "world.schemaVersion")
     assert_field(msg, "game", "world")
     assert_field(msg, "playerAvailable", "world")
     assert_is_bool(msg["playerAvailable"], "world.playerAvailable")
@@ -195,7 +195,7 @@ def test_getSnapshot(sock, expected_seq):
         return
     if has_local:
         local = payload["player.localLocation"]
-        for k in ("tile", "elevation", "map", "location", "locationId", "worldX", "worldY"):
+        for k in ("tile", "elevation", "map", "location", "mapName", "locationId", "worldX", "worldY"):
             assert_field(local, k, f"snapshot.payload.player.localLocation.{k}")
         assert_is_int(local["tile"], "snapshot.payload.player.localLocation.tile")
         assert_is_int(local["elevation"], "snapshot.payload.player.localLocation.elevation")
@@ -203,6 +203,9 @@ def test_getSnapshot(sock, expected_seq):
         # `location` may be a string or null (when the engine has no name).
         if local["location"] is not None:
             assert_is_str(local["location"], "snapshot.payload.player.localLocation.location")
+        # `mapName` may be a string or null when the engine has no named map.
+        if local["mapName"] is not None:
+            assert_is_str(local["mapName"], "snapshot.payload.player.localLocation.mapName")
         assert_is_str(local["locationId"], "snapshot.payload.player.localLocation.locationId")
         # The overworld position is reported even on a local surface (TASK-013)
         # so the companion can show a world-map fix immediately.
@@ -262,7 +265,7 @@ def test_update_shape(sock, password):
             expected_fields = {"hp", "maxHp"}
         elif kind == "player.localLocation":
             expected_fields = {
-                "tile", "elevation", "map", "location", "locationId", "worldX", "worldY",
+                "tile", "elevation", "map", "location", "mapName", "locationId", "worldX", "worldY",
             }
         elif kind == "player.worldLocation":
             expected_fields = {"x", "y"}
@@ -410,12 +413,13 @@ def test_get_local_map(sock):
         return
 
     assert_equal(msg.get("type"), "localMapHeader", "type")
-    for k in ("map", "elevation", "width", "height", "paletteB64", "chunkCount", "chunkBytes"):
+    for k in ("map", "elevation", "width", "height", "explored", "paletteB64", "chunkCount", "chunkBytes"):
         assert_field(msg, k, "localMapHeader")
     assert_is_int(msg["map"], "localMapHeader.map")
     assert_is_int(msg["elevation"], "localMapHeader.elevation")
     assert_is_int(msg["width"], "localMapHeader.width")
     assert_is_int(msg["height"], "localMapHeader.height")
+    assert_is_bool(msg["explored"], "localMapHeader.explored")
     assert_equal(msg["width"], 200, "localMapHeader.width == 200")
     assert_equal(msg["height"], 200, "localMapHeader.height == 200")
     assert_is_int(msg["chunkCount"], "localMapHeader.chunkCount")
@@ -558,7 +562,7 @@ def test_server_still_listening(host, port, password):
             fail("server did not respond to a new auth + hello after the bad client")
         msg = json.loads(line)
         assert_equal(msg.get("type"), "world", "type after recovery")
-        assert_equal(msg.get("schemaVersion"), 7, "world.schemaVersion (recovery)")
+        assert_equal(msg.get("schemaVersion"), 9, "world.schemaVersion (recovery)")
 
 
 def main():

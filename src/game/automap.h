@@ -48,10 +48,14 @@ int ReadAMList(AutomapHeader** automapHeaderPtr);
 // row-major `width`*`height` (HEX_GRID_WIDTH x HEX_GRID_HEIGHT) buffer
 // with one byte per hex tile: 0 = empty, 1 = wall, 2 = scenery. The pixel
 // order matches the in-game Pip-Boy automap (`draw_top_down_map_pipboy`)
-// so orientation is consistent. Reads objects' already-set `OBJECT_SEEN`
-// flags and does NOT call `obj_process_seen()` (which would consume the
-// game's shared seen state). Uses its own buffers (does not touch the
-// in-game automap globals).
+// so orientation is consistent. A tile counts as seen if its object carries
+// `OBJECT_SEEN` **or** it is in the pending set reported by
+// `obj_seen_pending_tiles()` (the engine folds pending tiles into the flag
+// lazily, and never at all on maps it does not save -- random encounters).
+// The pending half is applied only when `elevation` is the dude's, and this
+// function still does NOT call `obj_process_seen()` (which would consume the
+// game's shared seen state) and writes no game state at all. Uses its own
+// buffers (does not touch the in-game automap globals).
 //
 // On success returns true, sets `*outPixels` to a freshly allocated buffer
 // the caller must release via `companionFreeLocalMapImage`, and sets
@@ -62,7 +66,8 @@ int ReadAMList(AutomapHeader** automapHeaderPtr);
 bool companionBuildLocalMapImage(int elevation,
     unsigned char** outPixels,
     int* outWidth,
-    int* outHeight);
+    int* outHeight,
+    bool* outExplored = nullptr);
 
 // Releases a buffer returned by `companionBuildLocalMapImage`. Safe with null.
 void companionFreeLocalMapImage(unsigned char* pixels);

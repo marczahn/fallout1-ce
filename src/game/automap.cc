@@ -1078,7 +1078,8 @@ int ReadAMList(AutomapHeader** automapHeaderPtr)
 bool companionBuildLocalMapImage(int elevation,
     unsigned char** outPixels,
     int* outWidth,
-    int* outHeight)
+    int* outHeight,
+    bool* outExplored)
 {
     if (outPixels == NULL || outWidth == NULL || outHeight == NULL) {
         return false;
@@ -1096,26 +1097,54 @@ bool companionBuildLocalMapImage(int elevation,
     unsigned char packed[11024];
     memset(packed, 0, sizeof(packed));
 
+    // The engine folds walked tiles into `OBJECT_SEEN` lazily -- only when the
+    // in-game automap opens, on `automap_pip_save`, or when a `.SAV` is written
+    // -- and never at all on maps it refuses to save, i.e. random encounters
+    // (`map_save_in_game`). Reading only the flag therefore reports such a map
+    // as completely unexplored. Read the pending half too, read-only, so the
+    // companion view does not depend on that schedule.
+    //
+    // Pending tiles carry no elevation, and `obj_process_seen()` attributes them
+    // to whatever floor the dude is on when it flushes, so a floor change can
+    // move them across floors of the same map. We reproduce that on purpose --
+    // the companion view should agree with the in-game automap -- and contribute
+    // nothing at all when a caller asks for an elevation the dude is not on.
+    char pending[OBJ_SEEN_BITMASK_SIZE];
+    bool applyPending = obj_dude != NULL && elevation == obj_dude->elevation;
+    if (applyPending) {
+        obj_seen_pending_tiles(pending);
+    }
+
+    bool explored = false;
     Object* object = obj_find_first_at(elevation);
     while (object != NULL) {
-        if (object->tile != -1 && (object->flags & OBJECT_SEEN) != 0) {
-            int contentType;
+        if (object->tile != -1) {
+            bool pendingSeen = applyPending
+                && object->tile >= 0
+                && object->tile < HEX_GRID_SIZE
+                && (pending[object->tile >> 3] & (1 << (object->tile & 7))) != 0;
 
-            int objectType = FID_TYPE(object->fid);
-            if (objectType == OBJ_TYPE_SCENERY && object->pid != PROTO_ID_0x2000158) {
-                contentType = 2;
-            } else if (objectType == OBJ_TYPE_WALL) {
-                contentType = 1;
-            } else {
-                contentType = 0;
-            }
+            bool seen = (object->flags & OBJECT_SEEN) != 0 || pendingSeen;
+            if (seen) {
+                explored = true;
+                int contentType;
 
-            if (contentType != 0) {
-                int v1 = 200 - object->tile % 200;
-                int v2 = v1 / 4 + 50 * (object->tile / 200);
-                int v3 = 2 * (3 - v1 % 4);
-                packed[v2] &= ~(0x03 << v3);
-                packed[v2] |= (contentType << v3);
+                int objectType = FID_TYPE(object->fid);
+                if (objectType == OBJ_TYPE_SCENERY && object->pid != PROTO_ID_0x2000158) {
+                    contentType = 2;
+                } else if (objectType == OBJ_TYPE_WALL) {
+                    contentType = 1;
+                } else {
+                    contentType = 0;
+                }
+
+                if (contentType != 0) {
+                    int v1 = 200 - object->tile % 200;
+                    int v2 = v1 / 4 + 50 * (object->tile / 200);
+                    int v3 = 2 * (3 - v1 % 4);
+                    packed[v2] &= ~(0x03 << v3);
+                    packed[v2] |= (contentType << v3);
+                }
             }
         }
         object = obj_find_next_at();
@@ -1140,6 +1169,9 @@ bool companionBuildLocalMapImage(int elevation,
     *outPixels = pixels;
     *outWidth = HEX_GRID_WIDTH;
     *outHeight = HEX_GRID_HEIGHT;
+    if (outExplored != nullptr) {
+        *outExplored = explored;
+    }
     return true;
 }
 

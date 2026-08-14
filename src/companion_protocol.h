@@ -38,9 +38,10 @@ struct CompanionCommandRequest {
     std::string_view name;
 };
 
-// `world` (handshake response). `schemaVersion` is `7` after adding the
-// additive `player.localLocation.worldX/worldY` fields (was `6` for the
-// local-map image fetch, `5` for the world-map image fetch).
+// `world` (handshake response). `schemaVersion` is `9` after adding the
+// additive `player.localLocation.mapName` field (was `8` for
+// `localMapHeader.explored`, `7` for `player.localLocation.worldX/worldY`,
+// `6` for the local-map image fetch, `5` for the world-map image fetch).
 std::string companionBuildWorld(bool playerAvailable);
 
 // `snapshot` (full state). `payload` is a kind->object map. Only kinds
@@ -123,13 +124,17 @@ std::string companionBuildMapError(const char* reason);
 // but carry the engine's automap wall/scenery classes (one byte per tile:
 // 0=empty, 1=wall, 2=scenery) for the *current* map+elevation, which both
 // the header and each chunk echo so the client can detect a mid-fetch
-// map/elevation change. `palette` is exactly 768 bytes (256 entries x RGB,
-// 8-bit; only indices 0/1/2 are meaningful). Each ends with "\n" and
-// returns "" only on a formatting failure.
+// map/elevation change. `localMapHeader` also carries `explored`, which is
+// true when the current local map has seen data even if the rendered image is
+// still all-zero because there are no drawable walls/scenery. `palette` is
+// exactly 768 bytes (256 entries x RGB, 8-bit; only indices 0/1/2 are
+// meaningful). Each ends with "\n" and returns "" only on a formatting
+// failure.
 std::string companionBuildLocalMapHeader(int map,
     int elevation,
     int width,
     int height,
+    bool explored,
     const unsigned char* palette,
     size_t chunkBytes);
 

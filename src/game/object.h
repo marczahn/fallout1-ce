@@ -9,6 +9,10 @@
 
 namespace fallout {
 
+// Size of the seen-tile bitmask: one bit per hex tile (HEX_GRID_SIZE = 40000),
+// plus the engine's spare trailing byte.
+#define OBJ_SEEN_BITMASK_SIZE (5001)
+
 typedef struct ObjectWithFlags {
     int flags;
     Object* object;
@@ -86,6 +90,14 @@ int obj_create_intersect_list(int x, int y, int elevation, int objectType, Objec
 void obj_delete_intersect_list(ObjectWithFlags** a1);
 void obj_set_seen(int tile);
 void obj_process_seen();
+
+// Read-only view of the seen state that `obj_process_seen()` has not folded into
+// `OBJECT_SEEN` yet: fills `out` (OBJ_SEEN_BITMASK_SIZE bytes, one bit per hex
+// tile, same encoding as `obj_set_seen`) with the expanded set of tiles the dude
+// has revealed. Does not clear `obj_seen` and does not write object flags.
+// Elevation-agnostic: the caller must only apply it to `obj_dude->elevation`,
+// matching what `obj_process_seen()` does at flush time.
+void obj_seen_pending_tiles(char* out);
 char* object_name(Object* obj);
 char* object_description(Object* obj);
 void obj_preload_art_cache(int flags);

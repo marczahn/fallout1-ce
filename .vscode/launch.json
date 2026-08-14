@@ -2,24 +2,56 @@
     "version": "0.2.0",
     "configurations": [
       {
-        "name": "Debug fallout-ce (install folder)",
+        // Debugs the freshly built binary directly. The engine only needs the
+        // game folder as its cwd (data files, fallout.cfg, debug.log), so there
+        // is no need to debug the copy deployed by `make build_and_copy` -- that
+        // copy is not updated by the build task and silently goes stale.
+        "name": "Debug fallout-ce (build output, game folder cwd)",
         "type": "cppdbg",
         "request": "launch",
-        "program": "/home/marczahn/Downloads/fallout_folder/fallout-ce",
+        "program": "${workspaceFolder}/build/fallout-ce",
         "args": [],
         "cwd": "/home/marczahn/Downloads/fallout_folder",
         "MIMode": "gdb",
         "stopAtEntry": false,
-        "externalConsole": false,
+        // MUST stay true. With the integrated console, MIEngine runs gdb from a
+        // helper script inside a VS Code terminal and hands the inferior that
+        // pty; the child cannot make it its controlling terminal ("GDB: Failed
+        // to set controlling terminal: Operation not permitted") and the session
+        // then stalls with the game stopped at its very first ptrace stop --
+        // debugger "running", no window, no output.
+        "externalConsole": true,
         "preLaunchTask": "build fallout-ce",
         "environment": [
-          { "name": "DEBUGACTIVE", "value": "log" }
+          // Honored via companionEnableDebugLog() -> debug_register_env();
+          // writes <cwd>/debug.log, truncated on every run.
+          { "name": "DEBUGACTIVE", "value": "log" },
+          // SDL needs these to open a window. VS Code does not always pass the
+          // session environment through to the debuggee; without them the engine
+          // exits with code 1 and prints nothing at all.
+          { "name": "DISPLAY", "value": ":0" },
+          { "name": "WAYLAND_DISPLAY", "value": "wayland-0" },
+          { "name": "XDG_RUNTIME_DIR", "value": "/run/user/1000" },
+          { "name": "XDG_SESSION_TYPE", "value": "wayland" }
         ],
         "setupCommands": [
           {
+            // Ubuntu ships DEBUGINFOD_URLS=https://debuginfod.ubuntu.com via
+            // /etc/profile.d/debuginfod.sh. When that host is slow or down, gdb
+            // blocks on the fetch while the inferior sits stopped at exec: the
+            // session looks "running" but the game never appears. Also disabled
+            // globally in ~/.gdbinit.
+            "description": "Never block on debuginfod",
+            "text": "set debuginfod enabled off",
+            "ignoreFailures": true
+          },
+          {
+            // MIEngine cds gdb to the program's own directory, so pin the game
+            // folder explicitly -- the engine resolves master.dat, critter.dat,
+            // fallout.cfg and debug.log relative to cwd.
             "description": "Set inferior cwd",
             "text": "-environment-cd /home/marczahn/Downloads/fallout_folder",
-            "ignoreFailures": false
+            "ignoreFailures": true
           },
           {
             "description": "Enable pretty-printing",

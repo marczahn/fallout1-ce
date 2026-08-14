@@ -606,6 +606,7 @@ class NetworkClient:
         lm.chunk_count = 0
         lm.next_index = 0
         lm.accumulator = bytearray()
+        lm.fetch_explored = False
         lm.retries = 0
         lm.last_request_at = time.monotonic()
         self._queue_line({"type": "getLocalMap"})
@@ -635,6 +636,7 @@ class NetworkClient:
         height = int(msg.get("height", 0))
         chunk_count = int(msg.get("chunkCount", 0))
         chunk_bytes = int(msg.get("chunkBytes", 0))
+        explored = msg.get("explored", False)
 
         try:
             palette = base64.b64decode(msg.get("paletteB64", ""), validate=True)
@@ -656,6 +658,7 @@ class NetworkClient:
         lm.palette = palette
         lm.chunk_count = chunk_count
         lm.chunk_bytes = chunk_bytes
+        lm.fetch_explored = bool(explored) if isinstance(explored, bool) else False
         lm.accumulator = bytearray()
         lm.next_index = 0
         lm.retries = 0
@@ -712,6 +715,7 @@ class NetworkClient:
         lm.accumulator = bytearray()
         lm.map_index = lm.fetch_map
         lm.elevation = lm.fetch_elevation
+        lm.explored = lm.fetch_explored
         lm.status = WorldMapStatus.READY
         lm.last_ready_at = time.monotonic()
         lm.image_tile = self._state.player.tile
@@ -877,11 +881,16 @@ class NetworkClient:
         self._state.player.inventory = items
 
     def _apply_local_location(self, payload: dict[str, Any]) -> None:
+        def opt_str(key: str, current: str) -> str:
+            if key not in payload:
+                return current
+            value = payload[key]
+            return "" if value is None else str(value)
+
         self._state.player.surface = PlayerSurface.LOCAL
-        self._state.player.location = str(payload.get("location", self._state.player.location))
-        self._state.player.location_id = str(
-            payload.get("locationId", self._state.player.location_id)
-        )
+        self._state.player.location = opt_str("location", self._state.player.location)
+        self._state.player.map_name = opt_str("mapName", self._state.player.map_name)
+        self._state.player.location_id = opt_str("locationId", self._state.player.location_id)
         self._state.player.world_x = 0
         self._state.player.world_y = 0
         # Local-map position (drives the LOCAL map render + its fetch driver).
@@ -906,6 +915,7 @@ class NetworkClient:
     def _apply_world_location(self, payload: dict[str, Any]) -> None:
         self._state.player.surface = PlayerSurface.WORLD
         self._state.player.location = ""
+        self._state.player.map_name = ""
         self._state.player.location_id = ""
         self._state.player.world_x = int(payload.get("x", self._state.player.world_x))
         self._state.player.world_y = int(payload.get("y", self._state.player.world_y))

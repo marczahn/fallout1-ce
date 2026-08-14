@@ -26,12 +26,14 @@ from companion_app.state import (
 from companion_app.ui.pages.map import (
     LOCAL_VIEW_LOADING,
     LOCAL_VIEW_MAP,
+    LOCAL_VIEW_NO_DATA,
     LOCAL_VIEW_NOT_EXPLORED,
     LOCAL_VIEW_UNAVAILABLE,
     LOCAL_VIEW_WORLD,
     MARKER_LAST_KNOWN,
     MARKER_NONE,
     local_marker_pixel,
+    local_label_lines,
     select_local_view,
     select_marker_mode,
 )
@@ -94,7 +96,7 @@ class LocalViewSelectionTests(unittest.TestCase):
         for status in WorldMapStatus:
             for has_img in (True, False):
                 self.assertEqual(
-                    select_local_view(PlayerSurface.WORLD, status, has_img, False),
+                    select_local_view(PlayerSurface.WORLD, status, has_img, False, False),
                     LOCAL_VIEW_WORLD,
                 )
 
@@ -102,7 +104,7 @@ class LocalViewSelectionTests(unittest.TestCase):
         self.assertEqual(
             select_local_view(
                 PlayerSurface.LOCAL, WorldMapStatus.UNAVAILABLE,
-                has_current_image=False, is_empty=False,
+                has_current_image=False, is_empty=False, explored=False,
             ),
             LOCAL_VIEW_UNAVAILABLE,
         )
@@ -112,7 +114,7 @@ class LocalViewSelectionTests(unittest.TestCase):
             self.assertEqual(
                 select_local_view(
                     PlayerSurface.LOCAL, status,
-                    has_current_image=False, is_empty=False,
+                    has_current_image=False, is_empty=False, explored=False,
                 ),
                 LOCAL_VIEW_LOADING,
             )
@@ -121,16 +123,25 @@ class LocalViewSelectionTests(unittest.TestCase):
         self.assertEqual(
             select_local_view(
                 PlayerSurface.LOCAL, WorldMapStatus.READY,
-                has_current_image=True, is_empty=True,
+                has_current_image=True, is_empty=True, explored=False,
             ),
             LOCAL_VIEW_NOT_EXPLORED,
+        )
+
+    def test_image_empty_but_explored_is_no_data(self) -> None:
+        self.assertEqual(
+            select_local_view(
+                PlayerSurface.LOCAL, WorldMapStatus.READY,
+                has_current_image=True, is_empty=True, explored=True,
+            ),
+            LOCAL_VIEW_NO_DATA,
         )
 
     def test_image_with_content_is_map(self) -> None:
         self.assertEqual(
             select_local_view(
                 PlayerSurface.LOCAL, WorldMapStatus.READY,
-                has_current_image=True, is_empty=False,
+                has_current_image=True, is_empty=False, explored=True,
             ),
             LOCAL_VIEW_MAP,
         )
@@ -141,7 +152,7 @@ class LocalViewSelectionTests(unittest.TestCase):
         self.assertEqual(
             select_local_view(
                 PlayerSurface.LOCAL, WorldMapStatus.FETCHING,
-                has_current_image=True, is_empty=False,
+                has_current_image=True, is_empty=False, explored=False,
             ),
             LOCAL_VIEW_MAP,
         )
@@ -151,7 +162,7 @@ class LocalViewSelectionTests(unittest.TestCase):
         self.assertEqual(
             select_local_view(
                 PlayerSurface.LOCAL, WorldMapStatus.UNAVAILABLE,
-                has_current_image=True, is_empty=False,
+                has_current_image=True, is_empty=False, explored=False,
             ),
             LOCAL_VIEW_MAP,
         )
@@ -176,7 +187,72 @@ class LocalLocationApplyTests(unittest.TestCase):
         self.assertEqual(player.elevation, 2)
         self.assertEqual(player.local_map_index, 7)
         self.assertEqual(player.location, "Vault 13")
+        self.assertEqual(player.map_name, "")
         self.assertEqual(player.location_id, "VAULT13")
+
+    def test_apply_local_location_stores_optional_map_name(self) -> None:
+        client, state = _make_client(on_local=False)
+        client._dispatch({
+            "type": "update", "kind": "player.localLocation", "playerAvailable": True,
+            "payload": {
+                "tile": 12345, "elevation": 2, "map": 7,
+                "location": "Vault 13", "mapName": "Level 1", "locationId": "VAULT13",
+            },
+        })
+        player = state.player
+        self.assertEqual(player.location, "Vault 13")
+        self.assertEqual(player.map_name, "Level 1")
+        self.assertEqual(player.location_id, "VAULT13")
+
+    def test_apply_local_location_null_strings_clear_instead_of_none(self) -> None:
+        client, state = _make_client(on_local=False)
+        state.player.location = "Old"
+        state.player.map_name = "Old Map"
+        state.player.location_id = "OLD"
+        client._dispatch({
+            "type": "update", "kind": "player.localLocation", "playerAvailable": True,
+            "payload": {
+                "tile": 12345, "elevation": 2, "map": 7,
+                "location": None, "mapName": None, "locationId": None,
+            },
+        })
+        player = state.player
+        self.assertEqual(player.location, "")
+        self.assertEqual(player.map_name, "")
+        self.assertEqual(player.location_id, "")
+
+    def test_apply_local_location_without_map_name_keeps_older_server_behavior(self) -> None:
+        client, state = _make_client(on_local=False)
+        client._dispatch({
+            "type": "update", "kind": "player.localLocation", "playerAvailable": True,
+            "payload": {
+                "tile": 12345, "elevation": 2, "map": 7,
+                "location": "Vault 13", "locationId": "VAULT13",
+            },
+        })
+        self.assertEqual(state.player.map_name, "")
+
+
+class LocalLabelLineTests(unittest.TestCase):
+    def test_returns_both_lines_in_engine_order(self) -> None:
+        state = AppState()
+        state.player.location = "Vault 13"
+        state.player.map_name = "Level 1"
+        self.assertEqual(local_label_lines(state.player), ("Vault 13", "Level 1"))
+
+    def test_returns_single_location_line(self) -> None:
+        state = AppState()
+        state.player.location = "Vault 13"
+        self.assertEqual(local_label_lines(state.player), ("Vault 13",))
+
+    def test_returns_single_map_name_line(self) -> None:
+        state = AppState()
+        state.player.map_name = "Level 1"
+        self.assertEqual(local_label_lines(state.player), ("Level 1",))
+
+    def test_returns_empty_tuple_when_neither_line_exists(self) -> None:
+        state = AppState()
+        self.assertEqual(local_label_lines(state.player), ())
 
     def test_local_location_world_fields_set_world_fix(self) -> None:
         # TASK-013: worldX/worldY on localLocation give a world fix on a local
@@ -248,7 +324,7 @@ class LocalMapFetchTests(unittest.TestCase):
         palette = bytes(768)
         client._dispatch({
             "type": "localMapHeader", "map": 5, "elevation": 0,
-            "width": 2, "height": 2, "paletteB64": _b64(palette),
+            "width": 2, "height": 2, "explored": True, "paletteB64": _b64(palette),
             "chunkCount": 1, "chunkBytes": 4,
         })
         self.assertEqual(state.local_map.status, WorldMapStatus.FETCHING)
@@ -262,7 +338,18 @@ class LocalMapFetchTests(unittest.TestCase):
         self.assertEqual(lm.pixels, pixels)
         self.assertEqual(lm.map_index, 5)
         self.assertEqual(lm.elevation, 0)
+        self.assertTrue(lm.explored)
         self.assertEqual(lm.image_tile, state.player.tile)
+
+    def test_header_without_explored_preserves_older_server_behavior(self) -> None:
+        client, state = _make_client(map_index=5, elevation=0)
+        client._tick_local_map_fetch()
+        client._dispatch({
+            "type": "localMapHeader", "map": 5, "elevation": 0,
+            "width": 2, "height": 2, "paletteB64": _b64(bytes(768)),
+            "chunkCount": 1, "chunkBytes": 4,
+        })
+        self.assertFalse(state.local_map.fetch_explored)
 
     def test_header_for_stale_target_is_ignored(self) -> None:
         client, state = _make_client(map_index=5, elevation=0)
@@ -271,7 +358,7 @@ class LocalMapFetchTests(unittest.TestCase):
         # Header echoes a different map than the in-flight fetch target.
         client._dispatch({
             "type": "localMapHeader", "map": 9, "elevation": 0,
-            "width": 2, "height": 2, "paletteB64": _b64(bytes(768)),
+            "width": 2, "height": 2, "explored": False, "paletteB64": _b64(bytes(768)),
             "chunkCount": 1, "chunkBytes": 4,
         })
         self.assertEqual(state.local_map.status, WorldMapStatus.FETCHING)
@@ -283,7 +370,7 @@ class LocalMapFetchTests(unittest.TestCase):
         client._tick_local_map_fetch()
         client._dispatch({
             "type": "localMapHeader", "map": 5, "elevation": 0,
-            "width": 4, "height": 1, "paletteB64": _b64(bytes(768)),
+            "width": 4, "height": 1, "explored": False, "paletteB64": _b64(bytes(768)),
             "chunkCount": 2, "chunkBytes": 2,
         })
         client._write_buf.clear()
@@ -340,7 +427,7 @@ class LocalMapFetchTests(unittest.TestCase):
         lm = state.local_map
         client._dispatch({
             "type": "localMapHeader", "map": lm.fetch_map, "elevation": lm.fetch_elevation,
-            "width": 2, "height": 1, "paletteB64": _b64(bytes(768)),
+            "width": 2, "height": 1, "explored": True, "paletteB64": _b64(bytes(768)),
             "chunkCount": 1, "chunkBytes": 2,
         })
         client._dispatch({
