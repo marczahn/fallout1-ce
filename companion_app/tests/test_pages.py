@@ -1,10 +1,12 @@
-"""Smoke tests for DATA / INVENTORY / MAP page rendering."""
+"""Smoke tests for section rendering (STATUS / AUTOMAPS / ARCHIVES)."""
 from __future__ import annotations
 
 import unittest
 
 import pygame
 
+from companion_app.app import _body_text, _render_section
+from companion_app.render import palette
 from companion_app.state import (
     AppState,
     ConnectionState,
@@ -13,16 +15,16 @@ from companion_app.state import (
     WorldMapState,
     WorldMapStatus,
 )
+from companion_app.ui import sections, shell
 from companion_app.ui.layout import Layout
+from companion_app.ui.pages import Page
+from companion_app.ui.pages.archives import ArchivesSection
+from companion_app.ui.pages.automaps import AutomapsSection
 from companion_app.ui.pages.boot import BootPage, SplashPage
-from companion_app.ui.pages.data import DataPage, DataPageUiState, DataTab
-from companion_app.ui.pages.inventory import InventoryPage
-from companion_app.ui.pages.map import MapPage, default_map_ui
-from companion_app.ui.pages.status import StatusPage
-from companion_app.ui.segmented_header import cycle_next
+from companion_app.ui.pages.status import StatusSection
 
 
-class PlaceholderPageTests(unittest.TestCase):
+class SectionRenderTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         pygame.init()
@@ -40,65 +42,44 @@ class PlaceholderPageTests(unittest.TestCase):
             player=PlayerState(available=True, hp=50, max_hp=100),
         )
 
-    def test_data_page_renders_root_view(self) -> None:
-        DataPage().render(
-            self.surface,
-            self.layout.content_rect,
-            self.state,
-            DataPageUiState(),
+    # ── every section x sub-section renders ────────────────────────
+
+    def test_status_renders_character_subsection(self) -> None:
+        StatusSection().render(
+            self.surface, self.layout.content_rect, self.state, "CHARACTER"
         )
 
-    def test_data_page_renders_quests_placeholder_body(self) -> None:
-        DataPage().render(
-            self.surface,
-            self.layout.content_rect,
-            self.state,
-            DataPageUiState(selected_tab=DataTab.QUESTS, active_tab=DataTab.QUESTS),
+    def test_status_renders_inventory_subsection(self) -> None:
+        StatusSection().render(
+            self.surface, self.layout.content_rect, self.state, "INVENTORY"
         )
 
-    def test_data_page_renders_holodisks_placeholder_body(self) -> None:
-        DataPage().render(
-            self.surface,
-            self.layout.content_rect,
-            self.state,
-            DataPageUiState(
-                selected_tab=DataTab.HOLODISKS,
-                active_tab=DataTab.HOLODISKS,
-            ),
+    def test_archives_renders_quests_subsection(self) -> None:
+        ArchivesSection().render(
+            self.surface, self.layout.content_rect, self.state, "QUESTS"
         )
 
-    def test_inventory_page_renders_placeholder(self) -> None:
-        InventoryPage().render(self.surface, self.layout.content_rect, self.state)
-
-    def test_map_page_renders_local_segment(self) -> None:
-        local_ui = default_map_ui()
-        self.assertEqual(local_ui.selected_key, "LOCAL")
-        MapPage().render(
-            self.surface,
-            self.layout.content_rect,
-            self.state,
-            local_ui,
+    def test_archives_renders_holodisks_subsection(self) -> None:
+        ArchivesSection().render(
+            self.surface, self.layout.content_rect, self.state, "HOLODISKS"
         )
 
-    def test_map_page_renders_atlas_segment(self) -> None:
-        atlas_ui = cycle_next(default_map_ui())
-        self.assertEqual(atlas_ui.selected_key, "ATLAS")
-        MapPage().render(
-            self.surface,
-            self.layout.content_rect,
-            self.state,
-            atlas_ui,
+    def test_automaps_renders_local_subsection(self) -> None:
+        AutomapsSection().render(
+            self.surface, self.layout.content_rect, self.state, "LOCAL"
         )
 
-    def test_map_page_renders_world_segment(self) -> None:
-        world_ui = cycle_next(cycle_next(default_map_ui()))
-        self.assertEqual(world_ui.selected_key, "WORLD")
-        MapPage().render(
-            self.surface,
-            self.layout.content_rect,
-            self.state,
-            world_ui,
+    def test_automaps_renders_world_subsection(self) -> None:
+        AutomapsSection().render(
+            self.surface, self.layout.content_rect, self.state, "WORLD"
         )
+
+    def test_automaps_renders_atlas_subsection(self) -> None:
+        AutomapsSection().render(
+            self.surface, self.layout.content_rect, self.state, "ATLAS"
+        )
+
+    # ── map states (unchanged behavior, new call shape) ────────────
 
     def _ready_world_map(self, w: int = 16, h: int = 16) -> WorldMapState:
         return WorldMapState(
@@ -109,25 +90,24 @@ class PlaceholderPageTests(unittest.TestCase):
             pixels=bytes((i * 7) % 256 for i in range(w * h)),
         )
 
-    def _atlas_ui(self):
-        return cycle_next(default_map_ui())
-
-    def _world_ui(self):
-        return cycle_next(cycle_next(default_map_ui()))
+    def _render_automaps(self, key: str) -> None:
+        AutomapsSection().render(
+            self.surface, self.layout.content_rect, self.state, key
+        )
 
     def test_map_atlas_renders_ready_map_with_live_marker(self) -> None:
         self.state.world_map = self._ready_world_map()
         self.state.player.surface = PlayerSurface.WORLD
         self.state.player.world_x = 8
         self.state.player.world_y = 8
-        MapPage().render(self.surface, self.layout.content_rect, self.state, self._atlas_ui())
+        self._render_automaps("ATLAS")
 
     def test_map_world_renders_ready_map_with_live_marker(self) -> None:
         self.state.world_map = self._ready_world_map()
         self.state.player.surface = PlayerSurface.WORLD
         self.state.player.world_x = 2
         self.state.player.world_y = 14
-        MapPage().render(self.surface, self.layout.content_rect, self.state, self._world_ui())
+        self._render_automaps("WORLD")
 
     def test_map_atlas_local_fallback_last_known(self) -> None:
         self.state.world_map = self._ready_world_map()
@@ -135,29 +115,123 @@ class PlaceholderPageTests(unittest.TestCase):
         self.state.has_world_fix = True
         self.state.last_known_world_x = 4
         self.state.last_known_world_y = 4
-        MapPage().render(self.surface, self.layout.content_rect, self.state, self._atlas_ui())
+        self._render_automaps("ATLAS")
 
     def test_map_world_local_fallback_no_fix(self) -> None:
         self.state.world_map = self._ready_world_map()
         self.state.player.surface = PlayerSurface.LOCAL
         self.state.has_world_fix = False
-        MapPage().render(self.surface, self.layout.content_rect, self.state, self._world_ui())
+        self._render_automaps("WORLD")
 
     def test_map_atlas_unavailable_message(self) -> None:
         self.state.world_map = WorldMapState(status=WorldMapStatus.UNAVAILABLE)
-        MapPage().render(self.surface, self.layout.content_rect, self.state, self._atlas_ui())
+        self._render_automaps("ATLAS")
 
     def test_map_world_loading_message(self) -> None:
         self.state.world_map = WorldMapState(status=WorldMapStatus.FETCHING)
-        MapPage().render(self.surface, self.layout.content_rect, self.state, self._world_ui())
+        self._render_automaps("WORLD")
 
-    def test_pages_expose_titles_locally(self) -> None:
-        self.assertEqual(StatusPage().title, "STATUS")
-        self.assertEqual(DataPage().title, "DATA")
-        self.assertEqual(InventoryPage().title, "INVENTORY")
-        self.assertEqual(MapPage().title, "MAP")
+    def test_sections_expose_titles_locally(self) -> None:
+        self.assertEqual(StatusSection().title, "STATUS")
+        self.assertEqual(AutomapsSection().title, "AUTOMAPS")
+        self.assertEqual(ArchivesSection().title, "ARCHIVES")
         self.assertIsNone(SplashPage().title)
         self.assertIsNone(BootPage((480, 800)).title)
+
+
+class DisconnectedRenderTests(unittest.TestCase):
+    """The sub-header must not appear on the CONNECTING… / NO SIGNAL screen.
+
+    Before TASK-017 the sub-header was drawn by the page renderer, which
+    the frame loop skips while ``_body_text`` is non-empty, so it never
+    showed there. Hoisting it into the frame loop could have changed that
+    silently; this pins the behavior.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        pygame.init()
+        pygame.font.init()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        pygame.quit()
+
+    def setUp(self) -> None:
+        self.surface = pygame.Surface((480, 800))
+        self.layout = Layout((480, 800))
+        self.renderers = {
+            Page.STATUS: StatusSection(),
+            Page.AUTOMAPS: AutomapsSection(),
+            Page.ARCHIVES: ArchivesSection(),
+        }
+        self.ui = sections.default_sections_ui()
+
+    def _subheader_has_ink(self) -> bool:
+        """Any foreground pixel inside the sub-header band."""
+        content_rect = self.layout.content_rect
+        band_top = content_rect.top
+        band_bottom = content_rect.top + shell.SUBHEADER_BAND_HEIGHT
+        for y in range(band_top, band_bottom):
+            for x in range(content_rect.left, content_rect.right):
+                if tuple(self.surface.get_at((x, y)))[:3] == palette.FOREGROUND:
+                    return True
+        return False
+
+    def test_disconnected_draws_no_subheader_on_any_section(self) -> None:
+        state = AppState()
+        self.assertEqual(_body_text(state), "CONNECTING…")
+        for page in (Page.STATUS, Page.AUTOMAPS, Page.ARCHIVES):
+            with self.subTest(page=page):
+                self.surface.fill(palette.BACKGROUND)
+                _render_section(
+                    self.surface,
+                    self.layout,
+                    page,
+                    self.ui,
+                    state,
+                    _body_text(state),
+                    self.renderers,
+                )
+                self.assertFalse(self._subheader_has_ink())
+
+    def test_player_unavailable_draws_no_subheader(self) -> None:
+        state = AppState(
+            connection=ConnectionState.READY,
+            player=PlayerState(available=False),
+        )
+        self.assertEqual(_body_text(state), "NO SIGNAL")
+        self.surface.fill(palette.BACKGROUND)
+        _render_section(
+            self.surface,
+            self.layout,
+            Page.AUTOMAPS,
+            self.ui,
+            state,
+            _body_text(state),
+            self.renderers,
+        )
+        self.assertFalse(self._subheader_has_ink())
+
+    def test_connected_does_draw_the_subheader(self) -> None:
+        """Sanity check: the band-scan can actually see the sub-header."""
+        state = AppState(
+            connection=ConnectionState.READY,
+            player=PlayerState(available=True),
+        )
+        for page in (Page.STATUS, Page.AUTOMAPS, Page.ARCHIVES):
+            with self.subTest(page=page):
+                self.surface.fill(palette.BACKGROUND)
+                _render_section(
+                    self.surface,
+                    self.layout,
+                    page,
+                    self.ui,
+                    state,
+                    _body_text(state),
+                    self.renderers,
+                )
+                self.assertTrue(self._subheader_has_ink())
 
 
 if __name__ == "__main__":

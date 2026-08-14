@@ -15,6 +15,12 @@ SEPARATOR_Y: int = HEADER_HEIGHT - 1
 # stay aligned.
 PAGE_MARGIN_X: int = 28
 
+# Vertical band reserved at the top of every section's content rect for the
+# segmented sub-header; sections lay their own content out below it. Single
+# definition on purpose — two copies would drift, and TASK-017 exists to make
+# all three sections share one geometry.
+SUBHEADER_BAND_HEIGHT: int = 56
+
 HEADER_SIZE: int = 16
 BODY_SIZE: int = 24
 STATUS_SIZE: int = 14

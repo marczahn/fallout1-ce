@@ -1,4 +1,4 @@
-"""Unit and smoke tests for the STATUS page."""
+"""Unit and smoke tests for the STATUS section."""
 from __future__ import annotations
 
 import unittest
@@ -12,17 +12,19 @@ from companion_app.state import (
     InventoryItem,
     PlayerState,
 )
+from companion_app.ui import shell
 from companion_app.ui.layout import Layout
 from companion_app.ui.pages import status as status_page_module
 from companion_app.ui.pages.status import (
-    StatusPage,
+    StatusSection,
+    character_content_bottom,
     synthesize_state_label,
     synthesize_status_fx_label,
     synthesize_stim_counts,
 )
 
 
-class StatusPageTests(unittest.TestCase):
+class StatusSectionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         pygame.init()
@@ -35,7 +37,7 @@ class StatusPageTests(unittest.TestCase):
     def setUp(self) -> None:
         self.surface = pygame.Surface((480, 800))
         self.layout = Layout((480, 800))
-        self.page = StatusPage()
+        self.page = StatusSection()
 
     def _make_state(self, **player_overrides: object) -> AppState:
         player = PlayerState(
@@ -100,19 +102,21 @@ class StatusPageTests(unittest.TestCase):
         self.assertEqual(synthesize_status_fx_label(PlayerState()), "NONE")
 
     def test_render_draws_full_draft_layout(self) -> None:
-        # The STATUS page owns the full screen, so it is rendered into the
-        # whole surface rect rather than the shared header-offset content rect.
+        # Since TASK-017 the section renders into the shared content rect,
+        # beneath the segmented sub-header — not the full screen.
         self.page.render(
             self.surface,
-            self.surface.get_rect(),
+            self.layout.content_rect,
             self._make_state(radiation=4, poison=2),
+            "CHARACTER",
         )
 
     def test_render_handles_empty_inventory(self) -> None:
         self.page.render(
             self.surface,
-            self.surface.get_rect(),
+            self.layout.content_rect,
             self._make_state(inventory=[]),
+            "CHARACTER",
         )
 
     def test_render_handles_irradiated_state_without_column_overlap(self) -> None:
@@ -120,18 +124,41 @@ class StatusPageTests(unittest.TestCase):
         # off-surface alongside the right column.
         self.page.render(
             self.surface,
-            self.surface.get_rect(),
+            self.layout.content_rect,
             self._make_state(hp=43, max_hp=43, radiation=12),
+            "CHARACTER",
+        )
+
+    def test_character_content_fits_inside_the_content_rect(self) -> None:
+        """Guard the TASK-017 vertical budget.
+
+        pygame clips at the surface edge without error, so an overflowing
+        block simply disappears — there is nothing in the rendered output
+        to scan for. The bound has to be checked arithmetically.
+        """
+        content_rect = self.layout.content_rect
+        self.assertLessEqual(
+            character_content_bottom(content_rect),
+            content_rect.bottom - 20,
+        )
+
+    def test_character_content_clears_the_subheader_band(self) -> None:
+        self.assertGreaterEqual(
+            status_page_module._BOX_TOP,
+            shell.SUBHEADER_BAND_HEIGHT,
         )
 
     def test_special_header_rule_uses_same_phosphor_color_as_text(self) -> None:
+        content_rect = self.layout.content_rect
         self.page.render(
             self.surface,
-            self.surface.get_rect(),
+            content_rect,
             self._make_state(),
+            "CHARACTER",
         )
         rule_y = (
-            status_page_module._SPECIAL_TITLE_Y
+            content_rect.top
+            + status_page_module._SPECIAL_TITLE_Y
             + status_page_module._SECTION_RULE_Y_OFFSET
         )
         # x is past the section title text, within the trailing rule span.

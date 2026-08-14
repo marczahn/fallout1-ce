@@ -1,16 +1,16 @@
-"""MAP page — LOCAL / ATLAS / WORLD world-map view.
+"""AUTOMAPS section — LOCAL / WORLD / ATLAS map views.
 
-Three sub-header segments:
+Three sub-sections:
 
-* ``LOCAL``  -- the in-town/local map (still a placeholder).
-* ``ATLAS``  -- the whole Fallout world map fit to the screen, letterboxed.
+* ``LOCAL``  -- the current town/dungeon automap.
 * ``WORLD``  -- the world map zoomed in and scrolled to follow the player,
   clamped at the map borders.
+* ``ATLAS``  -- the whole Fallout world map fit to the screen, letterboxed.
 
 The green-reduced ``pygame.Surface`` is built once (lazily) and cached on
-the ``MapPage`` instance, keyed to the underlying pixel buffer. All the
-fit / viewport / marker geometry lives in pure module-level helpers so it
-is unit-testable without a display.
+the ``AutomapsSection`` instance, keyed to the underlying pixel buffer. All
+the fit / viewport / marker geometry lives in pure module-level helpers so
+it is unit-testable without a display.
 """
 from __future__ import annotations
 
@@ -20,16 +20,13 @@ from typing import TYPE_CHECKING
 from companion_app.render import font, palette
 from companion_app.render import worldmap_image
 from companion_app.state import AppState, PlayerSurface, WorldMapStatus
-from companion_app.ui import segmented_header
-from companion_app.ui.segmented_header import Segment, SegmentedHeaderState
-from companion_app.ui.shell import PAGE_MARGIN_X
+from companion_app.ui.shell import PAGE_MARGIN_X, SUBHEADER_BAND_HEIGHT
 from companion_app.config import DEFAULT_MAP_GREEN_LEVELS, DEFAULT_MAP_PIXEL_BLOCKS
 
 if TYPE_CHECKING:
     import pygame
     from companion_app.state import PlayerState
 
-_MAP_BODY_TOP: int = 56
 # Keep the map inset from the screen border like the other pages: the same
 # horizontal page margin on the left/right, and a matching bottom margin.
 _MAP_MARGIN_BOTTOM: int = PAGE_MARGIN_X
@@ -55,17 +52,6 @@ _MARKER_BACKING_W: int = 3
 MARKER_LIVE: str = "live"
 MARKER_LAST_KNOWN: str = "last-known"
 MARKER_NONE: str = "no-fix"
-
-
-def default_map_ui() -> SegmentedHeaderState:
-    """Initial MAP control state: LOCAL, ATLAS, WORLD; LOCAL selected."""
-    return segmented_header.create(
-        (
-            Segment("LOCAL", "LOCAL"),
-            Segment("ATLAS", "ATLAS"),
-            Segment("WORLD", "WORLD"),
-        )
-    )
 
 
 # ── pure geometry helpers (unit-testable, no pygame) ───────────────────
@@ -248,10 +234,10 @@ def local_label_lines(player: "PlayerState") -> tuple[str, ...]:
 # ── page ────────────────────────────────────────────────────────────
 
 
-class MapPage:
-    """MAP page with a LOCAL / ATLAS / WORLD sub-header segmented control."""
+class AutomapsSection:
+    """AUTOMAPS section with LOCAL / WORLD / ATLAS sub-sections."""
 
-    title = "MAP"
+    title = "AUTOMAPS"
 
     def __init__(
         self,
@@ -278,19 +264,19 @@ class MapPage:
         surface: pygame.Surface,
         content_rect: pygame.Rect,
         state: AppState,
-        ui_state: SegmentedHeaderState,
+        selected_key: str,
     ) -> None:
-        segmented_header.render(surface, content_rect, ui_state)
-
-        # Inset the map body from the screen border to match the other pages:
-        # PAGE_MARGIN_X on the left/right and a matching bottom margin.
+        # The sub-header itself is drawn once by the frame loop for every
+        # section (TASK-017); this section only lays out its body below it.
         body_rect = content_rect.copy()
-        body_rect.top += _MAP_BODY_TOP
+        body_rect.top += SUBHEADER_BAND_HEIGHT
         body_rect.left += PAGE_MARGIN_X
         body_rect.width = content_rect.width - 2 * PAGE_MARGIN_X
-        body_rect.height = content_rect.height - _MAP_BODY_TOP - _MAP_MARGIN_BOTTOM
+        body_rect.height = (
+            content_rect.height - SUBHEADER_BAND_HEIGHT - _MAP_MARGIN_BOTTOM
+        )
 
-        key = ui_state.selected_key
+        key = selected_key
         if key == "ATLAS":
             self._render_atlas(surface, body_rect, state)
         elif key == "WORLD":

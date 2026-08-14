@@ -17,14 +17,14 @@ from companion_app.net.client import (
 from companion_app.render import palette
 from companion_app.render.worldmap_image import build_green_lut
 from companion_app.state import AppState, PlayerSurface, WorldInfo, WorldMapStatus
-from companion_app.ui.pages.map import (
+from companion_app.ui import sections
+from companion_app.ui.pages.automaps import (
     MARKER_LAST_KNOWN,
     MARKER_LIVE,
     MARKER_NONE,
     WORLD_ZOOM,
     compute_atlas_fit,
     compute_world_viewport,
-    default_map_ui,
     select_marker_mode,
 )
 
@@ -322,10 +322,10 @@ class MarkerModeTests(unittest.TestCase):
         self.assertEqual(select_marker_mode(PlayerSurface.UNKNOWN, False), MARKER_NONE)
 
 
-class DefaultMapUiTests(unittest.TestCase):
-    def test_three_segments_local_default(self) -> None:
-        ui = default_map_ui()
-        self.assertEqual([s.key for s in ui.segments], ["LOCAL", "ATLAS", "WORLD"])
+class DefaultAutomapsUiTests(unittest.TestCase):
+    def test_three_subsections_local_default(self) -> None:
+        ui = sections.default_sections_ui().automaps
+        self.assertEqual([s.key for s in ui.segments], ["LOCAL", "WORLD", "ATLAS"])
         self.assertEqual(ui.selected_key, "LOCAL")
         self.assertTrue(all(s.enabled for s in ui.segments))
 

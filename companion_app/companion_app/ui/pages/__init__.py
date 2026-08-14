@@ -1,8 +1,17 @@
-"""Page enum and page dispatch registry (UI refactoring).
+"""Section enum (TASK-017).
 
-Pages are the top-level navigation concept — they replace the old
-``Section`` enum. Each page maps to one of the four hardware section
-buttons (1=STATUS, 2=DATA, 3=INVENTORY, 4=MAP).
+Sections are the top-level navigation concept. Each maps to one of the
+device's section buttons:
+
+    1 = STATUS      2 = AUTOMAPS      3 = ARCHIVES
+
+The device's fourth button is reserved for a close/shutdown action and is
+**not** a section, so ``PageButtonEvent(4)`` resolves to no member here and
+must be ignored by the router rather than passed to ``Page(...)``.
+
+Every section renders the same structure — shared header, segmented
+sub-header, content — and owns a set of sub-sections defined in
+:mod:`companion_app.ui.sections`.
 """
 from __future__ import annotations
 
@@ -17,9 +26,8 @@ if TYPE_CHECKING:
 
 class Page(Enum):
     STATUS = 1
-    DATA = 2
-    INVENTORY = 3
-    MAP = 4
+    AUTOMAPS = 2
+    ARCHIVES = 3
 
 
 class StartupPage(Enum):
@@ -30,12 +38,13 @@ class StartupPage(Enum):
 VisiblePage: TypeAlias = Page | StartupPage
 
 
-class PageRenderer(Protocol):
-    """Minimal contract every page must satisfy.
+class SectionRenderer(Protocol):
+    """What every section must provide to be dispatched by ``app.py``.
 
-    A page renders itself into the layout's content rect using the
-    shared ``AppState``. Pages are stateless-per-frame objects owned
-    by ``app.py``.
+    A section draws its selected sub-section into the shared content rect.
+    It does **not** draw the segmented sub-header — the frame loop does
+    that for all sections — but it must leave the first
+    ``SUBHEADER_BAND_HEIGHT`` pixels of the rect clear for it.
     """
 
     def render(
@@ -43,7 +52,8 @@ class PageRenderer(Protocol):
         surface: pygame.Surface,
         content_rect: pygame.Rect,
         state: AppState,
+        selected_key: str,
     ) -> None: ...
 
     @property
-    def title(self) -> str | None: ...
+    def title(self) -> str: ...

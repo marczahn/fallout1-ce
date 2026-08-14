@@ -23,7 +23,7 @@ from companion_app.state import (
     WorldInfo,
     WorldMapStatus,
 )
-from companion_app.ui.pages.map import (
+from companion_app.ui.pages.automaps import (
     LOCAL_VIEW_LOADING,
     LOCAL_VIEW_MAP,
     LOCAL_VIEW_NO_DATA,
