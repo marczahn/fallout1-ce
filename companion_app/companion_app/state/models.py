@@ -119,6 +119,28 @@ class InventoryItem:
     count: int = 0
     slot: str = "none"
 
+    # Common block (schemaVersion 10).
+    weight: int = 0
+    value: int = 0
+
+    # Per-type detail (schemaVersion 10). `-1` means "does not apply to this
+    # item", mirroring the server's sentinel — 0 cannot serve, since an empty
+    # gun really does hold 0 rounds and 0 armor class is a real value. A
+    # schemaVersion 9 server sends none of these, so they all stay absent.
+    dmg_min: int = -1
+    dmg_max: int = -1
+    min_st: int = -1
+    weapon_range: int = -1  # not `range`, which is a builtin
+    ammo_current: int = -1
+    ammo_max: int = -1
+    ammo_name: str = ""
+    caliber: int = -1
+    total_rounds: int = -1
+    armor_class: int = -1
+    charges_current: int = -1
+    charges_max: int = -1
+    caps_amount: int = -1
+
 
 @dataclass
 class PlayerState:

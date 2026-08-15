@@ -381,12 +381,32 @@ bool worldLocationDiffer(const CompanionPlayerWorldLocation& a, const CompanionP
 
 bool inventoryItemDiffer(const CompanionInventoryItem& a, const CompanionInventoryItem& b)
 {
+    // Every field on the struct must be compared here. A field that is sent
+    // but not diffed is silently stale forever: firing a weapon changes only
+    // `ammoCurrent`, so if that field were missing from this comparison the
+    // server would never resend, and the app would show the old load until
+    // something else in the inventory happened to change.
     return a.pid != b.pid
         || a.type != b.type
         || a.count != b.count
         || a.slot != b.slot
         || strcmp(a.protoId, b.protoId) != 0
-        || strcmp(a.name, b.name) != 0;
+        || strcmp(a.name, b.name) != 0
+        || a.weight != b.weight
+        || a.value != b.value
+        || a.dmgMin != b.dmgMin
+        || a.dmgMax != b.dmgMax
+        || a.minSt != b.minSt
+        || a.range != b.range
+        || a.ammoCurrent != b.ammoCurrent
+        || a.ammoMax != b.ammoMax
+        || strcmp(a.ammoName, b.ammoName) != 0
+        || a.caliber != b.caliber
+        || a.totalRounds != b.totalRounds
+        || a.armorClass != b.armorClass
+        || a.chargesCurrent != b.chargesCurrent
+        || a.chargesMax != b.chargesMax
+        || a.capsAmount != b.capsAmount;
 }
 
 bool inventoryDiffer(const CompanionInventorySnapshot& a, const CompanionInventorySnapshot& b)

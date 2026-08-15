@@ -8,9 +8,11 @@
 #include "game/critter.h"
 #include "game/inventry.h"
 #include "game/item.h"
+#include "game/combat_defs.h"
 #include "game/map.h"
 #include "game/object.h"
 #include "game/object_types.h"
+#include "game/proto_types.h"
 #include "game/stat.h"
 #include "game/stat_defs.h"
 #include "game/worldmap.h"
@@ -110,6 +112,107 @@ CompanionInventorySlot companionInventorySlotForObject(const Object* item)
     return CompanionInventorySlot::None;
 }
 
+// Every per-type field starts absent; each branch below fills only what its
+// type supplies. `= {}` on the struct is not enough -- it zeroes, and zero is
+// a legitimate value for an empty gun's load and for a 0-AC armor.
+void clearItemDetail(CompanionInventoryItem& snapshotItem)
+{
+    snapshotItem.dmgMin = kCompanionItemFieldAbsent;
+    snapshotItem.dmgMax = kCompanionItemFieldAbsent;
+    snapshotItem.minSt = kCompanionItemFieldAbsent;
+    snapshotItem.range = kCompanionItemFieldAbsent;
+    snapshotItem.ammoCurrent = kCompanionItemFieldAbsent;
+    snapshotItem.ammoMax = kCompanionItemFieldAbsent;
+    snapshotItem.ammoName[0] = '\0';
+    snapshotItem.caliber = kCompanionItemFieldAbsent;
+    snapshotItem.totalRounds = kCompanionItemFieldAbsent;
+    snapshotItem.armorClass = kCompanionItemFieldAbsent;
+    snapshotItem.chargesCurrent = kCompanionItemFieldAbsent;
+    snapshotItem.chargesMax = kCompanionItemFieldAbsent;
+    snapshotItem.capsAmount = kCompanionItemFieldAbsent;
+}
+
+// Per-type detail, read entirely through the read-only `Object*` accessors in
+// `game/item.h`. Mirrors what the in-game inventory shows for the same item,
+// so the two can be checked side by side.
+void collectItemDetail(Object* item, int count, CompanionInventoryItem& snapshotItem)
+{
+    snapshotItem.weight = item_weight(item);
+    snapshotItem.value = item_cost(item);
+
+    // Caps are special-cased engine-wide and carry their amount in
+    // `ammo.quantity` rather than the stack count, so they must not fall
+    // through either the charges path or the plain-count path.
+    if (item->pid == PROTO_ID_MONEY) {
+        snapshotItem.capsAmount = item_caps_get_amount(item);
+        return;
+    }
+
+    switch (item_get_type(item)) {
+    case ITEM_TYPE_WEAPON: {
+        int damageMin = 0;
+        int damageMax = 0;
+        item_w_damage_min_max(item, &damageMin, &damageMax);
+
+        // The game's own readout adds the critter's melee damage for melee and
+        // unarmed attack types, so the companion reports the number the player
+        // sees rather than the raw proto range. `item_w_subtype` takes the
+        // item, so this is correct for a stowed weapon too.
+        int attackType = item_w_subtype(item, HIT_MODE_RIGHT_WEAPON_PRIMARY);
+        int meleeDamage = attackType == ATTACK_TYPE_MELEE || attackType == ATTACK_TYPE_UNARMED
+            ? stat_level(obj_dude, STAT_MELEE_DAMAGE)
+            : 0;
+
+        snapshotItem.dmgMin = damageMin;
+        snapshotItem.dmgMax = damageMax + meleeDamage;
+        snapshotItem.minSt = item_w_min_st(item);
+
+        // `item_w_range` would answer for whatever is in the dude's hand, not
+        // for this item -- it resolves the weapon itself through
+        // `item_hit_with`. `item_w_range_of` takes the weapon explicitly.
+        snapshotItem.range = item_w_range_of(obj_dude, item, HIT_MODE_RIGHT_WEAPON_PRIMARY);
+
+        int maxAmmo = item_w_max_ammo(item);
+        if (maxAmmo > 0) {
+            snapshotItem.ammoCurrent = item_w_curr_ammo(item);
+            snapshotItem.ammoMax = maxAmmo;
+
+            // The engine names the ammo only when the weapon declares a type;
+            // an unresolvable type leaves the name empty rather than showing a
+            // generated `PID_<n>`.
+            int ammoPid = item_w_ammo_pid(item);
+            if (ammoPid > 0) {
+                CompanionItemMetadata ammoMetadata = {};
+                if (companionLookupItemMetadata(ammoPid, ammoMetadata)) {
+                    strncpy(snapshotItem.ammoName, ammoMetadata.name, sizeof(snapshotItem.ammoName) - 1);
+                }
+            }
+        }
+        break;
+    }
+    case ITEM_TYPE_AMMO:
+        snapshotItem.caliber = item_w_caliber(item);
+
+        // `item_identical` deliberately merges boxes holding different numbers
+        // of rounds, so the representative object reports only its own load.
+        // This is the engine's own display formula: assume every other box in
+        // the stack is full.
+        snapshotItem.totalRounds = item_w_max_ammo(item) * (count - 1) + item_w_curr_ammo(item);
+        break;
+    case ITEM_TYPE_ARMOR:
+        snapshotItem.armorClass = item_ar_ac(item);
+        break;
+    case ITEM_TYPE_MISC:
+        if (item_m_uses_charges(item)) {
+            snapshotItem.chargesCurrent = item_m_curr_charges(item);
+            snapshotItem.chargesMax = item_m_max_charges(item);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
 // Single construction path for a payload item, so the items collected from
 // the inventory list and the equipped items appended after it cannot drift
 // apart in their metadata lookup or their string bounds.
@@ -125,6 +228,9 @@ CompanionInventoryItem makeInventoryItem(Object* item, int count, CompanionInven
     snapshotItem.slot = slot;
     strncpy(snapshotItem.protoId, metadata.protoId, sizeof(snapshotItem.protoId) - 1);
     strncpy(snapshotItem.name, metadata.name, sizeof(snapshotItem.name) - 1);
+
+    clearItemDetail(snapshotItem);
+    collectItemDetail(item, count, snapshotItem);
 
     return snapshotItem;
 }

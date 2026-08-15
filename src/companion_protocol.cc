@@ -29,7 +29,7 @@
 //                                 normal auth/hello handshake.
 //
 // Server -> client:
-//   {"type":"world","schemaVersion":9,"game":"fallout1-ce","playerAvailable":bool}
+//   {"type":"world","schemaVersion":10,"game":"fallout1-ce","playerAvailable":bool}
 //
 //   {"type":"snapshot","seq":N,"playerAvailable":bool,"payload":{
 //      "player.vitals":          {"hp":H,"maxHp":M},
@@ -52,7 +52,25 @@
 //                                 "locationId":"<id>","worldX":WX,"worldY":WY},
 //      "player.worldLocation":  {"x":X,"y":Y},
 //      "player.inventory":       [{"pid":P,"protoId":"<id>","name":"<name>",
-//                                   "type":"<type>","count":N,"slot":"<slot>"}]
+//                                   "type":"<type>","count":N,"slot":"<slot>",
+//                                   "weight":N,"value":N,
+//                                   <at most one per-type block, or none>}]
+//        Per-type blocks (schemaVersion 10). A type with nothing to add
+//        carries no block rather than an empty one:
+//          "weapon": {"dmgMin":N,"dmgMax":N,"minSt":N,"range":N,
+//                     "ammoCurrent":N,"ammoMax":N,"ammoName":"<name>"}
+//                     -- ammo* only when the weapon takes ammo; "ammoName"
+//                        only when the ammo type resolves.
+//          "ammo":   {"caliber":N,"totalRounds":N}
+//          "armor":  {"armorClass":N}
+//          "misc":   {"chargesCurrent":N,"chargesMax":N}
+//                     -- only when the item uses charges.
+//          "caps":   {"amount":N}
+//                     -- caps are misc-typed but carry their amount
+//                        separately, so they get their own block.
+//        `dmgMax` already includes the melee-damage contribution for melee
+//        and unarmed weapons, and `range` is computed against the player,
+//        because neither is derivable from item data alone.
 //   }}
 //   The `payload` of `snapshot` is a kind->object map. Only kinds valid
 //   in the current state are present. `player.localLocation` and
@@ -137,13 +155,15 @@
 // `payload`. `onPlayerUnavailable` and `onPlayerAvailable` have
 // neither.
 //
-// `world.schemaVersion` is now `9` (was `5`). Version 5 added the
+// `world.schemaVersion` is now `10` (was `5`). Version 5 added the
 // world-map image fetch (`getMap`/`getMapChunk`/`mapHeader`/`mapChunk`/
 // `mapError`); version 6 adds the local-map (automap) image fetch
 // (`getLocalMap`/`getLocalMapChunk`/`localMapHeader`/`localMapChunk`/
 // `localMapError`); version 7 adds `player.localLocation.worldX/worldY`;
 // version 8 adds the additive `localMapHeader.explored` field; version 9
-// adds the additive `player.localLocation.mapName` field. The bumps are
+// adds the additive `player.localLocation.mapName` field; version 10 adds
+// additive `weight`/`value` plus per-type detail blocks on
+// `player.inventory` items. The bumps are
 // additive: an older client still works for everything except the newer
 // fetch/field, but the version makes the new contract visible.
 //
@@ -418,6 +438,32 @@ std::string buildWorldLocationBody(const CompanionPlayerWorldLocation& loc)
     return std::string(body, static_cast<size_t>(n));
 }
 
+// Sizing for one inventory entry, derived rather than guessed. Undersizing
+// these does not truncate an item: the `snprintf` guards below make
+// `buildInventoryPayload` return an empty string, and the *entire* inventory
+// disappears from the payload -- which reads to the player as "carrying
+// nothing". Same treatment as `kLocalLocationBodySize`.
+constexpr size_t kInventoryIntSize = 11; // "-2147483648"
+constexpr size_t kInventoryAmmoBlockSize = 192;
+constexpr size_t kInventoryDetailSize = 384;
+constexpr size_t kInventoryEntrySize = 768;
+
+static_assert(
+    kInventoryAmmoBlockSize
+            > 40 + 2 * kInventoryIntSize + (sizeof(CompanionInventoryItem::ammoName) - 1) + 1,
+    "ammo sub-block must fit the maximum-length ammo name");
+static_assert(
+    kInventoryDetailSize > 64 + 4 * kInventoryIntSize + kInventoryAmmoBlockSize + 1,
+    "per-type block must fit the largest block (weapon, with ammo)");
+static_assert(
+    kInventoryEntrySize
+            > 96 + (sizeof(CompanionInventoryItem::protoId) - 1)
+                + (sizeof(CompanionInventoryItem::name) - 1)
+                + 16 // longest "type" + "slot" values
+                + 4 * kInventoryIntSize
+                + kInventoryDetailSize + 1,
+    "inventory JSON entry must fit the maximum-length fields");
+
 std::string buildInventoryPayload(const CompanionInventorySnapshot& inventory)
 {
     std::string body;
@@ -430,16 +476,81 @@ std::string buildInventoryPayload(const CompanionInventorySnapshot& inventory)
             body.push_back(',');
         }
 
-        char entry[320];
+        // At most one per-type block, chosen by which fields the collector
+        // filled. Caps come first: they are misc-typed but carry their amount
+        // separately, so they must not be mistaken for a charges item.
+        char detail[kInventoryDetailSize];
+        detail[0] = '\0';
+        int d = 0;
+
+        if (item.capsAmount != kCompanionItemFieldAbsent) {
+            d = snprintf(detail, sizeof(detail), R"(,"caps":{"amount":%d})", item.capsAmount);
+        } else if (item.dmgMin != kCompanionItemFieldAbsent) {
+            char ammo[kInventoryAmmoBlockSize];
+            ammo[0] = '\0';
+            int a = 0;
+            if (item.ammoMax != kCompanionItemFieldAbsent) {
+                if (item.ammoName[0] != '\0') {
+                    a = snprintf(ammo,
+                        sizeof(ammo),
+                        R"(,"ammoCurrent":%d,"ammoMax":%d,"ammoName":"%s")",
+                        item.ammoCurrent,
+                        item.ammoMax,
+                        item.ammoName);
+                } else {
+                    a = snprintf(ammo,
+                        sizeof(ammo),
+                        R"(,"ammoCurrent":%d,"ammoMax":%d)",
+                        item.ammoCurrent,
+                        item.ammoMax);
+                }
+
+                if (a < 0 || static_cast<size_t>(a) >= sizeof(ammo)) {
+                    return std::string();
+                }
+            }
+
+            d = snprintf(detail,
+                sizeof(detail),
+                R"(,"weapon":{"dmgMin":%d,"dmgMax":%d,"minSt":%d,"range":%d%s})",
+                item.dmgMin,
+                item.dmgMax,
+                item.minSt,
+                item.range,
+                ammo);
+        } else if (item.caliber != kCompanionItemFieldAbsent) {
+            d = snprintf(detail,
+                sizeof(detail),
+                R"(,"ammo":{"caliber":%d,"totalRounds":%d})",
+                item.caliber,
+                item.totalRounds);
+        } else if (item.armorClass != kCompanionItemFieldAbsent) {
+            d = snprintf(detail, sizeof(detail), R"(,"armor":{"armorClass":%d})", item.armorClass);
+        } else if (item.chargesMax != kCompanionItemFieldAbsent) {
+            d = snprintf(detail,
+                sizeof(detail),
+                R"(,"misc":{"chargesCurrent":%d,"chargesMax":%d})",
+                item.chargesCurrent,
+                item.chargesMax);
+        }
+
+        if (d < 0 || static_cast<size_t>(d) >= sizeof(detail)) {
+            return std::string();
+        }
+
+        char entry[kInventoryEntrySize];
         int n = snprintf(entry,
             sizeof(entry),
-            R"({"pid":%d,"protoId":"%s","name":"%s","type":"%s","count":%d,"slot":"%s"})",
+            R"({"pid":%d,"protoId":"%s","name":"%s","type":"%s","count":%d,"slot":"%s","weight":%d,"value":%d%s})",
             item.pid,
             item.protoId,
             item.name,
             inventoryTypeName(item.type),
             item.count,
-            inventorySlotName(item.slot));
+            inventorySlotName(item.slot),
+            item.weight,
+            item.value,
+            detail);
         if (n < 0 || static_cast<size_t>(n) >= sizeof(entry)) {
             return std::string();
         }
@@ -590,7 +701,7 @@ std::string companionBuildWorld(bool playerAvailable)
     char buffer[96];
     int n = snprintf(buffer,
         sizeof(buffer),
-        R"({"type":"world","schemaVersion":9,"game":"fallout1-ce","playerAvailable":%s})"
+        R"({"type":"world","schemaVersion":10,"game":"fallout1-ce","playerAvailable":%s})"
         "\n",
         flag);
     if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
@@ -877,7 +988,7 @@ std::string companionBuildAnnounce(std::string_view host)
 {
     std::string message;
     message.reserve(host.size() + 96);
-    message.append(R"({"type":"announce","game":"fallout1-ce","schemaVersion":9,"host":")");
+    message.append(R"({"type":"announce","game":"fallout1-ce","schemaVersion":10,"host":")");
     message.append(host);
     message.append(R"(","port":28080,"authRequired":true})"
                    "\n");

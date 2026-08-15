@@ -539,6 +539,104 @@ class NetworkClientTest(unittest.TestCase):
         self.assertEqual(self.state.player.inventory[0].pid, 40)
         self.assertEqual(self.state.player.inventory[1].count, 2)
 
+    # ── per-type detail (TASK-019) ─────────────────────────────────
+
+    def _inventory(self, *raw_items: dict) -> list:
+        self.state.connection = ConnectionState.READY
+        self.state.player.available = True
+        self.client._on_update({
+            "type": "update",
+            "kind": "player.inventory",
+            "playerAvailable": True,
+            "payload": list(raw_items),
+        })
+        return self.state.player.inventory
+
+    def test_per_type_blocks_parse(self) -> None:
+        items = self._inventory(
+            {"pid": 7, "protoId": "PISTOL", "name": "10mm Pistol", "type": "weapon",
+             "count": 1, "slot": "rightHand", "weight": 5, "value": 250,
+             "weapon": {"dmgMin": 5, "dmgMax": 12, "minSt": 3, "range": 25,
+                        "ammoCurrent": 8, "ammoMax": 12, "ammoName": "10mm JHP"}},
+            {"pid": 8, "protoId": "AMMO10", "name": "10mm JHP", "type": "ammo",
+             "count": 2, "slot": "none", "weight": 2, "value": 100,
+             "ammo": {"caliber": 4, "totalRounds": 31}},
+            {"pid": 9, "protoId": "LEATHER", "name": "Leather Armor", "type": "armor",
+             "count": 1, "slot": "worn", "weight": 15, "value": 700,
+             "armor": {"armorClass": 8}},
+            {"pid": 10, "protoId": "LOCKPICK", "name": "Lockpick", "type": "misc",
+             "count": 1, "slot": "none", "weight": 1, "value": 150,
+             "misc": {"chargesCurrent": 3, "chargesMax": 10}},
+            {"pid": 41, "protoId": "CAPS", "name": "Bottle Caps", "type": "misc",
+             "count": 1, "slot": "none", "weight": 0, "value": 1,
+             "caps": {"amount": 1200}},
+        )
+        weapon, ammo, armor, misc, caps = items
+        self.assertEqual((weapon.dmg_min, weapon.dmg_max), (5, 12))
+        self.assertEqual((weapon.min_st, weapon.weapon_range), (3, 25))
+        self.assertEqual((weapon.ammo_current, weapon.ammo_max), (8, 12))
+        self.assertEqual(weapon.ammo_name, "10mm JHP")
+        self.assertEqual((weapon.weight, weapon.value), (5, 250))
+        # Neither the stack count (2) nor the representative box's own load:
+        # the engine merges boxes holding different numbers of rounds, so this
+        # figure is its own thing.
+        self.assertEqual(ammo.total_rounds, 31)
+        self.assertEqual(ammo.caliber, 4)
+        self.assertEqual(armor.armor_class, 8)
+        self.assertEqual((misc.charges_current, misc.charges_max), (3, 10))
+        self.assertEqual(caps.caps_amount, 1200)
+        # Caps are misc-typed but must not be read as a charges item.
+        self.assertEqual(caps.charges_current, -1)
+
+    def test_missing_blocks_leave_every_field_absent(self) -> None:
+        """A schemaVersion 9 server sends no blocks at all."""
+        (item,) = self._inventory(
+            {"pid": 40, "protoId": "STIMPAK", "name": "Stimpak", "type": "drug",
+             "count": 9, "slot": "none"},
+        )
+        for field in (
+            "dmg_min", "dmg_max", "min_st", "weapon_range", "ammo_current",
+            "ammo_max", "caliber", "total_rounds", "armor_class",
+            "charges_current", "charges_max", "caps_amount",
+        ):
+            with self.subTest(field=field):
+                self.assertEqual(getattr(item, field), -1)
+        self.assertEqual(item.ammo_name, "")
+        self.assertEqual((item.weight, item.value), (0, 0))
+
+    def test_original_six_fields_parse_identically(self) -> None:
+        """The pre-schemaVersion-10 fields must be untouched by the new parse."""
+        (item,) = self._inventory(
+            {"pid": 40, "protoId": "STIMPAK", "name": "Stimpak", "type": "drug",
+             "count": 9, "slot": "leftHand"},
+        )
+        self.assertEqual(item.pid, 40)
+        self.assertEqual(item.proto_id, "STIMPAK")
+        self.assertEqual(item.name, "Stimpak")
+        self.assertEqual(item.item_type, "drug")
+        self.assertEqual(item.count, 9)
+        self.assertEqual(item.slot, "leftHand")
+
+    def test_null_fields_are_inert(self) -> None:
+        """JSON null must never reach the screen as the literal "None"."""
+        (item,) = self._inventory(
+            {"pid": 7, "protoId": "PISTOL", "name": "10mm Pistol", "type": "weapon",
+             "count": 1, "slot": "none", "weight": None, "value": None,
+             "weapon": {"dmgMin": None, "dmgMax": None, "minSt": None,
+                        "range": None, "ammoCurrent": None, "ammoMax": None,
+                        "ammoName": None}},
+        )
+        self.assertEqual((item.weight, item.value), (0, 0))
+        self.assertEqual(item.dmg_min, -1)
+        self.assertEqual(item.ammo_name, "")
+
+    def test_malformed_block_does_not_raise(self) -> None:
+        (item,) = self._inventory(
+            {"pid": 7, "protoId": "PISTOL", "name": "10mm Pistol", "type": "weapon",
+             "count": 1, "slot": "none", "weapon": "not-a-block"},
+        )
+        self.assertEqual(item.dmg_min, -1)
+
     def test_world_location_update_clears_stale_local_location(self) -> None:
         self.state.connection = ConnectionState.READY
         self.state.player.available = True

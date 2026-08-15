@@ -28,11 +28,12 @@ at a glance and stops competing with the stack count for the width of a 480px
 row. They are drawn rather than typed because the vendored font has no symbol
 glyphs at all — see that module.
 
-``_render_type_detail`` is a deliberate seam: it dispatches over all seven
-engine item types and draws nothing for any of them, because the per-type
-stats (damage, ammo, armor class, charges) are not on the wire yet.
-TASK-019 adds the fields and fills the branches; keeping the dispatch
-total here is what makes that additive.
+``_TYPE_DETAIL`` is the per-type seam TASK-018 left open and TASK-019
+filled: it dispatches over all seven engine item types, and each entry now
+returns the fields that type contributes to the readout — damage/ammo/range
+for a weapon, total rounds for an ammo stack, armor class, charges, caps.
+The dispatch stays total, so a type that gains fields later replaces an
+entry rather than adding a branch.
 """
 from __future__ import annotations
 
@@ -81,7 +82,15 @@ _GUTTER_WIDTH: int = 4
 _GUTTER_GAP: int = 10
 
 # Corner-bracketed detail readout at the bottom of the body.
-_DETAIL_HEIGHT: int = 132
+#
+# TASK-019 raised the height from 132 to 174 and paired the fields two per
+# row. At 132 the usable baselines were 46 / 67 / 88 / 109 — only four fit a
+# 12px glyph box — and TYPE/QTY/SLOT already took three, so the common block
+# alone overflowed once weight and value joined it, before a single per-type
+# row existed. Six baselines at two fields each gives twelve slots against a
+# weapon's nine. The 42px comes out of the list viewport (~1.6 rows of 26),
+# which the readout earns now that it carries real data.
+_DETAIL_HEIGHT: int = 174
 _DETAIL_GAP: int = 12
 _DETAIL_CORNER: int = 20
 _DETAIL_PAD_X: int = 16
@@ -89,6 +98,9 @@ _DETAIL_PAD_Y: int = 12
 _DETAIL_ROW_GAP: int = 21
 _DETAIL_LABEL_X: int = 16
 _DETAIL_VALUE_X: int = 104
+# Second field column, mirroring the first at half the inner width.
+_DETAIL_LABEL_X2: int = 224
+_DETAIL_VALUE_X2: int = 312
 # Fixed offset from the panel top to the first attribute row. Deliberately
 # NOT derived from the name's measured rect: `font.get_rect` returns the
 # glyph bounding box, so a name with a descender ("Stimpak") measures
@@ -341,99 +353,195 @@ def _draw_scroll_gutter(
     )
 
 
-def _detail_common_only(
-    surface: pygame.Surface,
-    rect: pygame.Rect,
-    item: InventoryItem,
-) -> None:
-    """No type-specific stats — the common block already said everything.
+class SlotValue:
+    """Marks a field whose value is the slot symbol rather than text."""
 
-    Every type resolves here today. Weight, value, damage, ammo, armor
-    class and charges are simply not on the wire at ``schemaVersion`` 9.
+    __slots__ = ("slot",)
+
+    def __init__(self, slot: str) -> None:
+        self.slot = slot
+
+
+class Field:
+    """One ``LABEL value`` pair in the readout.
+
+    ``wide`` gives the field a row to itself. Only ``AMMO`` needs it: its
+    value carries an ammo name, which does not fit the 120px a half-row
+    value column allows.
     """
-    _ = (surface, rect, item)
+
+    __slots__ = ("label", "value", "wide")
+
+    def __init__(
+        self, label: str, value: str | SlotValue, *, wide: bool = False
+    ) -> None:
+        self.label = label
+        self.value = value
+        self.wide = wide
 
 
-# The per-type seam. Total over the wire's seven ``type`` values, so
-# TASK-019 replaces entries rather than adding a dispatch.
-_TypeDetailRenderer = Callable[[pygame.Surface, pygame.Rect, InventoryItem], None]
+def _absent(value: int) -> bool:
+    """The server's "does not apply" sentinel — see `kCompanionItemFieldAbsent`."""
+    return value < 0
 
-_TYPE_DETAIL: dict[str, _TypeDetailRenderer] = {
-    wire_type: _detail_common_only for wire_type, _label in inventory_list.GROUP_ORDER
+
+def _weapon_fields(item: InventoryItem) -> list[Field]:
+    fields: list[Field] = []
+    if not _absent(item.dmg_min) and not _absent(item.dmg_max):
+        # dmg_max already carries the melee-damage contribution; the server
+        # applies it because it depends on the player, not the weapon.
+        fields.append(Field("DMG", f"{item.dmg_min}-{item.dmg_max}"))
+    if not _absent(item.weapon_range):
+        fields.append(Field("RNG", str(item.weapon_range)))
+    if not _absent(item.min_st):
+        fields.append(Field("MIN ST", str(item.min_st)))
+    if not _absent(item.ammo_current) and not _absent(item.ammo_max):
+        loaded = f"{item.ammo_current}/{item.ammo_max}"
+        if item.ammo_name:
+            loaded = f"{loaded} {item.ammo_name}"
+        fields.append(Field("AMMO", loaded, wide=True))
+    return fields
+
+
+def _ammo_fields(item: InventoryItem) -> list[Field]:
+    fields: list[Field] = []
+    if not _absent(item.total_rounds):
+        # Not the stack count: the engine merges boxes holding different
+        # numbers of rounds, so this is its own figure.
+        fields.append(Field("RNDS", str(item.total_rounds)))
+    if not _absent(item.caliber):
+        fields.append(Field("CAL", str(item.caliber)))
+    return fields
+
+
+def _armor_fields(item: InventoryItem) -> list[Field]:
+    if _absent(item.armor_class):
+        return []
+    return [Field("AC", str(item.armor_class))]
+
+
+def _misc_fields(item: InventoryItem) -> list[Field]:
+    # Caps are misc-typed but carry their amount on their own block, so they
+    # must not be read as charges.
+    if not _absent(item.caps_amount):
+        return [Field("CAPS", str(item.caps_amount))]
+    if _absent(item.charges_current) or _absent(item.charges_max):
+        return []
+    return [Field("CHG", f"{item.charges_current}/{item.charges_max}")]
+
+
+def _no_extra_fields(item: InventoryItem) -> list[Field]:
+    """Types the common block already describes fully."""
+    _ = item
+    return []
+
+
+# The per-type seam, filled by TASK-019. Still total over the wire's seven
+# `type` values, so a type that gains fields later replaces an entry rather
+# than adding a dispatch.
+_TypeDetailFields = Callable[[InventoryItem], "list[Field]"]
+
+_TYPE_DETAIL: dict[str, _TypeDetailFields] = {
+    "weapon": _weapon_fields,
+    "ammo": _ammo_fields,
+    "armor": _armor_fields,
+    "drug": _no_extra_fields,
+    "misc": _misc_fields,
+    "key": _no_extra_fields,
+    "container": _no_extra_fields,
 }
 
 
-def _render_type_detail(
-    surface: pygame.Surface,
-    rect: pygame.Rect,
-    item: InventoryItem,
-) -> None:
-    """Dispatch the per-type detail block for ``item``.
+def _type_detail_fields(item: InventoryItem) -> list[Field]:
+    """The per-type fields for ``item``.
 
-    ``group_for`` folds an unrecognized wire type into MISC, so this
-    lookup cannot miss.
+    ``group_for`` folds an unrecognized wire type into MISC, so this lookup
+    cannot miss.
     """
-    _TYPE_DETAIL[inventory_list.group_for(item.item_type)](surface, rect, item)
+    return _TYPE_DETAIL[inventory_list.group_for(item.item_type)](item)
 
 
-def _draw_detail_row(
+def _draw_detail_field(
     surface: pygame.Surface,
     left: int,
     y: int,
-    label: str,
-    value: str,
+    field: Field,
+    *,
+    label_x: int,
+    value_x: int,
 ) -> None:
-    """``> LABEL   value`` on an aligned value column, as CHARACTER does."""
-    font.draw_text_left(
-        surface,
-        f"> {label}",
-        (left + _DETAIL_LABEL_X, y),
-        _DETAIL_ROW_SIZE,
-        palette.FOREGROUND,
-    )
-    font.draw_text_left(
-        surface,
-        value,
-        (left + _DETAIL_VALUE_X, y),
-        _DETAIL_ROW_SIZE,
-        palette.FOREGROUND,
-    )
+    """``> LABEL   value`` on an aligned value column, as CHARACTER does.
 
-
-def _draw_detail_slot_row(
-    surface: pygame.Surface,
-    left: int,
-    y: int,
-    item: InventoryItem,
-) -> None:
-    """``> SLOT`` with the symbol as its value, on the shared value column.
-
-    The readout is the list symbol's legend — same mark, same column as
-    every other attribute — which is why the word does not survive here
-    either. A stowed item has no symbol, so it keeps ``STOWED``: an empty
-    value would read as a field that failed to load.
+    A ``SlotValue`` draws the equipped-slot symbol instead of text — the
+    readout is the list symbol's legend, same mark and same column as every
+    other attribute. A stowed item has no symbol, so it keeps ``STOWED``: an
+    empty value would read as a field that failed to load.
     """
     font.draw_text_left(
         surface,
-        "> SLOT",
-        (left + _DETAIL_LABEL_X, y),
+        f"> {field.label}",
+        (left + label_x, y),
         _DETAIL_ROW_SIZE,
         palette.FOREGROUND,
     )
-    drawn = slot_icons.draw_midleft(
-        surface,
-        item.slot,
-        (left + _DETAIL_VALUE_X, y + _DETAIL_TEXT_HALF_HEIGHT),
-        palette.FOREGROUND,
-    )
-    if drawn is None:
-        font.draw_text_left(
+
+    if isinstance(field.value, SlotValue):
+        drawn = slot_icons.draw_midleft(
             surface,
-            _STOWED_TAG,
-            (left + _DETAIL_VALUE_X, y),
-            _DETAIL_ROW_SIZE,
+            field.value.slot,
+            (left + value_x, y + _DETAIL_TEXT_HALF_HEIGHT),
             palette.FOREGROUND,
         )
+        if drawn is not None:
+            return
+        text = _STOWED_TAG
+    else:
+        text = field.value
+
+    font.draw_text_left(
+        surface,
+        text,
+        (left + value_x, y),
+        _DETAIL_ROW_SIZE,
+        palette.FOREGROUND,
+    )
+
+
+def pack_detail_rows(fields: list[Field]) -> list[list[Field]]:
+    """Group fields two per row, giving a ``wide`` field its own row.
+
+    Split out and named without an underscore because the row *count* is the
+    pane's budget, and the budget is a test rather than a comment — see
+    ``_DETAIL_HEIGHT``.
+    """
+    rows: list[list[Field]] = []
+    pending: list[Field] = []
+    for field in fields:
+        if field.wide:
+            if pending:
+                rows.append(pending)
+                pending = []
+            rows.append([field])
+            continue
+        pending.append(field)
+        if len(pending) == 2:
+            rows.append(pending)
+            pending = []
+    if pending:
+        rows.append(pending)
+    return rows
+
+
+def detail_fields_for(item: InventoryItem) -> list[Field]:
+    """Every field the readout shows for ``item``, common block first."""
+    return [
+        Field("TYPE", inventory_list.group_label(item.item_type)),
+        Field("QTY", str(item.count)),
+        Field("SLOT", SlotValue(item.slot)),
+        Field("WT", str(item.weight)),
+        Field("VAL", str(item.value)),
+        *_type_detail_fields(item),
+    ]
 
 
 def _draw_detail(
@@ -456,19 +564,25 @@ def _draw_detail(
 
     # Fixed offset, not name_rect.bottom — see _DETAIL_ROWS_TOP.
     row_y = rect.top + _DETAIL_ROWS_TOP
-    _draw_detail_row(
-        surface,
-        rect.left,
-        row_y,
-        "TYPE",
-        inventory_list.group_label(item.item_type),
-    )
-    _draw_detail_row(
-        surface, rect.left, row_y + _DETAIL_ROW_GAP, "QTY", str(item.count)
-    )
-    _draw_detail_slot_row(surface, rect.left, row_y + 2 * _DETAIL_ROW_GAP, item)
-
-    _render_type_detail(surface, rect, item)
+    for index, row in enumerate(pack_detail_rows(detail_fields_for(item))):
+        y = row_y + index * _DETAIL_ROW_GAP
+        _draw_detail_field(
+            surface,
+            rect.left,
+            y,
+            row[0],
+            label_x=_DETAIL_LABEL_X,
+            value_x=_DETAIL_VALUE_X,
+        )
+        if len(row) > 1:
+            _draw_detail_field(
+                surface,
+                rect.left,
+                y,
+                row[1],
+                label_x=_DETAIL_LABEL_X2,
+                value_x=_DETAIL_VALUE_X2,
+            )
 
 
 def render_inventory(

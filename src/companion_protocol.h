@@ -38,10 +38,11 @@ struct CompanionCommandRequest {
     std::string_view name;
 };
 
-// `world` (handshake response). `schemaVersion` is `9` after adding the
-// additive `player.localLocation.mapName` field (was `8` for
-// `localMapHeader.explored`, `7` for `player.localLocation.worldX/worldY`,
-// `6` for the local-map image fetch, `5` for the world-map image fetch).
+// `world` (handshake response). `schemaVersion` is `10` after adding the
+// additive per-type detail blocks on `player.inventory` items (was `9` for
+// `player.localLocation.mapName`, `8` for `localMapHeader.explored`, `7` for
+// `player.localLocation.worldX/worldY`, `6` for the local-map image fetch,
+// `5` for the world-map image fetch).
 std::string companionBuildWorld(bool playerAvailable);
 
 // `snapshot` (full state). `payload` is a kind->object map. Only kinds

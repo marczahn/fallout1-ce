@@ -864,10 +864,43 @@ class NetworkClient:
     def _apply_inventory(self, payload: list[dict[str, Any]]) -> None:
         from companion_app.state import InventoryItem
 
+        def opt_int(source: dict[str, Any], key: str, absent: int = -1) -> int:
+            """Absent, null, or non-numeric all mean "does not apply".
+
+            Never `int(source.get(key))`: a JSON `null` raises there, and the
+            `str()` equivalent renders the literal `"None"` on screen — the
+            TASK-016 bug.
+            """
+            value = source.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return absent
+            return int(value)
+
+        def opt_str(source: dict[str, Any], key: str) -> str:
+            value = source.get(key)
+            return value if isinstance(value, str) else ""
+
+        def block(source: dict[str, Any], key: str) -> dict[str, Any]:
+            """A per-type block, or an empty one.
+
+            At most one is ever present, and a schemaVersion 9 server sends
+            none of them — which is why every field below degrades to absent
+            rather than failing.
+            """
+            value = source.get(key)
+            return value if isinstance(value, dict) else {}
+
         items: list[InventoryItem] = []
         for raw_item in payload:
             if not isinstance(raw_item, dict):
                 continue
+
+            weapon = block(raw_item, "weapon")
+            ammo = block(raw_item, "ammo")
+            armor = block(raw_item, "armor")
+            misc = block(raw_item, "misc")
+            caps = block(raw_item, "caps")
+
             items.append(
                 InventoryItem(
                     pid=int(raw_item.get("pid", 0)),
@@ -876,6 +909,21 @@ class NetworkClient:
                     item_type=str(raw_item.get("type", "")),
                     count=int(raw_item.get("count", 0)),
                     slot=str(raw_item.get("slot", "none")),
+                    weight=opt_int(raw_item, "weight", 0),
+                    value=opt_int(raw_item, "value", 0),
+                    dmg_min=opt_int(weapon, "dmgMin"),
+                    dmg_max=opt_int(weapon, "dmgMax"),
+                    min_st=opt_int(weapon, "minSt"),
+                    weapon_range=opt_int(weapon, "range"),
+                    ammo_current=opt_int(weapon, "ammoCurrent"),
+                    ammo_max=opt_int(weapon, "ammoMax"),
+                    ammo_name=opt_str(weapon, "ammoName"),
+                    caliber=opt_int(ammo, "caliber"),
+                    total_rounds=opt_int(ammo, "totalRounds"),
+                    armor_class=opt_int(armor, "armorClass"),
+                    charges_current=opt_int(misc, "chargesCurrent"),
+                    charges_max=opt_int(misc, "chargesMax"),
+                    caps_amount=opt_int(caps, "amount"),
                 )
             )
         self._state.player.inventory = items

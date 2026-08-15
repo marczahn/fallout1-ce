@@ -1336,12 +1336,18 @@ int item_w_reload(Object* weapon, Object* ammo)
 int item_w_range(Object* critter, int hit_mode)
 {
     Object* weapon;
-    Proto* proto;
-    int range;
-    int max_range;
 
     // NOTE: Uninline.
     weapon = item_hit_with(critter, hit_mode);
+
+    return item_w_range_of(critter, weapon, hit_mode);
+}
+
+int item_w_range_of(Object* critter, Object* weapon, int hit_mode)
+{
+    Proto* proto;
+    int range;
+    int max_range;
 
     if (weapon == NULL || hit_mode == HIT_MODE_PUNCH || hit_mode == HIT_MODE_KICK) {
         return 1;

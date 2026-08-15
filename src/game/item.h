@@ -62,6 +62,17 @@ int item_w_try_reload(Object* critter, Object* weapon);
 bool item_w_can_reload(Object* weapon, Object* ammo);
 int item_w_reload(Object* weapon, Object* ammo);
 int item_w_range(Object* critter, int hit_mode);
+
+// Range of an *arbitrary* weapon, as `critter` would use it in `hit_mode`.
+//
+// `item_w_range` answers only for the weapon the critter is holding in that
+// hand -- it resolves the weapon itself through `item_hit_with` -- so it
+// cannot describe an item sitting in the backpack. This is the same
+// computation with the weapon supplied by the caller, and `item_w_range` is
+// now a wrapper over it. The critter still matters: a throwing weapon's range
+// is clamped by the thrower's strength and Heave-Ho perk.
+int item_w_range_of(Object* critter, Object* weapon, int hit_mode);
+
 int item_w_mp_cost(Object* critter, int hit_mode, bool aiming);
 int item_w_min_st(Object* weapon);
 int item_w_crit_fail(Object* weapon);

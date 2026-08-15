@@ -123,6 +123,16 @@ enum class CompanionInventorySlot {
     LeftHand,
 };
 
+// Backing storage for a weapon's ammo name. Sized like the item name it is
+// copied from, since it *is* an item name resolved through the same catalog.
+static constexpr size_t kCompanionItemAmmoNameSize = kCompanionItemNameSize;
+
+// Sentinel for "this field does not apply to this item" (TASK-019). Zero
+// cannot serve: an empty gun really does have 0 loaded rounds, and 0 armor
+// class is a legitimate value. The protocol writer emits only the fields that
+// are not this value.
+constexpr int kCompanionItemFieldAbsent = -1;
+
 struct CompanionInventoryItem {
     int pid;
     int type;
@@ -130,6 +140,27 @@ struct CompanionInventoryItem {
     CompanionInventorySlot slot;
     char protoId[kCompanionItemProtoIdSize];
     char name[kCompanionItemNameSize];
+
+    // Common block (TASK-019). Always meaningful.
+    int weight;
+    int value;
+
+    // Per-type detail (TASK-019). Every field is `kCompanionItemFieldAbsent`
+    // unless the item's type supplies it; `ammoName` is empty unless the
+    // weapon has an ammo type the catalog could resolve.
+    int dmgMin;
+    int dmgMax;
+    int minSt;
+    int range;
+    int ammoCurrent;
+    int ammoMax;
+    char ammoName[kCompanionItemAmmoNameSize];
+    int caliber;
+    int totalRounds;
+    int armorClass;
+    int chargesCurrent;
+    int chargesMax;
+    int capsAmount;
 };
 
 struct CompanionInventorySnapshot {

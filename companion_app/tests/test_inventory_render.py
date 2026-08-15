@@ -309,6 +309,131 @@ class InventoryRenderTests(unittest.TestCase):
             "the readout's SLOT value is blank for a stowed item",
         )
 
+    # ── per-type detail (TASK-019) ─────────────────────────────────
+
+    def _labels(self, item: InventoryItem) -> list[str]:
+        return [f.label for f in inventory_page.detail_fields_for(item)]
+
+    def _value(self, item: InventoryItem, label: str) -> str:
+        for field in inventory_page.detail_fields_for(item):
+            if field.label == label:
+                return field.value
+        raise AssertionError(f"{label} not in {self._labels(item)}")
+
+    def test_common_block_is_on_every_type(self) -> None:
+        for wire_type, _label in inventory_list.GROUP_ORDER:
+            with self.subTest(item_type=wire_type):
+                labels = self._labels(_item(1, "X", wire_type))
+                self.assertEqual(labels[:5], ["TYPE", "QTY", "SLOT", "WT", "VAL"])
+
+    def test_weapon_shows_damage_range_strength_and_ammo(self) -> None:
+        weapon = _item(1, "10mm Pistol", "weapon")
+        weapon.dmg_min, weapon.dmg_max = 5, 12
+        weapon.weapon_range, weapon.min_st = 25, 3
+        weapon.ammo_current, weapon.ammo_max = 8, 12
+        weapon.ammo_name = "10mm JHP"
+        self.assertEqual(self._value(weapon, "DMG"), "5-12")
+        self.assertEqual(self._value(weapon, "RNG"), "25")
+        self.assertEqual(self._value(weapon, "MIN ST"), "3")
+        self.assertEqual(self._value(weapon, "AMMO"), "8/12 10mm JHP")
+
+    def test_weapon_without_a_resolvable_ammo_name_still_shows_counts(self) -> None:
+        weapon = _item(1, "Odd Gun", "weapon")
+        weapon.ammo_current, weapon.ammo_max = 2, 6
+        self.assertEqual(self._value(weapon, "AMMO"), "2/6")
+
+    def test_melee_weapon_omits_ammo_and_keeps_damage(self) -> None:
+        knife = _item(1, "Knife", "weapon")
+        knife.dmg_min, knife.dmg_max = 1, 8
+        self.assertIn("DMG", self._labels(knife))
+        self.assertNotIn("AMMO", self._labels(knife))
+
+    def test_ammo_shows_total_rounds_not_the_stack_count(self) -> None:
+        """Two partially-used boxes: the figure matches neither count nor load."""
+        ammo = _item(1, "10mm JHP", "ammo", count=2)
+        ammo.total_rounds, ammo.caliber = 31, 4
+        self.assertEqual(self._value(ammo, "RNDS"), "31")
+        self.assertNotEqual(self._value(ammo, "RNDS"), self._value(ammo, "QTY"))
+        self.assertEqual(self._value(ammo, "CAL"), "4")
+
+    def test_armor_shows_armor_class(self) -> None:
+        armor = _item(1, "Leather Armor", "armor")
+        armor.armor_class = 8
+        self.assertEqual(self._value(armor, "AC"), "8")
+
+    def test_misc_shows_charges_and_caps_shows_amount(self) -> None:
+        lockpick = _item(1, "Lockpick", "misc")
+        lockpick.charges_current, lockpick.charges_max = 3, 10
+        self.assertEqual(self._value(lockpick, "CHG"), "3/10")
+
+        caps = _item(2, "Bottle Caps", "misc")
+        caps.caps_amount = 1200
+        self.assertEqual(self._value(caps, "CAPS"), "1200")
+        # Caps are misc-typed; they must not also claim a charges row.
+        self.assertNotIn("CHG", self._labels(caps))
+
+    def test_types_with_nothing_to_add_show_only_the_common_block(self) -> None:
+        for wire_type in ("drug", "key", "container"):
+            with self.subTest(item_type=wire_type):
+                self.assertEqual(len(self._labels(_item(1, "X", wire_type))), 5)
+
+    def test_unknown_type_shows_only_the_common_block(self) -> None:
+        self.assertEqual(len(self._labels(_item(1, "Mystery", "sasquatch"))), 5)
+
+    def test_absent_fields_produce_no_row(self) -> None:
+        """The -1 sentinel means "does not apply", and 0 is a real value."""
+        empty_gun = _item(1, "Empty Gun", "weapon")
+        empty_gun.ammo_current, empty_gun.ammo_max = 0, 12
+        self.assertEqual(self._value(empty_gun, "AMMO"), "0/12")
+        self.assertNotIn("DMG", self._labels(empty_gun))
+
+    def test_every_field_set_fits_the_readout(self) -> None:
+        """The pane's row budget, asserted rather than assumed.
+
+        The pre-TASK-019 pane held four baselines and the common block alone
+        would have needed five, so this is the guard on the reshape.
+        """
+        weapon = _item(1, "Weapon", "weapon")
+        weapon.dmg_min, weapon.dmg_max = 5, 12
+        weapon.weapon_range, weapon.min_st = 25, 3
+        weapon.ammo_current, weapon.ammo_max = 8, 12
+        weapon.ammo_name = "10mm JHP"
+        candidates = [weapon] + [
+            _item(2, "X", wire_type) for wire_type, _label in inventory_list.GROUP_ORDER
+        ]
+        rect = inventory_page.detail_rect_for(self.body)
+        for item in candidates:
+            with self.subTest(item_type=item.item_type):
+                rows = inventory_page.pack_detail_rows(
+                    inventory_page.detail_fields_for(item)
+                )
+                lowest = (
+                    rect.top
+                    + inventory_page._DETAIL_ROWS_TOP
+                    + (len(rows) - 1) * inventory_page._DETAIL_ROW_GAP
+                    + 2 * inventory_page._DETAIL_TEXT_HALF_HEIGHT
+                )
+                self.assertLessEqual(
+                    lowest, rect.bottom, f"{len(rows)} rows overflow the readout"
+                )
+
+    def test_wide_field_gets_its_own_row(self) -> None:
+        pack = inventory_page.pack_detail_rows
+        Field = inventory_page.Field
+        rows = pack([Field("A", "1"), Field("B", "2", wide=True), Field("C", "3")])
+        self.assertEqual([len(r) for r in rows], [1, 1, 1])
+        rows = pack([Field("A", "1"), Field("B", "2"), Field("C", "3")])
+        self.assertEqual([len(r) for r in rows], [2, 1])
+
+    def test_populated_detail_renders_for_every_type(self) -> None:
+        for wire_type, _label in inventory_list.GROUP_ORDER:
+            with self.subTest(item_type=wire_type):
+                item = _item(1, "X", wire_type)
+                item.dmg_min = item.dmg_max = 4
+                item.armor_class = item.caliber = item.total_rounds = 2
+                item.charges_current = item.charges_max = 1
+                self._render([item], activated=True)
+
     # ── body budget, both axes ─────────────────────────────────────
 
     def test_content_stays_inside_the_body_bottom(self) -> None:

@@ -8,7 +8,8 @@ is enabled only when `fallout.cfg` has both `[companion] bind` and
 environment variable) and uses it for the `auth` step of the handshake.
 
 T0 protocol changes verified:
-- `world.schemaVersion` is `9` (was `8`; bumped when player.localLocation.mapName was added).
+- `world.schemaVersion` is `10` (was `9`; bumped when per-type item detail was added to
+  player.inventory).
 - `update` carries a `kind` field and a `payload` wrapper (no `entity`,
   no `data`).
 - `update.payload` is the *complete* per-kind object, not a field-level
@@ -133,7 +134,7 @@ def test_auth_then_hello(sock, password):
     assert_equal(msg.get("type"), "world", "type")
     assert_field(msg, "schemaVersion", "world")
     # Current protocol version after player.localLocation.mapName was added.
-    assert_equal(msg.get("schemaVersion"), 9, "world.schemaVersion")
+    assert_equal(msg.get("schemaVersion"), 10, "world.schemaVersion")
     assert_field(msg, "game", "world")
     assert_field(msg, "playerAvailable", "world")
     assert_is_bool(msg["playerAvailable"], "world.playerAvailable")
@@ -562,7 +563,7 @@ def test_server_still_listening(host, port, password):
             fail("server did not respond to a new auth + hello after the bad client")
         msg = json.loads(line)
         assert_equal(msg.get("type"), "world", "type after recovery")
-        assert_equal(msg.get("schemaVersion"), 9, "world.schemaVersion (recovery)")
+        assert_equal(msg.get("schemaVersion"), 10, "world.schemaVersion (recovery)")
 
 
 def main():
