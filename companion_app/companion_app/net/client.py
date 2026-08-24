@@ -278,6 +278,8 @@ class NetworkClient:
             self._on_snapshot(msg)
         elif msg_type == "update":
             self._on_update(msg)
+        elif msg_type == "cmdAck":
+            self._on_cmd_ack(msg)
         elif msg_type == "onPlayerUnavailable":
             self._handle_player_unavailable()
         elif msg_type == "onPlayerAvailable":
@@ -379,6 +381,26 @@ class NetworkClient:
             pass
         else:
             self._log(f"ignoring update: unknown kind {kind!r}")
+
+    def send_inventory_action(self, object_id: int, name: str) -> bool:
+        """Queue one server-authoritative inventory action."""
+        if self._state.connection is not ConnectionState.READY or object_id <= 0:
+            self._state.command_error = "itemIdentityUnavailable"
+            return False
+        request_id = getattr(self, "_next_command_id", 1)
+        self._next_command_id = request_id + 1
+        self._state.command_error = ""
+        self._state.command_pending = True
+        self._queue_line({"type": "cmd", "id": request_id, "name": name, "objectId": object_id})
+        return True
+
+    def _on_cmd_ack(self, msg: dict[str, Any]) -> None:
+        self._state.command_pending = False
+        if bool(msg.get("ok", False)):
+            self._state.command_error = ""
+            return
+        error = msg.get("error")
+        self._state.command_error = error if isinstance(error, str) else "commandFailed"
 
     def _handle_player_unavailable(self) -> None:
         self._state.player.available = False
@@ -903,12 +925,14 @@ class NetworkClient:
 
             items.append(
                 InventoryItem(
+                    object_id=int(raw_item.get("objectId", 0)),
                     pid=int(raw_item.get("pid", 0)),
                     proto_id=str(raw_item.get("protoId", "")),
                     name=str(raw_item.get("name", "")),
                     item_type=str(raw_item.get("type", "")),
                     count=int(raw_item.get("count", 0)),
                     slot=str(raw_item.get("slot", "none")),
+                    two_handed=bool(raw_item.get("twoHanded", False)),
                     weight=opt_int(raw_item, "weight", 0),
                     value=opt_int(raw_item, "value", 0),
                     dmg_min=opt_int(weapon, "dmgMin"),

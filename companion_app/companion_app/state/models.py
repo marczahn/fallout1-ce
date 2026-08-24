@@ -112,12 +112,14 @@ class WorldInfo:
 
 @dataclass
 class InventoryItem:
+    object_id: int = 0
     pid: int = 0
     proto_id: str = ""
     name: str = ""
     item_type: str = ""
     count: int = 0
     slot: str = "none"
+    two_handed: bool = False
 
     # Common block (schemaVersion 10).
     weight: int = 0
@@ -190,3 +192,5 @@ class AppState:
     last_known_world_x: int = 0
     last_known_world_y: int = 0
     has_world_fix: bool = False
+    command_error: str = ""
+    command_pending: bool = False

@@ -222,7 +222,9 @@ CompanionInventoryItem makeInventoryItem(Object* item, int count, CompanionInven
     companionLookupItemMetadata(item->pid, metadata);
 
     CompanionInventoryItem snapshotItem = {};
+    snapshotItem.objectId = item->id;
     snapshotItem.pid = item->pid;
+    snapshotItem.twoHanded = item_get_type(item) == ITEM_TYPE_WEAPON && item_w_is_2handed(item) != 0;
     snapshotItem.type = metadata.type;
     snapshotItem.count = count;
     snapshotItem.slot = slot;

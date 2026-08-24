@@ -19,6 +19,10 @@ from companion_app.config import (
 from companion_app.ui.console import CONSOLE_FONT_SIZE, TypewriterConsole
 from companion_app.debug.event_log import EventLogOverlay
 from companion_app.input.events import (
+    BackEvent,
+    ConfirmEvent,
+    EncoderLeftEvent,
+    EncoderRightEvent,
     InputEvent,
     PageButtonEvent,
 )
@@ -44,7 +48,7 @@ from companion_app.ui.pages.boot import (
 )
 from companion_app.ui.pages.archives import ArchivesSection
 from companion_app.ui.pages.automaps import AutomapsSection
-from companion_app.ui import inventory_list, sections, segmented_header
+from companion_app.ui import inventory_list, item_actions, sections, segmented_header
 from companion_app.ui.scroll_list import ListRow
 from companion_app.ui.sections import (
     SECTION_TITLES,
@@ -95,6 +99,15 @@ def _active_rows(
     if current_page is Page.STATUS and seg.selected_key == STATUS_INVENTORY:
         return inventory_list.build_rows(state.player.inventory)
     return ()
+
+
+def _selected_inventory_item(sections_ui: SectionsUiState, state: AppState):
+    """The currently focused inventory object, if the list owns focus."""
+    if not sections_ui.activated:
+        return None
+    return inventory_list.item_for_key(
+        state.player.inventory, sections_ui.inventory_cursor.selected_key
+    )
 
 
 def _route_input(
@@ -311,6 +324,7 @@ def _run_loop(config: Config) -> int:
 
     current_page: Page = Page.STATUS
     sections_ui = sections.default_sections_ui()
+    item_modal = item_actions.ModalState()
     visible_page: VisiblePage = StartupPage.SPLASH
 
     running = True
@@ -337,6 +351,44 @@ def _run_loop(config: Config) -> int:
             for input_event in input_events:
                 if debug_overlay is not None:
                     debug_overlay.record(input_event)
+                if item_modal.open:
+                    item = _selected_inventory_item(sections_ui, state)
+                    actions = item_actions.actions_for(item)
+                    if item is None or not actions:
+                        item_modal = item_actions.ModalState()
+                    elif item_modal.pending:
+                        continue
+                    elif isinstance(input_event, BackEvent):
+                        item_modal = item_actions.ModalState()
+                    elif isinstance(input_event, EncoderLeftEvent):
+                        item_modal = item_actions.move(item_modal, len(actions), -1)
+                    elif isinstance(input_event, EncoderRightEvent):
+                        item_modal = item_actions.move(item_modal, len(actions), 1)
+                    elif isinstance(input_event, ConfirmEvent):
+                        action = actions[item_modal.index]
+                        if action.command == "cancel":
+                            item_modal = item_actions.ModalState()
+                        elif net is not None and net.send_inventory_action(
+                            item.object_id, action.command
+                        ):
+                            item_modal = item_actions.ModalState(
+                                open=True,
+                                index=item_modal.index,
+                                pending=True,
+                            )
+                    continue
+
+                if (
+                    isinstance(input_event, ConfirmEvent)
+                    and current_page is Page.STATUS
+                    and sections.for_page(sections_ui, current_page).selected_key == STATUS_INVENTORY
+                    and sections_ui.activated
+                ):
+                    item = _selected_inventory_item(sections_ui, state)
+                    if item_actions.actions_for(item):
+                        item_modal = item_actions.ModalState(open=True)
+                        state.command_error = ""
+                        continue
                 current_page, sections_ui = _route_input(
                     current_page, sections_ui, input_event, state
                 )
@@ -346,6 +398,11 @@ def _run_loop(config: Config) -> int:
 
         if net is not None:
             net.poll()
+        if item_modal.pending and not state.command_pending:
+            if state.command_error:
+                item_modal = item_actions.ModalState(open=True, index=item_modal.index)
+            else:
+                item_modal = item_actions.ModalState()
         typewriter.tick(dt_ms)
         boot_tick = boot_sequence.tick(
             dt_ms,
@@ -374,6 +431,16 @@ def _run_loop(config: Config) -> int:
                 body,
                 section_renderers,
             )
+            if item_modal.open:
+                item = _selected_inventory_item(sections_ui, state)
+                if item is not None:
+                    item_actions.render(
+                        virtual,
+                        layout.content_rect,
+                        item,
+                        item_modal,
+                        state.command_error,
+                    )
         elif boot_sequence.show_boot_console:
             boot_page.render(virtual)
             typewriter.draw(virtual, boot_page.console_rect)

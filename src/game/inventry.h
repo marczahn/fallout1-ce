@@ -87,6 +87,20 @@ Object* inven_worn(Object* obj);
 // both hands, as the engine holds it.
 void inven_ui_held_slots(Object** owner, Object** rightHand, Object** leftHand, Object** worn);
 
+// Applies a companion action to the live normal-inventory UI when it is
+// open. Returns 1 when applied, 0 when no player inventory UI is active, and
+// -1 when the item/action is invalid. These keep the temporary UI slots and
+// the persisted inventory in sync until `exit_inventory` writes the slots
+// back to object flags.
+enum class InventoryCompanionAction {
+    UseSelf,
+    EquipArmor,
+    EquipLeftHand,
+    EquipRightHand,
+    EquipBothHands,
+};
+int inven_companion_action(Object* item, InventoryCompanionAction action);
+
 int inven_pid_is_carried(Object* obj, int pid);
 Object* inven_pid_is_carried_ptr(Object* obj, int pid);
 int inven_pid_quantity_carried(Object* obj, int pid);

@@ -101,6 +101,16 @@ class NetworkClientTest(unittest.TestCase):
     def assert_connection(self, expected: ConnectionState) -> None:
         self.assertEqual(self.state.connection, expected)
 
+    def test_inventory_action_queues_object_identity_and_tracks_ack(self) -> None:
+        self.state.connection = ConnectionState.READY
+        self.assertTrue(self.client.send_inventory_action(42, "useSelf"))
+        self.assertTrue(self.state.command_pending)
+        self.assertIn(b'"objectId":42', self.client._write_buf)
+
+        self.client._dispatch({"type": "cmdAck", "id": 1, "ok": False, "error": "notEnoughActionPoints"})
+        self.assertFalse(self.state.command_pending)
+        self.assertEqual(self.state.command_error, "notEnoughActionPoints")
+
     # ── initial state ─────────────────────────────────────────────
 
     def test_initial_state_disconnected(self) -> None:

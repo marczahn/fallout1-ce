@@ -21,8 +21,16 @@
 #include "companion_snapshot.h"
 #include "game/automap.h"
 #include "game/cache.h"
+#include "game/combat.h"
 #include "game/gconfig.h"
+#include "game/game.h"
+#include "game/intface.h"
+#include "game/inventry.h"
+#include "game/item.h"
 #include "game/map.h"
+#include "game/object.h"
+#include "game/perk.h"
+#include "game/protinst.h"
 #include "game/worldmap.h"
 #include "platform_compat.h"
 #include "plib/color/color.h"
@@ -437,6 +445,125 @@ void rejectCommand(int id, const std::string_view& name, const char* error)
         error);
 }
 
+// The normal inventory screen charges 4 AP minus Quick Pockets when opened
+// during the player's combat turn. A companion action is the equivalent of
+// opening that screen and performing one inventory operation, so it uses the
+// same cost and turn restriction without opening a second engine UI.
+bool companionCanUseInventory(int id, std::string_view name, int& actionPoints)
+{
+    actionPoints = 0;
+    if (!isInCombat()) {
+        return true;
+    }
+    if (combat_whose_turn() != obj_dude) {
+        rejectCommand(id, name, "notPlayersTurn");
+        return false;
+    }
+    actionPoints = 4 - perk_level(PERK_QUICK_POCKETS);
+    if (actionPoints > obj_dude->data.critter.combat.ap) {
+        rejectCommand(id, name, "notEnoughActionPoints");
+        return false;
+    }
+    return true;
+}
+
+void companionSpendInventoryActionPoints(int actionPoints)
+{
+    if (actionPoints <= 0) {
+        return;
+    }
+    obj_dude->data.critter.combat.ap -= actionPoints;
+    intface_update_move_points(obj_dude->data.critter.combat.ap, combat_free_move);
+}
+
+bool companionUseSelfDrug(Object* item)
+{
+    int uiResult = inven_companion_action(item, InventoryCompanionAction::UseSelf);
+    if (uiResult != 0) {
+        return uiResult > 0;
+    }
+    if (item_get_type(item) != ITEM_TYPE_DRUG) {
+        return false;
+    }
+    if (item_d_take_drug(obj_dude, item) != 1) {
+        return false;
+    }
+    if (item_remove_mult(obj_dude, item, 1) != 0) {
+        return false;
+    }
+    obj_destroy(item);
+    intface_update_hit_points(true);
+    return true;
+}
+
+bool companionEquip(Object* item, std::string_view action)
+{
+    InventoryCompanionAction uiAction;
+    if (action == "equipArmor") {
+        uiAction = InventoryCompanionAction::EquipArmor;
+    } else if (action == "equipLeftHand") {
+        uiAction = InventoryCompanionAction::EquipLeftHand;
+    } else if (action == "equipRightHand") {
+        uiAction = InventoryCompanionAction::EquipRightHand;
+    } else if (action == "equipBothHands") {
+        uiAction = InventoryCompanionAction::EquipBothHands;
+    } else {
+        return false;
+    }
+    int uiResult = inven_companion_action(item, uiAction);
+    if (uiResult != 0) {
+        return uiResult > 0;
+    }
+
+    int itemType = item_get_type(item);
+    if (action == "equipArmor") {
+        if (itemType != ITEM_TYPE_ARMOR) {
+            return false;
+        }
+        Object* oldArmor = inven_worn(obj_dude);
+        if (inven_wield(obj_dude, item, HAND_RIGHT) == -1) {
+            return false;
+        }
+        adjust_ac(obj_dude, oldArmor, item);
+        return true;
+    }
+
+    if (itemType != ITEM_TYPE_WEAPON && itemType != ITEM_TYPE_MISC) {
+        return false;
+    }
+
+    bool bothHands = action == "equipBothHands";
+    if (bothHands != (itemType == ITEM_TYPE_WEAPON && item_w_is_2handed(item) != 0)) {
+        return false;
+    }
+    if (!bothHands && action != "equipLeftHand" && action != "equipRightHand") {
+        return false;
+    }
+
+    Object* left = inven_left_hand(obj_dude);
+    Object* right = inven_right_hand(obj_dude);
+    if (bothHands) {
+        if (left != nullptr) left->flags &= ~OBJECT_IN_ANY_HAND;
+        if (right != nullptr) right->flags &= ~OBJECT_IN_ANY_HAND;
+        if (inven_wield(obj_dude, item, HAND_RIGHT) == -1) {
+            return false;
+        }
+        item->flags |= OBJECT_IN_LEFT_HAND | OBJECT_IN_RIGHT_HAND;
+    } else {
+        // Replacing either side of a two-handed weapon releases both slots.
+        if (left != nullptr && left == right) {
+            left->flags &= ~OBJECT_IN_ANY_HAND;
+        }
+        // Moving an already-held one-handed item must not leave its old hand
+        // bit set, which would accidentally turn it into a two-handed item.
+        item->flags &= ~OBJECT_IN_ANY_HAND;
+        if (inven_wield(obj_dude, item, action == "equipRightHand" ? HAND_RIGHT : HAND_LEFT) == -1) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void handleCommandMessage(const char* line, size_t lineLength)
 {
     CompanionCommandRequest request = {};
@@ -474,6 +601,56 @@ void handleCommandMessage(const char* line, size_t lineLength)
             request.id);
 
         queueSnapshotMessage(snapshot);
+        return;
+    }
+
+    if (request.name == "useSelf" || request.name == "equipArmor"
+        || request.name == "equipLeftHand" || request.name == "equipRightHand"
+        || request.name == "equipBothHands") {
+        if (!request.hasObjectId) {
+            rejectCommand(request.id, request.name, "missingItem");
+            return;
+        }
+
+        int actionPoints;
+        if (!companionCanUseInventory(request.id, request.name, actionPoints)) {
+            return;
+        }
+
+        Object* item = inven_find_id(obj_dude, request.objectId);
+        if (item == nullptr) {
+            Object* heldOwner = nullptr;
+            Object* heldRight = nullptr;
+            Object* heldLeft = nullptr;
+            Object* heldWorn = nullptr;
+            inven_ui_held_slots(&heldOwner, &heldRight, &heldLeft, &heldWorn);
+            if (heldOwner == obj_dude) {
+                Object* heldItems[] = { heldRight, heldLeft, heldWorn };
+                for (Object* held : heldItems) {
+                    if (held != nullptr && held->id == request.objectId) {
+                        item = held;
+                        break;
+                    }
+                }
+            }
+        }
+        if (item == nullptr) {
+            rejectCommand(request.id, request.name, "itemNotFound");
+            return;
+        }
+
+        bool ok = request.name == "useSelf"
+            ? companionUseSelfDrug(item)
+            : companionEquip(item, request.name);
+        if (!ok) {
+            rejectCommand(request.id, request.name, "actionNotAvailable");
+            return;
+        }
+
+        companionSpendInventoryActionPoints(actionPoints);
+        intface_update_items(false);
+        queueSnapshotMessage();
+        queueMessage(companionBuildCmdAck(request.id, true));
         return;
     }
 

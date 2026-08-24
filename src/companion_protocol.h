@@ -36,10 +36,13 @@ enum class CompanionClientMessage {
 struct CompanionCommandRequest {
     int id;
     std::string_view name;
+    int objectId;
+    bool hasObjectId;
 };
 
-// `world` (handshake response). `schemaVersion` is `10` after adding the
-// additive per-type detail blocks on `player.inventory` items (was `9` for
+// `world` (handshake response). `schemaVersion` is `11` after adding live
+// item identity and the two-handed marker to `player.inventory` (was `10`
+// for the additive per-type detail blocks, `9` for
 // `player.localLocation.mapName`, `8` for `localMapHeader.explored`, `7` for
 // `player.localLocation.worldX/worldY`, `6` for the local-map image fetch,
 // `5` for the world-map image fetch).

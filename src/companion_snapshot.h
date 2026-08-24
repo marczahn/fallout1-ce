@@ -134,7 +134,11 @@ static constexpr size_t kCompanionItemAmmoNameSize = kCompanionItemNameSize;
 constexpr int kCompanionItemFieldAbsent = -1;
 
 struct CompanionInventoryItem {
+    // Live engine identity used by companion commands. This is intentionally
+    // separate from pid: several non-stackable items can share a prototype.
+    int objectId;
     int pid;
+    bool twoHanded;
     int type;
     int count;
     CompanionInventorySlot slot;

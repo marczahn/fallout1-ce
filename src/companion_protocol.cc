@@ -29,7 +29,7 @@
 //                                 normal auth/hello handshake.
 //
 // Server -> client:
-//   {"type":"world","schemaVersion":10,"game":"fallout1-ce","playerAvailable":bool}
+//   {"type":"world","schemaVersion":11,"game":"fallout1-ce","playerAvailable":bool}
 //
 //   {"type":"snapshot","seq":N,"playerAvailable":bool,"payload":{
 //      "player.vitals":          {"hp":H,"maxHp":M},
@@ -51,8 +51,8 @@
 //                                 "location":"<name>","mapName":"<name>",
 //                                 "locationId":"<id>","worldX":WX,"worldY":WY},
 //      "player.worldLocation":  {"x":X,"y":Y},
-//      "player.inventory":       [{"pid":P,"protoId":"<id>","name":"<name>",
-//                                   "type":"<type>","count":N,"slot":"<slot>",
+//      "player.inventory":       [{"objectId":O,"pid":P,"protoId":"<id>","name":"<name>",
+//                                   "type":"<type>","count":N,"slot":"<slot>","twoHanded":bool,
 //                                   "weight":N,"value":N,
 //                                   <at most one per-type block, or none>}]
 //        Per-type blocks (schemaVersion 10). A type with nothing to add
@@ -155,7 +155,9 @@
 // `payload`. `onPlayerUnavailable` and `onPlayerAvailable` have
 // neither.
 //
-// `world.schemaVersion` is now `10` (was `5`). Version 5 added the
+// `world.schemaVersion` is now `11` (was `5`). Version 11 adds stable live
+// inventory object identity and the two-handed marker for companion actions.
+// Version 5 added the
 // world-map image fetch (`getMap`/`getMapChunk`/`mapHeader`/`mapChunk`/
 // `mapError`); version 6 adds the local-map (automap) image fetch
 // (`getLocalMap`/`getLocalMapChunk`/`localMapHeader`/`localMapChunk`/
@@ -541,13 +543,15 @@ std::string buildInventoryPayload(const CompanionInventorySnapshot& inventory)
         char entry[kInventoryEntrySize];
         int n = snprintf(entry,
             sizeof(entry),
-            R"({"pid":%d,"protoId":"%s","name":"%s","type":"%s","count":%d,"slot":"%s","weight":%d,"value":%d%s})",
+            R"({"objectId":%d,"pid":%d,"protoId":"%s","name":"%s","type":"%s","count":%d,"slot":"%s","twoHanded":%s,"weight":%d,"value":%d%s})",
+            item.objectId,
             item.pid,
             item.protoId,
             item.name,
             inventoryTypeName(item.type),
             item.count,
             inventorySlotName(item.slot),
+            item.twoHanded ? "true" : "false",
             item.weight,
             item.value,
             detail);
@@ -701,7 +705,7 @@ std::string companionBuildWorld(bool playerAvailable)
     char buffer[96];
     int n = snprintf(buffer,
         sizeof(buffer),
-        R"({"type":"world","schemaVersion":10,"game":"fallout1-ce","playerAvailable":%s})"
+        R"({"type":"world","schemaVersion":11,"game":"fallout1-ce","playerAvailable":%s})"
         "\n",
         flag);
     if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
@@ -988,7 +992,7 @@ std::string companionBuildAnnounce(std::string_view host)
 {
     std::string message;
     message.reserve(host.size() + 96);
-    message.append(R"({"type":"announce","game":"fallout1-ce","schemaVersion":10,"host":")");
+    message.append(R"({"type":"announce","game":"fallout1-ce","schemaVersion":11,"host":")");
     message.append(host);
     message.append(R"(","port":28080,"authRequired":true})"
                    "\n");
@@ -1396,6 +1400,7 @@ bool companionExtractCommandRequest(const char* line,
     bool sawType = false;
     bool sawId = false;
     bool sawName = false;
+    outRequest.hasObjectId = false;
 
     while (true) {
         skipWhitespace(p, end);
@@ -1435,6 +1440,11 @@ bool companionExtractCommandRequest(const char* line,
                 return false;
             }
             sawName = true;
+        } else if (key == "objectId") {
+            if (!parseJsonInt32(p, end, outRequest.objectId)) {
+                return false;
+            }
+            outRequest.hasObjectId = true;
         } else if (key == "args") {
             const char* valueStart = p;
             skipWhitespace(valueStart, end);

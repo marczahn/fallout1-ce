@@ -328,7 +328,7 @@ static int i_fid;
 static Inventory* pud;
 
 // 0x59CEF8
-static int i_wid;
+static int i_wid = -1;
 
 // 0x059CEFC
 static Object* i_rhand;
@@ -1273,6 +1273,7 @@ void exit_inventory(bool shouldEnableIso)
     }
 
     win_delete(i_wid);
+    i_wid = -1;
 
     gmouse_enable();
 
@@ -2481,6 +2482,80 @@ void inven_ui_held_slots(Object** owner, Object** rightHand, Object** leftHand, 
     if (worn != NULL) {
         *worn = i_worn;
     }
+}
+
+int inven_companion_action(Object* item, InventoryCompanionAction action)
+{
+    if (i_wid == -1 || stack[0] != obj_dude || inven_dude != obj_dude) {
+        return 0;
+    }
+
+    int itemType = item_get_type(item);
+    if (action == InventoryCompanionAction::UseSelf) {
+        if (itemType != ITEM_TYPE_DRUG || item_d_take_drug(obj_dude, item) != 1) {
+            return -1;
+        }
+        if (item == i_lhand) i_lhand = NULL;
+        if (item == i_rhand) i_rhand = NULL;
+        if (item == i_worn) i_worn = NULL;
+        if (item->owner == obj_dude && item_remove_mult(obj_dude, item, 1) != 0) {
+            return -1;
+        }
+        obj_destroy(item);
+        intface_update_hit_points(true);
+    } else if (action == InventoryCompanionAction::EquipArmor) {
+        if (itemType != ITEM_TYPE_ARMOR) {
+            return -1;
+        }
+        if (item != i_worn) {
+            Object* oldArmor = i_worn;
+            if (item == i_lhand) i_lhand = NULL;
+            if (item == i_rhand) i_rhand = NULL;
+            if (item->owner == obj_dude && item_remove_mult(obj_dude, item, 1) != 0) {
+                return -1;
+            }
+            if (oldArmor != NULL && item_add_force(obj_dude, oldArmor, 1) != 0) {
+                item_add_force(obj_dude, item, 1);
+                return -1;
+            }
+            i_worn = item;
+            adjust_ac(obj_dude, oldArmor, item);
+        }
+    } else {
+        bool bothHands = action == InventoryCompanionAction::EquipBothHands;
+        if ((itemType != ITEM_TYPE_WEAPON && itemType != ITEM_TYPE_MISC)
+            || (bothHands != (itemType == ITEM_TYPE_WEAPON && item_w_is_2handed(item) != 0))) {
+            return -1;
+        }
+
+        if (item->owner == obj_dude && item_remove_mult(obj_dude, item, 1) != 0) {
+            return -1;
+        }
+
+        Object* oldLeft = i_lhand;
+        Object* oldRight = i_rhand;
+        if (item == i_lhand) i_lhand = NULL;
+        if (item == i_rhand) i_rhand = NULL;
+
+        if (bothHands) {
+            if (oldLeft != NULL && oldLeft != item && item_add_force(obj_dude, oldLeft, 1) != 0) return -1;
+            if (oldRight != NULL && oldRight != oldLeft && oldRight != item && item_add_force(obj_dude, oldRight, 1) != 0) return -1;
+            i_lhand = item;
+            i_rhand = item;
+        } else if (action == InventoryCompanionAction::EquipLeftHand || action == InventoryCompanionAction::EquipRightHand) {
+            Object** target = action == InventoryCompanionAction::EquipLeftHand ? &i_lhand : &i_rhand;
+            Object* replaced = *target;
+            if (replaced != NULL && replaced != item && item_add_force(obj_dude, replaced, 1) != 0) return -1;
+            *target = item;
+        } else {
+            return -1;
+        }
+    }
+
+    adjust_fid();
+    display_stats();
+    display_inventory(stack_offset[curr_stack], -1, INVENTORY_WINDOW_TYPE_NORMAL);
+    return 1;
 }
 
 // 0x4651A8
