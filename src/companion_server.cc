@@ -685,7 +685,25 @@ void handleCommandMessage(const char* line, size_t lineLength)
 
         companionSpendInventoryActionPoints(actionPoints);
         intface_update_items(false);
-        queueSnapshotMessage();
+        // An action from the app is reported exactly like an equip made
+        // in-game: by the sampler noticing it. Pushing a snapshot here
+        // instead would break the change detection it looks like it
+        // helps -- `queueSnapshotMessage` also primes `lastSent`, so the
+        // baseline would advance past state the client never applied
+        // (the app only accepts a `snapshot` it asked for), and the
+        // `player.inventory` update would then never be emitted. Leave
+        // `lastSent` holding pre-action truth and let the diff fire.
+        //
+        // Zeroing the timer costs nothing: `companionServerTick` runs
+        // `readFromClient` (this handler) -> `sampleReadyClient` ->
+        // `flushOutbound`, so the resample happens later in this same
+        // tick and the ack and the update leave together.
+        //
+        // An action that mutates nothing (`equipArmor` on the armor
+        // already worn, an equip into the slot the item already holds)
+        // emits no update, which is correct -- the ack is the
+        // confirmation, and there is no change to report.
+        gConnection.lastSampleMs = 0;
         queueMessage(companionBuildCmdAck(request.id, true));
         return;
     }

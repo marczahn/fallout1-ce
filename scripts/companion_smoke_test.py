@@ -18,6 +18,10 @@ T0 protocol changes verified:
 - `snapshot.payload` is a kind->object map (no `data.player`).
 - `update` and `snapshot` do NOT carry `data` (T0 renamed it to
   `payload`).
+- An inventory action over `cmd` is reported by the sampler's diff as an
+  `update` of kind `player.inventory`, and never as a pushed `snapshot`
+  (TASK-022). Opt-in via `--mutate-equipment`, because it equips a weapon
+  in the live game.
 
 The step-1/step-2 contracts that T0 preserves are also verified:
 - The `auth` -> `hello` -> `world` handshake.
@@ -538,6 +542,147 @@ def test_get_local_map(sock):
     assert_equal(after_msg.get("type"), "snapshot", "connection alive after localMapError")
 
 
+class _LineStream:
+    """Newline-framed reader that keeps whatever follows the first newline.
+
+    `recv_line` / `recv_line_bytes` drop the remainder of a `recv` chunk,
+    which is harmless for the strict request/response tests above but not
+    here: a `cmd` reply and the sample it triggers are flushed in the same
+    `companionServerTick`, so the `cmdAck` and the `player.inventory`
+    update usually arrive in a single read.
+    """
+
+    def __init__(self, sock):
+        self._sock = sock
+        self._buf = bytearray()
+
+    def next_message(self, timeout):
+        """Next message as a parsed object, or None on EOF/timeout."""
+        self._sock.settimeout(timeout)
+        while True:
+            if b"\n" in self._buf:
+                line, _, rest = bytes(self._buf).partition(b"\n")
+                self._buf[:] = rest
+                return json.loads(line.decode("utf-8"))
+            try:
+                chunk = self._sock.recv(65536)
+            except socket.timeout:
+                return None
+            if not chunk:
+                return None
+            self._buf.extend(chunk)
+
+
+def test_inventory_action_emits_update(sock):
+    """An inventory action issued over `cmd` must be reported the same way an
+    in-game equip is: by the sampler's diff, as an `update` of kind
+    `player.inventory`.
+
+    Regression guard for TASK-022. The server used to push an unsolicited
+    `snapshot` here, which the app discards (it only applies a `snapshot` it
+    asked for) while `primeLastSentState` advanced the diff baseline past it --
+    so the equip never reached the app at all. A pushed `snapshot` in this
+    exchange is therefore a failure, not just a redundancy.
+
+    Mutates the live player's loadout, so it only runs under
+    `--mutate-equipment`.
+    """
+    print("test: cmd equipRightHand -> cmdAck + update(player.inventory), no pushed snapshot")
+    stream = _LineStream(sock)
+
+    sock.sendall(b'{"type":"getSnapshot"}\n')
+    snapshot = None
+    while True:
+        msg = stream.next_message(RECV_TIMEOUT_SECONDS)
+        if msg is None:
+            fail("no snapshot arrived in response to getSnapshot")
+        if msg.get("type") == "snapshot":
+            snapshot = msg
+            break
+
+    inventory = (snapshot.get("payload") or {}).get("player.inventory")
+    if not isinstance(inventory, list):
+        print("  skip: no player.inventory in the snapshot (player not in real gameplay)")
+        return
+
+    # A one-handed, currently unequipped weapon: equipping it is guaranteed
+    # to change `slot`, which is what the diff has to notice. Two-handed
+    # weapons are excluded because they need `equipBothHands`, and an item
+    # already in a slot would be a no-op the server correctly stays silent
+    # about.
+    candidate = next(
+        (
+            item for item in inventory
+            if item.get("type") == "weapon"
+            and not item.get("twoHanded", False)
+            and item.get("slot") == "none"
+            and int(item.get("objectId", 0)) > 0
+        ),
+        None,
+    )
+    if candidate is None:
+        print("  skip: no unequipped one-handed weapon in the player's inventory")
+        return
+    object_id = int(candidate["objectId"])
+    print(f"  info: equipping {candidate.get('name')!r} (objectId={object_id}) into the right hand")
+
+    # Drain whatever the sampler queued alongside the snapshot, so anything
+    # observed below belongs to the action. Bounded, because a game where the
+    # player is moving emits `player.localLocation` every 500 ms and would
+    # otherwise keep this loop fed indefinitely.
+    for _ in range(20):
+        if stream.next_message(0.4) is None:
+            break
+
+    sock.sendall(
+        json.dumps({"type": "cmd", "id": 9001, "name": "equipRightHand", "objectId": object_id}).encode("utf-8")
+        + b"\n"
+    )
+
+    saw_ack = False
+    update = None
+    # Other kinds may legitimately arrive first -- in combat the action's AP
+    # cost is spent before the ack is queued -- so scan rather than assume
+    # ordering.
+    while update is None:
+        msg = stream.next_message(RECV_TIMEOUT_SECONDS)
+        if msg is None:
+            break
+        kind = msg.get("type")
+        if kind == "snapshot":
+            fail("server pushed a `snapshot` after an inventory action (TASK-022 regression): "
+                 "the app discards unsolicited snapshots and `lastSent` is left holding state "
+                 "the client never applied")
+        if kind == "cmdAck" and msg.get("id") == 9001:
+            if not msg.get("ok", False):
+                error = msg.get("error")
+                if error in ("notPlayersTurn", "notEnoughActionPoints"):
+                    print(f"  skip: server rejected the action with {error!r} (combat state)")
+                    return
+                fail(f"equipRightHand was rejected: {error!r}")
+            saw_ack = True
+            ok("cmdAck ok=true")
+            continue
+        if kind == "update" and msg.get("kind") == "player.inventory":
+            update = msg
+
+    if not saw_ack:
+        fail("no cmdAck arrived for the inventory action")
+    if update is None:
+        fail("no `update` of kind player.inventory arrived after the action "
+             "(TASK-022: the sampler's diff must report an app-initiated equip)")
+    ok("update(player.inventory) arrived and no snapshot was pushed")
+
+    payload = update.get("payload")
+    if not isinstance(payload, list):
+        fail(f"update.payload (player.inventory) must be an array, got {type(payload).__name__}")
+    equipped = next((item for item in payload if int(item.get("objectId", 0)) == object_id), None)
+    if equipped is None:
+        fail(f"objectId={object_id} is missing from the inventory update payload")
+    assert_equal(equipped.get("slot"), "rightHand", f"objectId={object_id} slot after equipRightHand")
+    print("  info: the player's right hand was changed by this test; re-equip in-game if it matters")
+
+
 def test_post_handshake_hello_is_ignored(sock):
     print("test: post-handshake hello is silently ignored")
     sock.settimeout(RECV_TIMEOUT_SECONDS)
@@ -626,6 +771,12 @@ def main():
         default=os.environ.get("FALLOUT_COMPANION_PASSWORD", ""),
         help="the configured companion_password in fallout.cfg",
     )
+    parser.add_argument(
+        "--mutate-equipment",
+        action="store_true",
+        help="also run the inventory-action case, which equips a weapon in the live game "
+             "(off by default: it changes the player's loadout)",
+    )
     args = parser.parse_args()
 
     if not args.password:
@@ -640,6 +791,11 @@ def main():
         test_get_map(sock)
         test_get_local_map(sock)
         test_post_handshake_hello_is_ignored(sock)
+        # Last on this connection: it is the only case that keeps a read
+        # buffer of its own, so anything it leaves behind cannot reach the
+        # strict first-line readers above.
+        if args.mutate_equipment:
+            test_inventory_action_emits_update(sock)
 
     test_hello_first_message_drops(args.host, args.port)
     test_auth_wrong_password_drops(args.host, args.port, args.password)
