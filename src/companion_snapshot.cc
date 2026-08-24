@@ -5,13 +5,17 @@
 #include "companion_item_catalog.h"
 #include "companion_json_util.h"
 #include "companion_player_state.h"
+#include "companion_quest_catalog.h"
 #include "game/critter.h"
+#include "game/game.h"
+#include "game/game_vars.h"
 #include "game/inventry.h"
 #include "game/item.h"
 #include "game/combat_defs.h"
 #include "game/map.h"
 #include "game/object.h"
 #include "game/object_types.h"
+#include "game/pipboy.h"
 #include "game/proto_types.h"
 #include "game/stat.h"
 #include "game/stat_defs.h"
@@ -319,6 +323,73 @@ void collectInventorySnapshot(CompanionInventorySnapshot& inventory)
     }
 }
 
+void collectQuestSnapshot(CompanionQuestSnapshot& quests)
+{
+    quests.quests.clear();
+
+    const int locationCount = companionQuestLocationCount();
+    const int slotCount = companionQuestSlotCount();
+
+    for (int location = 0; location < locationCount; ++location) {
+        char locationName[kCompanionLocationSize];
+        bool locationNameResolved = false;
+
+        for (int slot = 0; slot < slotCount; ++slot) {
+            int gvar = companionQuestGlobalVar(location, slot);
+            if (gvar == 0) {
+                // The table's own terminator. `PipStatus` breaks here too
+                // (`pipboy.cc:1194-1196`, `:1236-1238`). Note that
+                // `ListStatLines` (`pipboy.cc:1315`) omits this break and
+                // so reads `game_global_vars[0]` for empty slots; that is
+                // an upstream quirk and is deliberately not copied here.
+                break;
+            }
+
+            int value = game_get_global_var(gvar);
+
+            // Visibility: the global var is set, except the water chip,
+            // which the engine forces visible (`pipboy.cc:1199-1201`).
+            const bool waterChip = gvar == GVAR_FIND_WATER_CHIP;
+            if (value <= 0 && !waterChip) {
+                continue;
+            }
+
+            if (!locationNameResolved) {
+                if (!companionQuestLocationName(location, locationName, sizeof(locationName))) {
+                    locationName[0] = '\0';
+                }
+                locationNameResolved = true;
+            }
+
+            CompanionQuest quest = {};
+            quest.locationIndex = location;
+            quest.slot = slot;
+            quest.completed = value > 1;
+            quest.waterChip = waterChip;
+
+            strncpy(quest.location, locationName, sizeof(quest.location) - 1);
+            quest.location[sizeof(quest.location) - 1] = '\0';
+
+            // A quest whose text will not resolve is still emitted, with
+            // `text` empty. Dropping it would silently shrink the list
+            // relative to the in-game screen with no symptom anywhere;
+            // an empty line is a defect the player can actually see.
+            if (!companionQuestText(location, slot, quest.text, sizeof(quest.text))) {
+                quest.text[0] = '\0';
+            }
+
+            quests.quests.push_back(quest);
+        }
+    }
+
+    quests.waterDaysRemaining = game_get_global_var(GVAR_VAULT_WATER);
+
+    // The engine's own guard, `scripts.cc:324` - deliberately `!= 2` and
+    // not `> 1`, so the divergence above value 2 survives to the client
+    // instead of being flattened here. See `CompanionQuestSnapshot`.
+    quests.waterCountdownActive = game_get_global_var(GVAR_FIND_WATER_CHIP) != 2;
+}
+
 } // namespace
 
 CompanionSnapshot companionCollectSnapshot()
@@ -336,6 +407,9 @@ CompanionSnapshot companionCollectSnapshot()
     snapshot.localLocation.locationId[0] = '\0';
     snapshot.worldLocation = CompanionPlayerWorldLocation{ 0, 0 };
     snapshot.inventory.items.clear();
+    snapshot.quests.quests.clear();
+    snapshot.quests.waterDaysRemaining = 0;
+    snapshot.quests.waterCountdownActive = false;
 
     if (!companionIsPlayerReallyPlaying()) {
         return snapshot;
@@ -365,6 +439,7 @@ CompanionSnapshot companionCollectSnapshot()
     snapshot.progression.experience = stat_pc_get(PC_STAT_EXPERIENCE);
     snapshot.progression.nextLevelExp = stat_pc_min_exp();
     collectInventorySnapshot(snapshot.inventory);
+    collectQuestSnapshot(snapshot.quests);
 
     if (worldMapIsActive()) {
         snapshot.surface = CompanionPlayerSurface::World;

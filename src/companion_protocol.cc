@@ -29,7 +29,7 @@
 //                                 normal auth/hello handshake.
 //
 // Server -> client:
-//   {"type":"world","schemaVersion":11,"game":"fallout1-ce","playerAvailable":bool}
+//   {"type":"world","schemaVersion":12,"game":"fallout1-ce","playerAvailable":bool}
 //
 //   {"type":"snapshot","seq":N,"playerAvailable":bool,"payload":{
 //      "player.vitals":          {"hp":H,"maxHp":M},
@@ -71,6 +71,26 @@
 //        `dmgMax` already includes the melee-damage contribution for melee
 //        and unarmed weapons, and `range` is computed against the player,
 //        because neither is derivable from item data alone.
+//      "player.quests":         {"quests":[{"locationIndex":LI,"slot":S,
+//                                   "location":"<name>","text":"<line>",
+//                                   "completed":bool,"waterChip":bool}],
+//                                 "water":{"daysRemaining":N,
+//                                          "countdownActive":bool}}
+//        (schemaVersion 12.) The visible rows of the in-game Pip-Boy quest
+//        screen, in engine order (locationIndex ascending, then slot). A
+//        quest is visible when its backing global var is > 0, except the
+//        water-chip quest, which the engine forces visible. Identity is
+//        `(locationIndex, slot)`; the backing `GVAR_*` index is
+//        deliberately not carried. `location` is the engine's own Pip-Boy
+//        location name, not the automap short name `player.localLocation`
+//        reports. `text` may be empty if the message file could not
+//        resolve the line; the row is still emitted so the list cannot
+//        silently disagree with the in-game screen.
+//        `completed` mirrors the Pip-Boy's strike-through rule (var > 1);
+//        `water.countdownActive` mirrors the engine's own countdown guard
+//        (var != 2). The two disagree above 2 and are both reported as-is
+//        rather than merged. `waterChip` marks the one row the countdown
+//        belongs to.
 //   }}
 //   The `payload` of `snapshot` is a kind->object map. Only kinds valid
 //   in the current state are present. `player.localLocation` and
@@ -99,6 +119,9 @@
 //                               worldX, worldY}
 //     "player.worldLocation":  payload fields are {x, y}
 //     "player.inventory":       payload is the complete inventory array
+//     "player.quests":          payload is {quests, water} -- the
+//                               complete quest array plus the Vault 13
+//                               water countdown
 //   `playerAvailable` in the envelope is always `true` for an `update`:
 //   the server only emits `update` while the player is loaded. When
 //   the player is not loaded, the server emits `onPlayerUnavailable`
@@ -155,7 +178,9 @@
 // `payload`. `onPlayerUnavailable` and `onPlayerAvailable` have
 // neither.
 //
-// `world.schemaVersion` is now `11` (was `5`). Version 11 adds stable live
+// `world.schemaVersion` is now `12` (was `5`). Version 12 adds the
+// `player.quests` kind: the visible Pip-Boy quest list plus the Vault 13
+// water countdown. Version 11 adds stable live
 // inventory object identity and the two-handed marker for companion actions.
 // Version 5 added the
 // world-map image fetch (`getMap`/`getMapChunk`/`mapHeader`/`mapChunk`/
@@ -188,6 +213,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "companion_json_util.h"
 #include "game/proto_types.h"
 
 namespace fallout {
@@ -257,6 +283,7 @@ constexpr char kProgressionKind[] = "player.progression";
 constexpr char kLocalLocationKind[] = "player.localLocation";
 constexpr char kWorldLocationKind[] = "player.worldLocation";
 constexpr char kInventoryKind[] = "player.inventory";
+constexpr char kQuestsKind[] = "player.quests";
 
 constexpr size_t kLocalLocationBodySize = 512;
 static_assert(
@@ -566,6 +593,59 @@ std::string buildInventoryPayload(const CompanionInventorySnapshot& inventory)
     return body;
 }
 
+// `player.quests` body. An object rather than a bare array (unlike
+// `player.inventory`), because the water countdown is a property of the
+// vault's water supply rather than of any one row.
+//
+// `location` and `text` go through `companionAppendEscapedJsonString`
+// rather than the `companionIsSafeJsonString` gate the item catalog uses:
+// quest prose can legitimately contain a `"`, and neither dropping the row
+// nor rewriting the prose is acceptable when the criterion is "the same
+// quest lines the in-game Pip-Boy shows".
+std::string buildQuestsPayload(const CompanionQuestSnapshot& quests)
+{
+    std::string body;
+    body.reserve(64 + quests.quests.size() * 128);
+    body.append(R"({"quests":[)");
+
+    for (size_t index = 0; index < quests.quests.size(); ++index) {
+        const CompanionQuest& quest = quests.quests[index];
+        if (index != 0) {
+            body.push_back(',');
+        }
+
+        char head[64];
+        int n = snprintf(head, sizeof(head), R"({"locationIndex":%d,"slot":%d,"location":")", quest.locationIndex, quest.slot);
+        if (n < 0 || static_cast<size_t>(n) >= sizeof(head)) {
+            return std::string();
+        }
+        body.append(head, static_cast<size_t>(n));
+        companionAppendEscapedJsonString(body, quest.location);
+
+        body.append(R"(","text":")");
+        companionAppendEscapedJsonString(body, quest.text);
+
+        body.append(R"(","completed":)");
+        body.append(quest.completed ? "true" : "false");
+        body.append(R"(,"waterChip":)");
+        body.append(quest.waterChip ? "true" : "false");
+        body.push_back('}');
+    }
+
+    char tail[80];
+    int n = snprintf(tail,
+        sizeof(tail),
+        R"(],"water":{"daysRemaining":%d,"countdownActive":%s}})",
+        quests.waterDaysRemaining,
+        quests.waterCountdownActive ? "true" : "false");
+    if (n < 0 || static_cast<size_t>(n) >= sizeof(tail)) {
+        return std::string();
+    }
+    body.append(tail, static_cast<size_t>(n));
+
+    return body;
+}
+
 void skipWhitespace(const char*& p, const char* end)
 {
     while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
@@ -705,7 +785,7 @@ std::string companionBuildWorld(bool playerAvailable)
     char buffer[96];
     int n = snprintf(buffer,
         sizeof(buffer),
-        R"({"type":"world","schemaVersion":11,"game":"fallout1-ce","playerAvailable":%s})"
+        R"({"type":"world","schemaVersion":12,"game":"fallout1-ce","playerAvailable":%s})"
         "\n",
         flag);
     if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
@@ -780,6 +860,11 @@ std::string companionBuildSnapshotPayload(const CompanionSnapshot& snapshot)
             return std::string();
         }
         if (!appendKind(kInventoryKind, inventoryBody.c_str())) {
+            return std::string();
+        }
+
+        std::string questsBody = buildQuestsPayload(snapshot.quests);
+        if (questsBody.empty() || !appendKind(kQuestsKind, questsBody.c_str())) {
             return std::string();
         }
     }
@@ -929,6 +1014,16 @@ std::string companionBuildInventoryUpdate(unsigned int seq,
     return wrapUpdate(seq, kInventoryKind, body.c_str());
 }
 
+std::string companionBuildQuestsUpdate(unsigned int seq,
+    const CompanionQuestSnapshot& current)
+{
+    std::string body = buildQuestsPayload(current);
+    if (body.empty()) {
+        return std::string();
+    }
+    return wrapUpdate(seq, kQuestsKind, body.c_str());
+}
+
 std::string companionBuildOnPlayerUnavailable(unsigned int seq)
 {
     char buffer[80];
@@ -992,7 +1087,7 @@ std::string companionBuildAnnounce(std::string_view host)
 {
     std::string message;
     message.reserve(host.size() + 96);
-    message.append(R"({"type":"announce","game":"fallout1-ce","schemaVersion":11,"host":")");
+    message.append(R"({"type":"announce","game":"fallout1-ce","schemaVersion":12,"host":")");
     message.append(host);
     message.append(R"(","port":28080,"authRequired":true})"
                    "\n");

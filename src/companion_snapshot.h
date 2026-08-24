@@ -171,6 +171,65 @@ struct CompanionInventorySnapshot {
     std::vector<CompanionInventoryItem> items;
 };
 
+// Backing storage for a quest line. The engine word-wraps quest text at
+// 350px (`pipboy.cc:1253`) and imposes no length cap of its own, so this
+// is a defensive ceiling rather than a mirrored engine constant. The
+// client wraps rather than truncates, so an unexpectedly long line
+// degrades into an extra row instead of losing text.
+static constexpr size_t kCompanionQuestTextSize = 256;
+
+// One row of the in-game Pip-Boy quest screen. Identity is
+// `(locationIndex, slot)` - both compile-time-stable coordinates in the
+// engine's fixed 12x9 `sthreads` table, which is all a client-side row key
+// needs. The backing `GVAR_*` index is deliberately not carried: it is an
+// engine internal with no meaning to the companion.
+struct CompanionQuest {
+    int locationIndex; // 0..companionQuestLocationCount()-1
+    int slot; // 0..companionQuestSlotCount()-1
+
+    // `PipStatus`'s own rule: the quest's global var is > 1
+    // (`pipboy.cc:1266-1272`, where such a quest prints with
+    // `PIPBOY_TEXT_STYLE_STRIKE_THROUGH`).
+    bool completed;
+
+    // True for the quest backed by `GVAR_FIND_WATER_CHIP`. A semantic
+    // flag, not a GVAR leak: it tells the client which row the Vault 13
+    // water countdown belongs to without the client having to know
+    // anything about the engine's quest table.
+    bool waterChip;
+
+    // The engine's own Pip-Boy location name, message id
+    // `700 + 10 * locationIndex` - the same string the in-game quest
+    // screen prints, not the automap short name `localLocation` reports.
+    char location[kCompanionLocationSize];
+
+    // Message id `701 + 10 * locationIndex + slot`, verbatim. Empty when
+    // the quest catalog could not resolve it; the client renders that as a
+    // visible failure rather than dropping the row, so the list can never
+    // silently disagree with the in-game screen.
+    char text[kCompanionQuestTextSize];
+};
+
+// `player.quests` payload. `quests` is the complete visible set in engine
+// order (location index ascending, then slot) - a full replacement on
+// every change, like `player.inventory`.
+//
+// The water fields mirror the Vault 13 countdown the engine runs in
+// `gtime_q_process` (`scripts.cc:306-339`), which decrements
+// `GVAR_VAULT_WATER` by one per in-game midnight while
+// `GVAR_FIND_WATER_CHIP != 2`.
+//
+// `waterCountdownActive` uses that `!= 2` guard, while `CompanionQuest`'s
+// `completed` uses `PipStatus`'s `> 1`. The two engine rules disagree
+// above value 2, and both are reported as-is rather than merged: a modded
+// or unexpected value then produces two honest signals instead of one
+// invented one. Do not "simplify" them into a single flag.
+struct CompanionQuestSnapshot {
+    std::vector<CompanionQuest> quests;
+    int waterDaysRemaining;
+    bool waterCountdownActive;
+};
+
 // Aggregator over the three per-kind player payloads. The `surface`
 // field drives which of `localLocation` and `worldLocation` are
 // meaningful at any given sample; `vitals` is always meaningful when
@@ -186,6 +245,7 @@ struct CompanionSnapshot {
     CompanionPlayerLocalLocation localLocation;
     CompanionPlayerWorldLocation worldLocation;
     CompanionInventorySnapshot inventory;
+    CompanionQuestSnapshot quests;
 };
 
 CompanionSnapshot companionCollectSnapshot();

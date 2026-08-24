@@ -2489,4 +2489,27 @@ static void pip_note()
     }
 }
 
+int companionQuestLocationCount()
+{
+    return QUEST_LOCATION_COUNT;
+}
+
+int companionQuestSlotCount()
+{
+    return QUEST_PER_LOCATION_COUNT;
+}
+
+int companionQuestGlobalVar(int location, int slot)
+{
+    if (location < 0 || location >= QUEST_LOCATION_COUNT) {
+        return 0;
+    }
+
+    if (slot < 0 || slot >= QUEST_PER_LOCATION_COUNT) {
+        return 0;
+    }
+
+    return sthreads[location][slot];
+}
+
 } // namespace fallout

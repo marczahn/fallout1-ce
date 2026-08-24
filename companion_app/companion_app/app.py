@@ -48,9 +48,16 @@ from companion_app.ui.pages.boot import (
 )
 from companion_app.ui.pages.archives import ArchivesSection
 from companion_app.ui.pages.automaps import AutomapsSection
-from companion_app.ui import inventory_list, item_actions, sections, segmented_header
+from companion_app.ui import (
+    inventory_list,
+    item_actions,
+    quest_list,
+    sections,
+    segmented_header,
+)
 from companion_app.ui.scroll_list import ListRow
 from companion_app.ui.sections import (
+    ARCHIVES_QUESTS,
     SECTION_TITLES,
     STATUS_INVENTORY,
     SectionsUiState,
@@ -92,12 +99,30 @@ def _active_rows(
     """Content rows for the active sub-section, or empty if it has none.
 
     Derived per call rather than stored: the network client replaces
-    ``player.inventory`` wholesale on every update, so cached rows would
-    need invalidating on each one. Only the cursor is state.
+    ``player.inventory`` and ``player.quests`` wholesale on every update, so
+    cached rows would need invalidating on each one. Only the cursor and the
+    drill-down depth are state.
+
+    For a drillable sub-section this returns the rows of **whichever level
+    is showing**, so ``handle_input``'s wrap-around and ``resolve_cursor``
+    work per level with no extra state.
     """
     seg = sections.for_page(sections_ui, current_page)
     if current_page is Page.STATUS and seg.selected_key == STATUS_INVENTORY:
         return inventory_list.build_rows(state.player.inventory)
+    if current_page is Page.ARCHIVES and seg.selected_key == ARCHIVES_QUESTS:
+        quests = state.player.quests
+        if sections_ui.quest_location_key == "":
+            return quest_list.build_location_rows(quests)
+        location_index = quest_list.location_index_from_key(
+            sections_ui.quest_location_key
+        )
+        if location_index is None:
+            # A depth key that no longer decodes — only reachable if the
+            # stored key were corrupted. Fall back to level 1 rather than
+            # raising: the screen pops up a level instead of crashing.
+            return quest_list.build_location_rows(quests)
+        return quest_list.build_quest_rows(quests, location_index)
     return ()
 
 
@@ -180,7 +205,7 @@ def _render_section(
         content_rect,
         state,
         seg.selected_key,
-        sections.focus_for(sections_ui),
+        sections.focus_for(sections_ui, current_page, seg.selected_key),
     )
 
 

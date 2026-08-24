@@ -770,6 +770,162 @@ class NetworkClientTest(unittest.TestCase):
         self.assert_connection(ConnectionState.DISCONNECTED)
         self.assertIsNone(self.client._sock)
 
+    # ── player.quests (TASK-021, schemaVersion 12) ────────────────
+
+    def _quest_payload(self) -> dict:
+        return {
+            "quests": [
+                {
+                    "locationIndex": 0,
+                    "slot": 3,
+                    "location": "Vault 13",
+                    "text": 'Find the "water chip".',
+                    "completed": False,
+                    "waterChip": True,
+                },
+                {
+                    "locationIndex": 3,
+                    "slot": 1,
+                    "location": "Junktown",
+                    "text": "Kill Killian.",
+                    "completed": True,
+                    "waterChip": False,
+                },
+            ],
+            "water": {"daysRemaining": 137, "countdownActive": True},
+        }
+
+    def test_quests_update_applies_a_well_formed_payload(self) -> None:
+        self.client._dispatch(
+            {
+                "type": "update",
+                "kind": "player.quests",
+                "payload": self._quest_payload(),
+            }
+        )
+        quests = self.state.player.quests
+        self.assertEqual(len(quests), 2)
+        self.assertEqual(quests[0].location_index, 0)
+        self.assertEqual(quests[0].slot, 3)
+        self.assertEqual(quests[0].location, "Vault 13")
+        # Quotes inside quest prose survive the wire verbatim — the whole
+        # reason the server escapes them rather than rewriting them.
+        self.assertEqual(quests[0].text, 'Find the "water chip".')
+        self.assertFalse(quests[0].completed)
+        self.assertTrue(quests[0].water_chip)
+        self.assertTrue(quests[1].completed)
+        self.assertFalse(quests[1].water_chip)
+        self.assertEqual(self.state.player.water.days_remaining, 137)
+        self.assertTrue(self.state.player.water.countdown_active)
+
+    def test_quests_update_replaces_wholesale(self) -> None:
+        self.client._dispatch(
+            {
+                "type": "update",
+                "kind": "player.quests",
+                "payload": self._quest_payload(),
+            }
+        )
+        self.client._dispatch(
+            {
+                "type": "update",
+                "kind": "player.quests",
+                "payload": {
+                    "quests": [],
+                    "water": {"daysRemaining": 0, "countdownActive": False},
+                },
+            }
+        )
+        self.assertEqual(self.state.player.quests, [])
+        self.assertEqual(self.state.player.water.days_remaining, 0)
+        self.assertFalse(self.state.player.water.countdown_active)
+
+    def test_quests_payload_with_water_absent_defaults_rather_than_raising(
+        self,
+    ) -> None:
+        payload = self._quest_payload()
+        del payload["water"]
+        self.client._dispatch(
+            {"type": "update", "kind": "player.quests", "payload": payload}
+        )
+        self.assertEqual(len(self.state.player.quests), 2)
+        self.assertEqual(self.state.player.water.days_remaining, 0)
+        self.assertFalse(self.state.player.water.countdown_active)
+
+    def test_quests_payload_with_quests_absent_or_null(self) -> None:
+        for payload in (
+            {"water": {"daysRemaining": 5, "countdownActive": True}},
+            {"quests": None, "water": {"daysRemaining": 5, "countdownActive": True}},
+        ):
+            with self.subTest(payload=payload):
+                self.client._dispatch(
+                    {"type": "update", "kind": "player.quests", "payload": payload}
+                )
+                self.assertEqual(self.state.player.quests, [])
+                self.assertEqual(self.state.player.water.days_remaining, 5)
+
+    def test_quests_payload_tolerates_nulls_and_junk_entries(self) -> None:
+        """A null string must never become the literal "None" on screen."""
+        self.client._dispatch(
+            {
+                "type": "update",
+                "kind": "player.quests",
+                "payload": {
+                    "quests": [
+                        {
+                            "locationIndex": 1,
+                            "slot": None,
+                            "location": None,
+                            "text": None,
+                            "completed": None,
+                            "waterChip": None,
+                        },
+                        "not-an-object",
+                        None,
+                    ],
+                    "water": {"daysRemaining": None, "countdownActive": None},
+                },
+            }
+        )
+        quests = self.state.player.quests
+        self.assertEqual(len(quests), 1, "non-object entries are skipped")
+        self.assertEqual(quests[0].slot, 0)
+        self.assertEqual(quests[0].location, "")
+        self.assertEqual(quests[0].text, "")
+        self.assertFalse(quests[0].completed)
+        self.assertEqual(self.state.player.water.days_remaining, 0)
+
+    def test_empty_quests_payload_object_is_safe(self) -> None:
+        self.client._dispatch(
+            {"type": "update", "kind": "player.quests", "payload": {}}
+        )
+        self.assertEqual(self.state.player.quests, [])
+        self.assertFalse(self.state.player.water.countdown_active)
+
+    def test_snapshot_payload_applies_quests(self) -> None:
+        self.client._apply_snapshot_payload(
+            {
+                "player.vitals": {"hp": 30, "maxHp": 40},
+                "player.quests": self._quest_payload(),
+            }
+        )
+        self.assertEqual(len(self.state.player.quests), 2)
+        self.assertEqual(self.state.player.water.days_remaining, 137)
+
+    def test_snapshot_from_an_older_server_leaves_quests_empty(self) -> None:
+        """A schemaVersion 11 server sends no player.quests at all."""
+        self.client._apply_snapshot_payload({"player.vitals": {"hp": 1, "maxHp": 2}})
+        self.assertEqual(self.state.player.quests, [])
+        self.assertFalse(self.state.player.water.countdown_active)
+
+    def test_snapshot_clears_quests_that_are_no_longer_reported(self) -> None:
+        self.client._apply_snapshot_payload({"player.quests": self._quest_payload()})
+        self.assertEqual(len(self.state.player.quests), 2)
+        self.client._apply_snapshot_payload({"player.vitals": {"hp": 1, "maxHp": 2}})
+        self.assertEqual(
+            self.state.player.quests, [], "a snapshot is a full replacement"
+        )
+
     # ── error handling ────────────────────────────────────────────
 
     def test_malformed_json_logged_and_skipped(self) -> None:

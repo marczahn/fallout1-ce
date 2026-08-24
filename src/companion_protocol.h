@@ -20,6 +20,7 @@ constexpr char kCompanionKindPlayerProgression[] = "player.progression";
 constexpr char kCompanionKindPlayerLocalLocation[] = "player.localLocation";
 constexpr char kCompanionKindPlayerWorldLocation[] = "player.worldLocation";
 constexpr char kCompanionKindPlayerInventory[] = "player.inventory";
+constexpr char kCompanionKindPlayerQuests[] = "player.quests";
 
 enum class CompanionClientMessage {
     Hello,
@@ -40,12 +41,12 @@ struct CompanionCommandRequest {
     bool hasObjectId;
 };
 
-// `world` (handshake response). `schemaVersion` is `11` after adding live
-// item identity and the two-handed marker to `player.inventory` (was `10`
-// for the additive per-type detail blocks, `9` for
-// `player.localLocation.mapName`, `8` for `localMapHeader.explored`, `7` for
-// `player.localLocation.worldX/worldY`, `6` for the local-map image fetch,
-// `5` for the world-map image fetch).
+// `world` (handshake response). `schemaVersion` is `12` after adding the
+// `player.quests` kind (was `11` for live item identity and the two-handed
+// marker on `player.inventory`, `10` for the additive per-type detail
+// blocks, `9` for `player.localLocation.mapName`, `8` for
+// `localMapHeader.explored`, `7` for `player.localLocation.worldX/worldY`,
+// `6` for the local-map image fetch, `5` for the world-map image fetch).
 std::string companionBuildWorld(bool playerAvailable);
 
 // `snapshot` (full state). `payload` is a kind->object map. Only kinds
@@ -81,6 +82,13 @@ std::string companionBuildWorldLocationUpdate(unsigned int seq,
 std::string companionBuildInventoryUpdate(unsigned int seq,
     const CompanionInventorySnapshot& current);
 
+// `player.quests`. Payload is an object -- `{"quests":[...],"water":{...}}`
+// -- rather than a bare array like `player.inventory`, because the Vault 13
+// water countdown belongs to the vault, not to any one quest row. Quest
+// text is emitted verbatim through `companionAppendEscapedJsonString`.
+std::string companionBuildQuestsUpdate(unsigned int seq,
+    const CompanionQuestSnapshot& current);
+
 // `onPlayerUnavailable`. One-shot on the present -> absent transition.
 // No `kind`, no `payload`.
 std::string companionBuildOnPlayerUnavailable(unsigned int seq);
@@ -99,8 +107,10 @@ std::string companionBuildCmdAck(int id,
     std::string_view data = {});
 
 // `announce` UDP broadcast. `schemaVersion` follows the live protocol
-// version (`6` after adding the local-map image fetch), so discovery and
-// TCP advertise the same wire contract.
+// version (`12` after adding `player.quests`), so discovery and TCP
+// advertise the same wire contract. Bump it here *and* in
+// `companionBuildWorld` -- the smoke test only sees the TCP handshake, so
+// an un-bumped broadcast would pass unnoticed.
 std::string companionBuildAnnounce(std::string_view host);
 
 // World-map image fetch builders (pure; no worldmap dependency). They

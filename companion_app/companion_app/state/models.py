@@ -145,6 +145,49 @@ class InventoryItem:
 
 
 @dataclass
+class Quest:
+    """One row of the in-game Pip-Boy quest screen (schemaVersion 12).
+
+    Identity is ``(location_index, slot)`` — the server's coordinates in
+    the engine's fixed quest table. No GVAR index crosses the wire, so the
+    app never learns anything about engine internals.
+
+    ``location`` is the engine's own Pip-Boy location name, which is *not*
+    the automap short name ``PlayerState.location`` carries. Grouping runs
+    on ``location_index`` so it never depends on a localized string.
+
+    ``text`` may legitimately be empty: the server emits the row anyway
+    when its message file could not resolve the line, so the list can never
+    silently disagree with the in-game screen. The renderer shows that as a
+    visible failure rather than hiding the row.
+    """
+
+    location_index: int = 0
+    slot: int = 0
+    location: str = ""
+    text: str = ""
+    completed: bool = False
+    water_chip: bool = False
+
+
+@dataclass
+class WaterStatus:
+    """The Vault 13 water countdown (schemaVersion 12).
+
+    ``days_remaining`` is days of water left; the engine decrements it once
+    per in-game midnight. ``countdown_active`` is the engine's own guard on
+    that decrement, which is deliberately *not* the same rule as a quest's
+    ``completed`` — the two disagree once the water-chip variable exceeds 2,
+    and the server reports both as-is rather than merging them.
+    ``ui.quest_list.water_state`` is the single place that turns the pair
+    into a label.
+    """
+
+    days_remaining: int = 0
+    countdown_active: bool = False
+
+
+@dataclass
 class PlayerState:
     available: bool = False
     hp: int = 0
@@ -177,6 +220,8 @@ class PlayerState:
     agility: int = 0
     luck: int = 0
     inventory: list[InventoryItem] = field(default_factory=list)
+    quests: list[Quest] = field(default_factory=list)
+    water: WaterStatus = field(default_factory=WaterStatus)
 
 
 @dataclass

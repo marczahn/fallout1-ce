@@ -126,16 +126,27 @@ def draw_text_left(
     pos: tuple[int, int],
     size: int,
     color: tuple[int, int, int],
+    *,
+    strike: bool = False,
 ) -> "pygame.Rect":
     """Draw `text` left-anchored at `pos` (top-left in virtual pixels).
 
-    Returns the blitted rect.
+    `strike` draws a 1px rule across the text at its vertical midpoint, in
+    the text colour — used for a completed quest (TASK-021), mirroring the
+    engine's own `PIPBOY_TEXT_STYLE_STRIKE_THROUGH`. `pygame.freetype`
+    offers no strikethrough style, so it is drawn here; the line's extent
+    comes from the measured rect rather than being guessed.
+
+    Returns the blitted rect (the text's, not the rule's).
     """
     _validate_text_args(surface, text, size)
     font = _get_font(size)
     rect = font.get_rect(text, size=size)
     rect.topleft = pos
     font.render_to(surface, rect.topleft, text, color, size=size)
+    if strike and rect.width > 0:
+        y = rect.centery
+        pygame.draw.line(surface, color, (rect.left, y), (rect.right - 1, y), 1)
     return rect
 
 
@@ -169,6 +180,19 @@ def draw_text_centered(
     text_rect.center = rect.center
     font.render_to(surface, text_rect.topleft, text, color, size=size)
     return text_rect
+
+
+def measure_width(text: str, size: int) -> int:
+    """Rendered width of `text` at `size`, in virtual pixels.
+
+    Exposed so callers can word-wrap against the real face (TASK-021). The
+    vendored font is proportional, so a character count is wrong by a
+    different amount for every string — measuring is the only way to wrap
+    to a pixel width.
+    """
+    if not text:
+        return 0
+    return _get_font(size).get_rect(text, size=size).width
 
 
 def font_render_surface(

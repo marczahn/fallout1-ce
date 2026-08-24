@@ -18,6 +18,7 @@
 #include "companion_item_catalog.h"
 #include "companion_player_state.h"
 #include "companion_protocol.h"
+#include "companion_quest_catalog.h"
 #include "companion_snapshot.h"
 #include "game/automap.h"
 #include "game/cache.h"
@@ -425,6 +426,41 @@ bool inventoryDiffer(const CompanionInventorySnapshot& a, const CompanionInvento
 
     for (size_t index = 0; index < a.items.size(); ++index) {
         if (inventoryItemDiffer(a.items[index], b.items[index])) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool questsDiffer(const CompanionQuestSnapshot& a, const CompanionQuestSnapshot& b)
+{
+    if (a.waterDaysRemaining != b.waterDaysRemaining
+        || a.waterCountdownActive != b.waterCountdownActive) {
+        return true;
+    }
+
+    if (a.quests.size() != b.quests.size()) {
+        return true;
+    }
+
+    for (size_t index = 0; index < a.quests.size(); ++index) {
+        const CompanionQuest& x = a.quests[index];
+        const CompanionQuest& y = b.quests[index];
+
+        if (x.locationIndex != y.locationIndex
+            || x.slot != y.slot
+            || x.completed != y.completed
+            || x.waterChip != y.waterChip) {
+            return true;
+        }
+
+        // Quest text is immutable per (location, slot), so comparing it is
+        // redundant for detecting an actual quest change. Compared anyway
+        // because it costs nothing and makes a catalog that resolved late
+        // -- first sample before the message list loaded, second after --
+        // self-correcting instead of leaving the client permanently stale.
+        if (strcmp(x.location, y.location) != 0 || strcmp(x.text, y.text) != 0) {
             return true;
         }
     }
@@ -1165,6 +1201,15 @@ void sampleReadyClient(unsigned int now)
         gConnection.lastSent.inventory = current.inventory;
         debug_printf("companion: update sent (player.inventory)\n");
     }
+
+    if (questsDiffer(current.quests, gConnection.lastSent.quests)) {
+        if (!queueMessage(companionBuildQuestsUpdate(
+                nextSequence(), current.quests))) {
+            return;
+        }
+        gConnection.lastSent.quests = current.quests;
+        debug_printf("companion: update sent (player.quests)\n");
+    }
 }
 
 // Returns true when `buffer` looks like a `{"type":"discover"}` request.
@@ -1341,6 +1386,12 @@ bool companionServerInit()
 {
     companionEnableDebugLog();
     companionResetItemCatalog();
+    companionResetQuestCatalog();
+
+    // Load `pipboy.msg` now, at a session boundary, rather than letting the
+    // first quest sample do it on the engine's frame loop. `main_init_system`
+    // calls us after `game_init`, so the message database is open by here.
+    companionWarmQuestCatalog();
 
     clearConfigBuffers();
 
@@ -1411,6 +1462,7 @@ void companionServerExit()
     closeFd(&gDiscoveryFd);
     closeFd(&gListenerFd);
     companionResetItemCatalog();
+    companionResetQuestCatalog();
     clearConfigBuffers();
 }
 

@@ -21,6 +21,29 @@ Two rules about what survives what:
   though: the deactivated list still shows which row it would resume on,
   so discarding it would make that outline a lie.
 
+TASK-021 **extends** that model rather than replacing it, in two ways:
+
+* **Cursor ownership is per sub-section**, via
+  ``_CURSOR_FIELD_BY_SUBSECTION``. It used to be hardwired to the
+  inventory, which was fine while the inventory was the only activatable
+  sub-section and stopped being fine the moment QUESTS joined it.
+* **Activated content may have a second level**, for sub-sections listed
+  in ``DRILLABLE``. ``Confirm`` at level 1 drills in; ``Back`` at level 2
+  comes back up; ``Back`` at level 1 deactivates as before. So ``Back``
+  gains a second meaning, but **only inside a drillable sub-section** —
+  this is the one genuinely new gesture rule, and it is written down here
+  rather than left implicit.
+
+  Depth is stored as the level-1 *row key*, not an index: it is assigned
+  straight from ``ListCursor.selected_key``, so nothing here has to decode
+  it and this module keeps importing no projection module. Because the key
+  is a pure function of the location index, it is exactly as stable across
+  the wholesale quest-list replacement as an index would be.
+
+  Depth is part of activation, so ``deactivated()`` clears it too. The
+  documented rule that activation never survives a section switch applies
+  unchanged to a two-level list — the *cursors* still survive.
+
 State is immutable and the transitions are pure, so they unit-test
 without a display (same contract as ``segmented_header``).
 """
@@ -84,6 +107,11 @@ class SectionsUiState:
     archives: SegmentedHeaderState
     activated: bool = False
     inventory_cursor: ListCursor = ListCursor()
+    quest_cursor: ListCursor = ListCursor()
+    # Drill-down depth for ARCHIVES/QUESTS, as the level-1 row key of the
+    # location being viewed. ``""`` means level 1. A key rather than an
+    # index — see the module docstring.
+    quest_location_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -93,16 +121,34 @@ class SubSectionFocus:
     Passed instead of loose parameters so later consumers (per-type item
     detail, QUESTS, HOLODISKS) extend one dataclass rather than every
     section's signature again.
+
+    ``location_key`` is the drill-down depth for a drillable sub-section
+    (``""`` for level 1, or a level-1 row key). It is always empty for a
+    sub-section that cannot drill, so a renderer that ignores it behaves
+    exactly as before.
     """
 
     activated: bool
     cursor: ListCursor
+    location_key: str = ""
 
 
 # Sub-sections whose content can take the encoder. Everything absent here
-# is why ``Confirm`` is inert on CHARACTER, QUESTS and HOLODISKS.
+# is why ``Confirm`` is inert on CHARACTER and HOLODISKS.
 ACTIVATABLE: frozenset[tuple[Page, str]] = frozenset(
-    {(Page.STATUS, STATUS_INVENTORY)}
+    {
+        (Page.STATUS, STATUS_INVENTORY),
+        (Page.ARCHIVES, ARCHIVES_QUESTS),
+    }
+)
+
+# Activatable sub-sections whose content has a *second* level, reached
+# with ``Confirm`` and left with ``Back``. An allow-list rather than a
+# per-section flag: the two-step ``Back`` must stay confined to the
+# sub-sections that actually have somewhere to go up to, or ``Back`` would
+# become unpredictable across the device.
+DRILLABLE: frozenset[tuple[Page, str]] = frozenset(
+    {(Page.ARCHIVES, ARCHIVES_QUESTS)}
 )
 
 
@@ -137,6 +183,36 @@ _FIELD_BY_PAGE: dict[Page, str] = {
     Page.ARCHIVES: "archives",
 }
 
+# Which ``SectionsUiState`` cursor field each activatable sub-section owns.
+# Same style as ``_FIELD_BY_PAGE``. One cursor per sub-section rather than
+# one shared cursor, because two lists sharing an anchor would each clobber
+# the other's position on every switch.
+_CURSOR_FIELD_BY_SUBSECTION: dict[tuple[Page, str], str] = {
+    (Page.STATUS, STATUS_INVENTORY): "inventory_cursor",
+    (Page.ARCHIVES, ARCHIVES_QUESTS): "quest_cursor",
+}
+
+# Fallback for a sub-section with no list of its own. Nothing reads the
+# cursor in that case (``handle_input`` only consults it while activated,
+# and only activatable sub-sections activate), but returning a real field
+# keeps every path total rather than optional.
+_DEFAULT_CURSOR_FIELD: str = "inventory_cursor"
+
+
+def _cursor_field(page: Page, selected_key: str) -> str:
+    return _CURSOR_FIELD_BY_SUBSECTION.get(
+        (page, selected_key), _DEFAULT_CURSOR_FIELD
+    )
+
+
+def cursor_for(ui: SectionsUiState, page: Page, selected_key: str) -> ListCursor:
+    """The cursor belonging to the given sub-section."""
+    return getattr(ui, _cursor_field(page, selected_key))
+
+
+def is_drillable(page: Page, selected_key: str) -> bool:
+    return (page, selected_key) in DRILLABLE
+
 
 def for_page(ui: SectionsUiState, page: Page) -> SegmentedHeaderState:
     """The sub-header state belonging to ``page``."""
@@ -152,18 +228,35 @@ def with_page(
     return replace(ui, **{_FIELD_BY_PAGE[page]: seg})
 
 
-def focus_for(ui: SectionsUiState) -> SubSectionFocus:
-    """The focus state to hand a section renderer this frame."""
-    return SubSectionFocus(activated=ui.activated, cursor=ui.inventory_cursor)
+def focus_for(
+    ui: SectionsUiState,
+    page: Page,
+    selected_key: str,
+) -> SubSectionFocus:
+    """The focus state to hand a section renderer this frame.
+
+    Takes the sub-section now, not just the state: which cursor is in play
+    depends on which sub-section is showing. ``location_key`` is only ever
+    non-empty for a drillable sub-section.
+    """
+    return SubSectionFocus(
+        activated=ui.activated,
+        cursor=cursor_for(ui, page, selected_key),
+        location_key=(
+            ui.quest_location_key if is_drillable(page, selected_key) else ""
+        ),
+    )
 
 
 def deactivated(ui: SectionsUiState) -> SectionsUiState:
     """Copy of ``ui`` with the content handed back to the sub-section row.
 
     Used by the section-button path: activation never survives leaving a
-    section. Sub-section selections and the content cursor both survive.
+    section. Drill-down depth is part of activation and goes with it;
+    sub-section selections and every content cursor survive, so the list
+    resumes on the row it was outlining.
     """
-    return replace(ui, activated=False)
+    return replace(ui, activated=False, quest_location_key="")
 
 
 def is_activatable(page: Page, selected_key: str) -> bool:
@@ -185,23 +278,51 @@ def handle_input(
     ``Confirm`` has anything to activate into.
     """
     seg = for_page(ui, page)
+    cursor_field = _cursor_field(page, seg.selected_key)
+    cursor = getattr(ui, cursor_field)
+    drillable = is_drillable(page, seg.selected_key)
+    # Only meaningful for a drillable sub-section; guarded so a stale key
+    # can never make a non-drillable list look drilled.
+    drilled = drillable and ui.quest_location_key != ""
 
     if isinstance(input_event, (EncoderLeftEvent, EncoderRightEvent)):
         if ui.activated:
-            cursor = scroll_list.resolve_cursor(rows, ui.inventory_cursor)
+            resolved = scroll_list.resolve_cursor(rows, cursor)
             move = (
                 scroll_list.move_prev
                 if isinstance(input_event, EncoderLeftEvent)
                 else scroll_list.move_next
             )
-            return replace(ui, inventory_cursor=move(rows, cursor))
+            return replace(ui, **{cursor_field: move(rows, resolved)})
         if isinstance(input_event, EncoderLeftEvent):
             return with_page(ui, page, cycle_prev(seg))
         return with_page(ui, page, cycle_next(seg))
 
     if isinstance(input_event, ConfirmEvent):
-        if ui.activated or not is_activatable(page, seg.selected_key):
+        if not is_activatable(page, seg.selected_key):
             return ui
+
+        if ui.activated:
+            # Drill in: only from level 1 of a drillable sub-section.
+            # Everywhere else ``Confirm`` while activated stays inert, as
+            # it has been since TASK-018.
+            if not drillable or drilled:
+                return ui
+            resolved = scroll_list.resolve_cursor(rows, cursor)
+            if resolved.selected_key == scroll_list.NO_SELECTION:
+                return ui
+            # The cursor is reset, not carried down. One cursor field
+            # serves both levels, and a level-1 key left in it would
+            # resolve against level 2's rows by *index* — landing on an
+            # arbitrary quest. A fresh cursor resolves to the location's
+            # first quest, which is both predictable and what the in-game
+            # screen does on entry.
+            return replace(
+                ui,
+                quest_location_key=resolved.selected_key,
+                **{cursor_field: ListCursor()},
+            )
+
         if scroll_list.first_selectable(rows) == scroll_list.NO_SELECTION:
             # Nothing to select — activating would trap the encoder in an
             # empty list. Stay at the sub-section row instead.
@@ -211,13 +332,25 @@ def handle_input(
         return replace(
             ui,
             activated=True,
-            inventory_cursor=scroll_list.resolve_cursor(rows, ui.inventory_cursor),
+            **{cursor_field: scroll_list.resolve_cursor(rows, cursor)},
         )
 
     if isinstance(input_event, BackEvent):
         if ui.activated:
+            if drilled:
+                # Up one level, not out — and land back on the location we
+                # came from. The depth key *is* that location's level-1 row
+                # key, so restoring the cursor from it is exact; letting
+                # the level-2 key fall back to an index clamp would put the
+                # cursor on whichever location happened to share the
+                # position.
+                return replace(
+                    ui,
+                    quest_location_key="",
+                    **{cursor_field: ListCursor(selected_key=ui.quest_location_key)},
+                )
             # Cursor deliberately left intact.
-            return replace(ui, activated=False)
+            return replace(ui, activated=False, quest_location_key="")
         # Inert at the sub-section row, by decision, not by omission: the
         # device's fourth button already owns close/shutdown.
         return ui

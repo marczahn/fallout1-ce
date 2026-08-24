@@ -73,6 +73,62 @@ class FontHelpersTest(unittest.TestCase):
         self.assertAlmostEqual(rect.centerx, body.centerx, delta=1)
         self.assertAlmostEqual(rect.centery, body.centery, delta=1)
 
+    def test_strike_adds_pixels_on_the_midline(self) -> None:
+        """The strike is measured, not assumed (TASK-021).
+
+        Renders the same glyph twice and compares the midline row: the
+        struck copy must have foreground pixels where the unstruck one has
+        none. Uses a glyph with a gap at its vertical centre so there is a
+        column to find — "X" narrows to a crossing point at the midline,
+        which is exactly where the rule lands, so it is a poor probe.
+        """
+        plain = _surface()
+        struck = _surface()
+
+        rect = font.draw_text_left(plain, "II", (10, 10), 22, palette.FOREGROUND)
+        rect_struck = font.draw_text_left(
+            struck, "II", (10, 10), 22, palette.FOREGROUND, strike=True
+        )
+        self.assertEqual(rect, rect_struck, "strike must not move the text")
+
+        y = rect.centery
+        plain_row = [
+            plain.get_at((x, y))[:3] for x in range(rect.left, rect.right)
+        ]
+        struck_row = [
+            struck.get_at((x, y))[:3] for x in range(rect.left, rect.right)
+        ]
+        fg = tuple(palette.FOREGROUND)
+        self.assertGreater(
+            sum(1 for px in struck_row if tuple(px) == fg),
+            sum(1 for px in plain_row if tuple(px) == fg),
+            "struck midline must carry more foreground pixels than the plain one",
+        )
+        # And the rule spans the text: both ends of the midline are lit.
+        self.assertEqual(tuple(struck.get_at((rect.left, y))[:3]), fg)
+        self.assertEqual(tuple(struck.get_at((rect.right - 1, y))[:3]), fg)
+
+    def test_strike_defaults_off_so_existing_callers_are_unchanged(self) -> None:
+        with_default = _surface()
+        explicit_off = _surface()
+        font.draw_text_left(with_default, "AB", (5, 5), 20, palette.FOREGROUND)
+        font.draw_text_left(
+            explicit_off, "AB", (5, 5), 20, palette.FOREGROUND, strike=False
+        )
+        self.assertEqual(
+            pygame.image.tostring(with_default, "RGB"),
+            pygame.image.tostring(explicit_off, "RGB"),
+        )
+
+    def test_strike_on_empty_text_draws_nothing(self) -> None:
+        blank = _surface()
+        struck = _surface()
+        font.draw_text_left(struck, "", (5, 5), 20, palette.FOREGROUND, strike=True)
+        self.assertEqual(
+            pygame.image.tostring(blank, "RGB"),
+            pygame.image.tostring(struck, "RGB"),
+        )
+
     def test_helpers_reject_bad_args(self) -> None:
         s = _surface()
         with self.assertRaises(ValueError):

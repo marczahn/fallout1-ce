@@ -377,6 +377,9 @@ class NetworkClient:
         elif kind == "player.inventory":
             self._apply_inventory(msg.get("payload", []) or [])
             self._log("update: player.inventory")
+        elif kind == "player.quests":
+            self._apply_quests(msg.get("payload", {}) or {})
+            self._log("update: player.quests")
         elif kind is None:
             pass
         else:
@@ -821,6 +824,7 @@ class NetworkClient:
         local_location = payload.get("player.localLocation", {}) or {}
         world_location = payload.get("player.worldLocation", {}) or {}
         inventory = payload.get("player.inventory", []) or []
+        quests = payload.get("player.quests", {}) or {}
 
         if vitals:
             self._apply_vitals(vitals)
@@ -835,6 +839,7 @@ class NetworkClient:
         elif world_location:
             self._apply_world_location(world_location)
         self._apply_inventory(inventory)
+        self._apply_quests(quests)
 
     def _apply_vitals(self, payload: dict[str, Any]) -> None:
         self._state.player.hp = int(payload.get("hp", self._state.player.hp))
@@ -951,6 +956,54 @@ class NetworkClient:
                 )
             )
         self._state.player.inventory = items
+
+    def _apply_quests(self, payload: dict[str, Any]) -> None:
+        """Replace the quest list wholesale, like ``_apply_inventory``.
+
+        The payload is an object (``{"quests": [...], "water": {...}}``),
+        not a bare array: the water countdown belongs to the vault rather
+        than to any one quest row. Every part degrades to a default, so a
+        schemaVersion 11 server — which sends no ``player.quests`` at all —
+        leaves an empty list and an inactive countdown instead of raising.
+        """
+        from companion_app.state import Quest, WaterStatus
+
+        def opt_int(source: dict[str, Any], key: str) -> int:
+            # Never `int(source.get(key))`: a JSON `null` raises there.
+            value = source.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return 0
+            return int(value)
+
+        raw_quests = payload.get("quests")
+        quests: list[Quest] = []
+        if isinstance(raw_quests, list):
+            for raw_quest in raw_quests:
+                if not isinstance(raw_quest, dict):
+                    continue
+                location = raw_quest.get("location")
+                text = raw_quest.get("text")
+                quests.append(
+                    Quest(
+                        location_index=opt_int(raw_quest, "locationIndex"),
+                        slot=opt_int(raw_quest, "slot"),
+                        # `str(None)` would render the literal "None" on
+                        # screen — the TASK-016 bug.
+                        location=location if isinstance(location, str) else "",
+                        text=text if isinstance(text, str) else "",
+                        completed=bool(raw_quest.get("completed", False)),
+                        water_chip=bool(raw_quest.get("waterChip", False)),
+                    )
+                )
+
+        raw_water = payload.get("water")
+        water = raw_water if isinstance(raw_water, dict) else {}
+
+        self._state.player.quests = quests
+        self._state.player.water = WaterStatus(
+            days_remaining=opt_int(water, "daysRemaining"),
+            countdown_active=bool(water.get("countdownActive", False)),
+        )
 
     def _apply_local_location(self, payload: dict[str, Any]) -> None:
         def opt_str(key: str, current: str) -> str:

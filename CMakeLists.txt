@@ -49,6 +49,8 @@ target_sources(${EXECUTABLE_NAME} PUBLIC
     "src/companion_player_state.h"
     "src/companion_protocol.cc"
     "src/companion_protocol.h"
+    "src/companion_quest_catalog.cc"
+    "src/companion_quest_catalog.h"
     "src/companion_server.cc"
     "src/companion_server.h"
     "src/companion_snapshot.cc"

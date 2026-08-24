@@ -43,8 +43,7 @@ import pygame
 
 from companion_app.render import font, palette
 from companion_app.state import AppState, InventoryItem
-from companion_app.ui import inventory_list, scroll_list, slot_icons
-from companion_app.ui.shell import PAGE_MARGIN_X
+from companion_app.ui import inventory_list, list_geometry, scroll_list, slot_icons
 
 if TYPE_CHECKING:
     from companion_app.ui.sections import SubSectionFocus
@@ -54,14 +53,17 @@ _EMPTY_SIZE: int = 20
 
 # Sizes track the CHARACTER block scale (rows 13, sections 14) so the two
 # sub-sections look like one screen.
-_ROW_SIZE: int = 14
 _HEADING_SIZE: int = 14
 _DETAIL_NAME_SIZE: int = 15
 _DETAIL_ROW_SIZE: int = 13
 
-_ROW_HEIGHT: int = 26
-_ROW_PAD_X: int = 6
-_ROW_PAD_Y: int = 5
+# Row metrics moved to ``ui/list_geometry`` when ARCHIVES/QUESTS became the
+# device's second scrolling list (TASK-021). Aliased rather than re-spelled,
+# so this file reads as it did and the two lists cannot drift apart.
+_ROW_SIZE: int = list_geometry.ROW_SIZE
+_ROW_HEIGHT: int = list_geometry.ROW_HEIGHT
+_ROW_PAD_X: int = list_geometry.ROW_PAD_X
+_ROW_PAD_Y: int = list_geometry.ROW_PAD_Y
 
 # A group heading gets a taller row than an item, and the extra height is
 # all air *above* the label. That is what separates one type-section from
@@ -78,8 +80,8 @@ _HEADING_RULE_Y_OFFSET: int = 4
 _HEADING_LABEL_Y: int = 24
 
 # Scroll gutter on the right, drawn only when the list overflows.
-_GUTTER_WIDTH: int = 4
-_GUTTER_GAP: int = 10
+_GUTTER_WIDTH: int = list_geometry.GUTTER_WIDTH
+_GUTTER_GAP: int = list_geometry.GUTTER_GAP
 
 # Corner-bracketed detail readout at the bottom of the body.
 #
@@ -108,14 +110,14 @@ _DETAIL_VALUE_X2: int = 312
 # sit at a different height per item.
 _DETAIL_ROWS_TOP: int = 46
 
-_OUTLINE_WIDTH: int = 1
+_OUTLINE_WIDTH: int = list_geometry.OUTLINE_WIDTH
 
 # Vertical breathing room inside the body. The bottom margin is load-bearing,
 # not decoration: without it the readout's lower brackets land on the row
 # *past* the last pixel and pygame clips them silently, leaving a box with no
 # bottom. CHARACTER keeps a comparable margin below STATUS FX.
-_BODY_MARGIN_TOP: int = 6
-_BODY_MARGIN_BOTTOM: int = 20
+_BODY_MARGIN_TOP: int = list_geometry.BODY_MARGIN_TOP
+_BODY_MARGIN_BOTTOM: int = list_geometry.BODY_MARGIN_BOTTOM
 
 # The equipped slot is a drawn symbol, not a word — see ``ui/slot_icons``.
 # ``STOWED`` stays a word in the detail readout because "not equipped" has no
@@ -137,17 +139,10 @@ _DETAIL_TEXT_HALF_HEIGHT: int = 6
 def body_inner_rect(body_rect: pygame.Rect) -> pygame.Rect:
     """The body inset to the shared page margin on both sides.
 
-    ``content_rect`` spans the full 480px virtual width (its left edge is
-    0), and STATUS forwards it insetting only the top — so the horizontal
-    margin has to be applied here or the list would run to the screen
-    edge. Matches how AUTOMAPS insets its map body.
+    Delegates to ``list_geometry`` (TASK-021), which ARCHIVES/QUESTS shares;
+    kept as a name here because callers and tests reference it.
     """
-    inner = body_rect.copy()
-    inner.left = body_rect.left + PAGE_MARGIN_X
-    inner.width = body_rect.width - 2 * PAGE_MARGIN_X
-    inner.top = body_rect.top + _BODY_MARGIN_TOP
-    inner.height = body_rect.height - _BODY_MARGIN_TOP - _BODY_MARGIN_BOTTOM
-    return inner
+    return list_geometry.body_inner_rect(body_rect)
 
 
 def list_rect_for(body_rect: pygame.Rect) -> pygame.Rect:
@@ -331,25 +326,9 @@ def _draw_scroll_gutter(
     first_index: int,
     visible_count: int,
 ) -> None:
-    """Filled scroll thumb on a dim track, echoing the S.P.E.C.I.A.L. bars.
-
-    Drawn only when the list actually overflows: a list that fits has no
-    scroll position worth reporting, and an always-present full-height
-    thumb would be noise.
-    """
-    if visible_count <= 0 or row_count <= visible_count:
-        return
-
-    pygame.draw.rect(surface, palette.DIM, rect)
-
-    span = row_count - visible_count
-    thumb_height = max(_ROW_HEIGHT, int(rect.height * visible_count / row_count))
-    travel = rect.height - thumb_height
-    thumb_top = rect.top + int(travel * min(max(first_index, 0), span) / span)
-    pygame.draw.rect(
-        surface,
-        palette.FOREGROUND,
-        pygame.Rect(rect.left, thumb_top, rect.width, thumb_height),
+    """The scroll thumb — shared with ARCHIVES/QUESTS via ``list_geometry``."""
+    list_geometry.draw_scroll_gutter(
+        surface, rect, row_count, first_index, visible_count
     )
 
 

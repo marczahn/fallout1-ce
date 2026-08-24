@@ -8,8 +8,8 @@ is enabled only when `fallout.cfg` has both `[companion] bind` and
 environment variable) and uses it for the `auth` step of the handshake.
 
 T0 protocol changes verified:
-- `world.schemaVersion` is `10` (was `9`; bumped when per-type item detail was added to
-  player.inventory).
+- `world.schemaVersion` is `12` (was `11`; bumped when the `player.quests`
+  kind was added).
 - `update` carries a `kind` field and a `payload` wrapper (no `entity`,
   no `data`).
 - `update.payload` is the *complete* per-kind object, not a field-level
@@ -133,8 +133,8 @@ def test_auth_then_hello(sock, password):
     msg = json.loads(line)
     assert_equal(msg.get("type"), "world", "type")
     assert_field(msg, "schemaVersion", "world")
-    # Current protocol version after player.localLocation.mapName was added.
-    assert_equal(msg.get("schemaVersion"), 10, "world.schemaVersion")
+    # Current protocol version after the player.quests kind was added.
+    assert_equal(msg.get("schemaVersion"), 12, "world.schemaVersion")
     assert_field(msg, "game", "world")
     assert_field(msg, "playerAvailable", "world")
     assert_is_bool(msg["playerAvailable"], "world.playerAvailable")
@@ -221,6 +221,57 @@ def test_getSnapshot(sock, expected_seq):
         assert_is_int(world["x"], "snapshot.payload.player.worldLocation.x")
         assert_is_int(world["y"], "snapshot.payload.player.worldLocation.y")
         print(f"  info: world x={world['x']} y={world['y']}")
+
+    # player.quests (schemaVersion 12). Always present when the player is
+    # loaded: the water-chip quest is forced visible by the engine, so the
+    # array is never empty in a real game -- but the assertions below only
+    # require the shape, so a modded quest table cannot fail them.
+    assert_field(payload, "player.quests", "snapshot.payload")
+    quests_payload = payload["player.quests"]
+    if not isinstance(quests_payload, dict):
+        fail("snapshot.payload.player.quests must be an object "
+             f"(quests + water), got {type(quests_payload).__name__}: {quests_payload!r}")
+    ok("snapshot.payload.player.quests is an object")
+
+    assert_field(quests_payload, "quests", "snapshot.payload.player.quests")
+    quests = quests_payload["quests"]
+    if not isinstance(quests, list):
+        fail("snapshot.payload.player.quests.quests must be an array, "
+             f"got {type(quests).__name__}: {quests!r}")
+    ok("snapshot.payload.player.quests.quests is an array")
+
+    assert_field(quests_payload, "water", "snapshot.payload.player.quests")
+    water = quests_payload["water"]
+    if not isinstance(water, dict):
+        fail("snapshot.payload.player.quests.water must be an object, "
+             f"got {type(water).__name__}: {water!r}")
+    assert_field(water, "daysRemaining", "snapshot.payload.player.quests.water")
+    assert_field(water, "countdownActive", "snapshot.payload.player.quests.water")
+    assert_is_int(water["daysRemaining"], "snapshot.payload.player.quests.water.daysRemaining")
+    assert_is_bool(water["countdownActive"], "snapshot.payload.player.quests.water.countdownActive")
+
+    for index, quest in enumerate(quests):
+        label = f"snapshot.payload.player.quests.quests[{index}]"
+        if not isinstance(quest, dict):
+            fail(f"{label} must be an object, got {type(quest).__name__}: {quest!r}")
+        for key in ("locationIndex", "slot", "location", "text", "completed", "waterChip"):
+            assert_field(quest, key, label)
+        assert_is_int(quest["locationIndex"], f"{label}.locationIndex")
+        assert_is_int(quest["slot"], f"{label}.slot")
+        assert_is_str(quest["location"], f"{label}.location")
+        # `text` may legitimately be empty (the message file could not
+        # resolve the line); the row is still emitted, so only the type is
+        # asserted here.
+        assert_is_str(quest["text"], f"{label}.text")
+        assert_is_bool(quest["completed"], f"{label}.completed")
+        assert_is_bool(quest["waterChip"], f"{label}.waterChip")
+    ok(f"snapshot.payload.player.quests.quests entries are well-formed ({len(quests)})")
+
+    water_rows = [q for q in quests if q["waterChip"]]
+    if len(water_rows) > 1:
+        fail(f"at most one quest may carry waterChip, got {len(water_rows)}")
+    print(f"  info: {len(quests)} quest(s), water daysRemaining={water['daysRemaining']} "
+          f"countdownActive={water['countdownActive']}")
 
 
 def test_update_shape(sock, password):
@@ -563,7 +614,7 @@ def test_server_still_listening(host, port, password):
             fail("server did not respond to a new auth + hello after the bad client")
         msg = json.loads(line)
         assert_equal(msg.get("type"), "world", "type after recovery")
-        assert_equal(msg.get("schemaVersion"), 10, "world.schemaVersion (recovery)")
+        assert_equal(msg.get("schemaVersion"), 12, "world.schemaVersion (recovery)")
 
 
 def main():
