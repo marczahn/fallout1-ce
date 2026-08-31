@@ -188,6 +188,43 @@ class WaterStatus:
 
 
 @dataclass
+class Holodisk:
+    """One holodisk the player has found, with its document (schemaVersion 14).
+
+    Identity is ``index`` — the position in the engine's fixed 18-entry
+    ``holodisks`` table, which is compile-time stable. No GVAR crosses the
+    wire, matching :class:`Quest`. All 18 titles are distinct, so unlike
+    :class:`Transmission` this list needs no duplicate-label disambiguation.
+
+    In-game these live on the Pip-Boy **STATUS** screen beside the quests,
+    not on ARCHIVES; the device puts them under ARCHIVES anyway, which is a
+    deliberate divergence. They are **documents**, and the sibling
+    :class:`Transmission` is a **recording** — that distinction is the whole
+    reason the two are separate sub-sections.
+
+    ``title`` may legitimately be empty: the server emits the row anyway when
+    its message file could not resolve it, so the list can never silently
+    disagree with the in-game screen.
+
+    ``body`` is the document, **one entry per authored line**. The breaks are
+    authored rather than incidental — disks 5 and 11 align with leading
+    whitespace — so they are preserved rather than reflowed. An empty entry is
+    a blank line: the engine's ``**END-PAR**`` marker, already translated
+    server-side. Neither that marker nor ``**END-DISK**`` ever crosses the
+    wire.
+
+    **An empty ``body`` means the text could not be resolved**, and the reader
+    renders that as a visible failure. It never means "this disk has no text":
+    every one of the 18 has some. The server assembles all-or-nothing exactly
+    so this stays one unambiguous signal.
+    """
+
+    index: int = 0
+    title: str = ""
+    body: tuple[str, ...] = ()
+
+
+@dataclass
 class Transmission:
     """One row of the in-game Pip-Boy Archives screen (schemaVersion 13).
 
@@ -323,6 +360,7 @@ class PlayerState:
     inventory: list[InventoryItem] = field(default_factory=list)
     quests: list[Quest] = field(default_factory=list)
     water: WaterStatus = field(default_factory=WaterStatus)
+    holodisks: list[Holodisk] = field(default_factory=list)
     transmissions: list[Transmission] = field(default_factory=list)
 
 

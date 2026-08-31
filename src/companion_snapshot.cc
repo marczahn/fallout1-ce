@@ -419,7 +419,19 @@ void collectHolodiskSnapshot(CompanionHolodiskSnapshot& holodisks)
             holodisk.title[0] = '\0';
         }
 
-        holodisks.holodisks.push_back(holodisk);
+        // Failure leaves `body` empty by the accessor's all-or-nothing
+        // rule, and an empty body is exactly the signal the client turns
+        // into a visible failure. The row is emitted either way - the
+        // same treatment an unresolvable title already gets, and for the
+        // same reason: a dropped row would silently disagree with the
+        // in-game screen.
+        //
+        // Cost is fine on the sampling path: this runs every 500 ms
+        // (`kSampleIntervalMs`), not per frame, and the complete set of
+        // 18 bodies is 912 lines / ~35 KiB of already-cached strings.
+        companionHolodiskBody(index, holodisk.body);
+
+        holodisks.holodisks.push_back(std::move(holodisk));
     }
 }
 

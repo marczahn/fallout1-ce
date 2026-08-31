@@ -8,9 +8,10 @@ is enabled only when `fallout.cfg` has both `[companion] bind` and
 environment variable) and uses it for the `auth` step of the handshake.
 
 T0 protocol changes verified:
-- `world.schemaVersion` is `13` (was `12`; bumped when the `player.transmissions`
-  kind and the transmission audio fetch landed). Previously `12` for `player.quests`
-  kind was added).
+- `world.schemaVersion` is `14` (bumped when holodisk `body` text landed and
+  every wire string became pure ASCII; `13` when the `player.transmissions`
+  kind and the transmission audio fetch landed; `12` when `player.quests`
+  was added).
 - `update` carries a `kind` field and a `payload` wrapper (no `entity`,
   no `data`).
 - `update.payload` is the *complete* per-kind object, not a field-level
@@ -140,7 +141,7 @@ def test_auth_then_hello(sock, password):
     assert_equal(msg.get("type"), "world", "type")
     assert_field(msg, "schemaVersion", "world")
     # Current protocol version after the player.quests kind was added.
-    assert_equal(msg.get("schemaVersion"), 13, "world.schemaVersion")
+    assert_equal(msg.get("schemaVersion"), 14, "world.schemaVersion")
     assert_field(msg, "game", "world")
     assert_field(msg, "playerAvailable", "world")
     assert_is_bool(msg["playerAvailable"], "world.playerAvailable")
@@ -264,6 +265,29 @@ def test_getSnapshot(sock, expected_seq):
             assert_is_int(row["index"], f"{kind}.{inner}[].index")
             assert_field(row, "title", f"snapshot.payload.{kind}.{inner}[]")
         ok(f"snapshot.payload.{kind} has {len(rows)} row(s), shape valid")
+
+    # Holodisk body text (schemaVersion 14). This is the ONLY place the
+    # engine's sentinel handling can be checked: `companionHolodiskBody`
+    # has no unit-test target, and the app renders whatever it is sent, so
+    # an app-side test would only prove the app is obedient.
+    #
+    # `body` may legitimately be empty -- that is how an unresolvable disk
+    # is reported -- so emptiness is not a failure here.
+    for row in payload["player.holodisks"]["holodisks"]:
+        where = f"player.holodisks.holodisks[index={row.get('index')}]"
+        assert_field(row, "body", where)
+        body = row["body"]
+        if not isinstance(body, list):
+            fail(f"{where}.body must be an array, "
+                 f"got {type(body).__name__}: {body!r}")
+        for line in body:
+            if not isinstance(line, str):
+                fail(f"{where}.body entries must be strings, got {line!r}")
+            # Neither marker may ever reach a client. `**END-PAR**` is the
+            # engine's blank line and must arrive as "" instead.
+            if line.strip() in ("**END-DISK**", "**END-PAR**"):
+                fail(f"{where}.body leaked the sentinel {line!r}")
+    ok("snapshot.payload.player.holodisks bodies are string arrays, no sentinels")
 
     assert_field(quests_payload, "quests", "snapshot.payload.player.quests")
     quests = quests_payload["quests"]
@@ -787,7 +811,7 @@ def test_server_still_listening(host, port, password):
             fail("server did not respond to a new auth + hello after the bad client")
         msg = json.loads(line)
         assert_equal(msg.get("type"), "world", "type after recovery")
-        assert_equal(msg.get("schemaVersion"), 13, "world.schemaVersion (recovery)")
+        assert_equal(msg.get("schemaVersion"), 14, "world.schemaVersion (recovery)")
 
 
 def test_transmission_audio(sock):

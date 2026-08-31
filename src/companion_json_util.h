@@ -21,10 +21,21 @@ bool companionIsSafeJsonString(const char* s);
 // string is not an acceptable fallback (the companion must show the same
 // quest lines the in-game Pip-Boy shows).
 //
-// Bytes >= 0x80 are passed through unchanged: the engine's message files
-// are already emitted verbatim elsewhere on the wire, so this keeps the
-// existing encoding behaviour rather than inventing a transcoding rule
-// here.
+// The output is **always pure ASCII**, and that is the load-bearing part
+// of this function's contract. Bytes >= 0x80 are transcoded from cp1252
+// (the encoding the game's `.msg` files are authored in) to `\uXXXX`
+// escapes rather than passed through.
+//
+// This used to pass high bytes through unchanged, which was a silent
+// trap. The client frames on newlines and parses with
+// `json.loads(line.decode("utf-8"))`, catching `UnicodeDecodeError` and
+// dropping the **entire message** (`companion_app/net/framing.py:38-41`).
+// One non-UTF-8 byte anywhere in a `snapshot` therefore costs the client
+// every kind that snapshot carried - vitals, inventory, quests - with
+// nothing logged. It never fired only because everything on the wire was
+// ASCII until holodisk body text arrived carrying `0x95` bullets
+// (TASK-025). Emitting escapes makes the output valid UTF-8 by
+// construction, for every caller, forever.
 void companionAppendEscapedJsonString(std::string& out, const char* s);
 
 } // namespace fallout

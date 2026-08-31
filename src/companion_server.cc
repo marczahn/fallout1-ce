@@ -567,6 +567,15 @@ bool holodisksDiffer(const CompanionHolodiskSnapshot& a, const CompanionHolodisk
         if (strcmp(x.title, y.title) != 0) {
             return true;
         }
+
+        // And the body, for exactly that reason: a disk whose text failed
+        // to resolve on one sample and succeeded on the next must send an
+        // update, or it stays "unreadable" on the device for the rest of
+        // the session. Cheap - this runs every 500 ms and compares
+        // already-resident strings.
+        if (x.body != y.body) {
+            return true;
+        }
     }
 
     return false;

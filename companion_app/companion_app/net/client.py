@@ -407,6 +407,9 @@ class NetworkClient:
         elif kind == "player.quests":
             self._apply_quests(msg.get("payload", {}) or {})
             self._log("update: player.quests")
+        elif kind == "player.holodisks":
+            self._apply_holodisks(msg.get("payload", {}) or {})
+            self._log("update: player.holodisks")
         elif kind == "player.transmissions":
             self._apply_transmissions(msg.get("payload", {}) or {})
             self._log("update: player.transmissions")
@@ -1135,6 +1138,7 @@ class NetworkClient:
         world_location = payload.get("player.worldLocation", {}) or {}
         inventory = payload.get("player.inventory", []) or []
         quests = payload.get("player.quests", {}) or {}
+        holodisks = payload.get("player.holodisks", {}) or {}
         transmissions = payload.get("player.transmissions", {}) or {}
 
         if vitals:
@@ -1151,6 +1155,7 @@ class NetworkClient:
             self._apply_world_location(world_location)
         self._apply_inventory(inventory)
         self._apply_quests(quests)
+        self._apply_holodisks(holodisks)
         self._apply_transmissions(transmissions)
 
     def _apply_vitals(self, payload: dict[str, Any]) -> None:
@@ -1268,6 +1273,62 @@ class NetworkClient:
                 )
             )
         self._state.player.inventory = items
+
+    @staticmethod
+    def _holodisk_body(raw: Any) -> tuple[str, ...]:
+        """A holodisk document, or ``()`` if the payload is not a clean one.
+
+        **All or nothing, mirroring `companionHolodiskBody` server-side.** One
+        malformed entry invalidates the whole body rather than being dropped
+        from it. Dropping would produce a document that is missing a line in
+        the middle and looks complete — the exact failure the server's
+        all-or-nothing rule exists to prevent, reintroduced one layer up.
+        ``()`` is the single unambiguous "unreadable" signal the reader
+        renders, so it has to mean that here too.
+        """
+        if not isinstance(raw, list):
+            # Absent is not malformed: a schemaVersion 13 server sends no
+            # `body` at all, and that is a supported, unreadable disk.
+            return ()
+        if any(not isinstance(line, str) for line in raw):
+            return ()
+        return tuple(raw)
+
+    def _apply_holodisks(self, payload: dict[str, Any]) -> None:
+        """Replace the found-holodisk list wholesale, like ``_apply_quests``.
+
+        Payload is an object (``{"holodisks": [...]}``) rather than a bare
+        array so a later archive-level field can be added without changing the
+        kind's shape. Every part degrades to a default, so a schemaVersion 13
+        server — which sends the kind but no ``body`` — leaves the documents
+        empty instead of raising, and the reader shows its unreadable state.
+
+        Carries **body text**, unlike its transmission sibling: a holodisk is a
+        document, a transmission is a recording.
+        """
+        from companion_app.state import Holodisk
+
+        raw = payload.get("holodisks")
+        holodisks: list[Holodisk] = []
+        if isinstance(raw, list):
+            for entry in raw:
+                if not isinstance(entry, dict):
+                    continue
+                index = entry.get("index")
+                if isinstance(index, bool) or not isinstance(index, int):
+                    continue
+                title = entry.get("title")
+                holodisks.append(
+                    Holodisk(
+                        index=index,
+                        # `str(None)` would render the literal "None" —
+                        # the TASK-016 bug.
+                        title=title if isinstance(title, str) else "",
+                        body=self._holodisk_body(entry.get("body")),
+                    )
+                )
+
+        self._state.player.holodisks = holodisks
 
     def _apply_transmissions(self, payload: dict[str, Any]) -> None:
         """Replace the found-transmission list wholesale, like ``_apply_quests``.

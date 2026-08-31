@@ -620,14 +620,19 @@ class ArchivesThreeSubSectionTests(unittest.TestCase):
         """The whole point of the correction: they are different features."""
         self.assertNotEqual(ARCHIVES_HOLODISKS, ARCHIVES_TRANSMISSIONS)
 
-    def test_holodisks_is_not_activatable_while_it_is_a_placeholder(self) -> None:
-        """TASK-025 will make it a text reader; until then Confirm is inert."""
-        self.assertNotIn(
-            (Page.ARCHIVES, ARCHIVES_HOLODISKS), sections.ACTIVATABLE
-        )
-        self.assertIn(
-            (Page.ARCHIVES, ARCHIVES_TRANSMISSIONS), sections.ACTIVATABLE
-        )
+    def test_all_three_subsections_are_activatable(self) -> None:
+        """HOLODISKS went live in TASK-025; ARCHIVES now has no placeholder.
+
+        (Was ``test_holodisks_is_not_activatable_while_it_is_a_placeholder``,
+        which asserted the opposite and was correct until the text reader
+        landed.)
+        """
+        for key in (
+            sections.ARCHIVES_QUESTS,
+            ARCHIVES_HOLODISKS,
+            ARCHIVES_TRANSMISSIONS,
+        ):
+            self.assertIn((Page.ARCHIVES, key), sections.ACTIVATABLE)
 
     def test_transmissions_keeps_its_own_cursor_and_depth(self) -> None:
         ui = sections.default_sections_ui()
@@ -638,7 +643,13 @@ class ArchivesThreeSubSectionTests(unittest.TestCase):
             sections.drill_key_for(ui, Page.ARCHIVES, ARCHIVES_TRANSMISSIONS), ""
         )
 
-    def test_holodisks_still_renders_its_placeholder(self) -> None:
+    def test_holodisks_renders_its_own_empty_state(self) -> None:
+        """No longer the shared placeholder: HOLODISKS owns its empty state.
+
+        With no disks reported it draws ``NO ARCHIVE DATA`` rather than
+        ``NOT YET IMPLEMENTED``. Asserted as "something is drawn" for the same
+        reason the placeholder test was: a blank body reads as a draw failure.
+        """
         pygame.init()
         surface = pygame.Surface((480, 800))
         surface.fill((0, 0, 0))
@@ -655,7 +666,7 @@ class ArchivesThreeSubSectionTests(unittest.TestCase):
             for x in range(0, 480, 2)
             if surface.get_at((x, y))[:3] != (0, 0, 0)
         )
-        self.assertGreater(lit, 0, "HOLODISKS placeholder drew nothing")
+        self.assertGreater(lit, 0, "HOLODISKS empty state drew nothing")
 
 
 class TransmissionIdentityTests(unittest.TestCase):

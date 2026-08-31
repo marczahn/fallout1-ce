@@ -2,6 +2,7 @@
 #define FALLOUT_COMPANION_SNAPSHOT_H_
 
 #include <cstddef>
+#include <string>
 #include <vector>
 
 #include "companion_item_catalog.h"
@@ -242,10 +243,6 @@ static constexpr size_t kCompanionHolodiskTitleSize = 128;
 // `CompanionQuest`, the backing `GVAR_*` index is deliberately not
 // carried - it is an engine internal with no meaning to the companion.
 //
-// Body text is deliberately absent *for now*. The engine has it (message
-// ids `1000 * index + 1000`, terminated by `**END-DISK**`); TASK-025 adds
-// it when holodisks become a readable screen. It is not carried yet
-// because nothing renders it.
 struct CompanionHolodisk {
     int index; // 0..companionHolodiskCount()-1
 
@@ -253,6 +250,24 @@ struct CompanionHolodisk {
     // not resolve it; the client renders that as a visible failure rather
     // than dropping the row - the same rule `CompanionQuest::text` follows.
     char title[kCompanionHolodiskTitleSize];
+
+    // The disk's document, one entry per authored line, in order
+    // (TASK-025). Assembled by `companionHolodiskBody`, which owns the
+    // rules; two of them matter to anyone reading this struct:
+    //
+    //  * An empty entry is a blank line - the engine's `**END-PAR**`
+    //    marker, already translated. Neither marker is ever carried.
+    //  * **Empty `body` means the text could not be resolved**, and the
+    //    client must render that as a visible failure. It never means
+    //    "this disk has no text": every one of the 18 has some, verified
+    //    by extraction. The assembly is all-or-nothing precisely so this
+    //    stays a single unambiguous signal.
+    //
+    // A `vector<string>` rather than a fixed array because the bodies run
+    // from 1 line (index 1) to 116 (index 11), and because the authored
+    // line breaks are load-bearing - disks 5 and 11 use leading
+    // whitespace for alignment, which joining into one blob would lose.
+    std::vector<std::string> body;
 };
 
 // `player.holodisks` payload: the complete set of *found* holodisks in

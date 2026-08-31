@@ -29,7 +29,7 @@
 //                                 normal auth/hello handshake.
 //
 // Server -> client:
-//   {"type":"world","schemaVersion":13,"game":"fallout1-ce","playerAvailable":bool}
+//   {"type":"world","schemaVersion":14,"game":"fallout1-ce","playerAvailable":bool}
 //
 //   {"type":"snapshot","seq":N,"playerAvailable":bool,"payload":{
 //      "player.vitals":          {"hp":H,"maxHp":M},
@@ -91,11 +91,17 @@
 //        (var != 2). The two disagree above 2 and are both reported as-is
 //        rather than merged. `waterChip` marks the one row the countdown
 //        belongs to.
-//     "player.holodisks": {"holodisks":[{"index":i,"title":"..."}]}
-//        (schemaVersion 13.) Holodisks the player has FOUND - the
-//        right-hand column of the in-game STATUS screen. Index is the
-//        engine's `holodisks` table position. Body text is not carried
-//        (TASK-025).
+//     "player.holodisks": {"holodisks":[{"index":i,"title":"...",
+//                                          "body":["line",...]}]}
+//        (schemaVersion 13; `body` added in 14.) Holodisks the player has
+//        FOUND - the right-hand column of the in-game STATUS screen.
+//        Index is the engine's `holodisks` table position. `body` is the
+//        disk's document, ONE ENTRY PER AUTHORED LINE (the breaks are
+//        load-bearing; disks 5 and 11 align with leading whitespace). An
+//        empty entry is a blank line - the engine's `**END-PAR**` marker,
+//        already translated. Neither that marker nor `**END-DISK**` ever
+//        crosses the wire. An empty `body` array means the text could not
+//        be resolved, never that the disk has none.
 //     "player.transmissions": {"transmissions":[{"index":i,"title":"..."}]}
 //        (schemaVersion 13.) Cutscenes the player has SEEN - the in-game
 //        ARCHIVES screen. Index is a `GameMovie` value in
@@ -189,9 +195,16 @@
 // `payload`. `onPlayerUnavailable` and `onPlayerAvailable` have
 // neither.
 //
-// `world.schemaVersion` is now `13` (was `5`). Version 13 adds the
-// `player.holodisks` kind (found holodisks, index + title only -- never
-// body text) plus the `getTransmissionManifest` / `getTransmissionAudio` fetch
+// `world.schemaVersion` is now `14` (was `5`). Version 14 adds `body`
+// text to the `player.holodisks` kind, and with it a protocol-wide
+// change: `companionAppendEscapedJsonString` now emits `\uXXXX` for every
+// byte >= 0x80 instead of passing it through, so every string on the wire
+// is pure ASCII. That was a latent defect, not a nicety - the client drops
+// any message that fails `decode("utf-8")` WHOLE, and holodisk bodies are
+// the first game text carrying a high byte (`0x95`, bullet).
+// Version 13 adds the
+// `player.holodisks` and `player.transmissions` kinds plus the
+// `getTransmissionManifest` / `getTransmissionAudio` fetch
 // surface for narration audio and its equalizer envelope.
 // Version 12 adds the
 // `player.quests` kind: the visible Pip-Boy quest list plus the Vault 13
@@ -695,10 +708,21 @@ std::string buildTransmissionsPayload(const CompanionTransmissionSnapshot& trans
     return body;
 }
 
+// `body` rides in the snapshot rather than behind a per-disk fetch. The
+// complete set of 18 bodies is 912 lines / ~35 KiB of text, ~39.5 KiB
+// once JSON-encoded, against a `kOutboundCap` of 256 KiB - so a
+// request/response state machine would buy nothing on a LAN, and a real
+// player has found far fewer than 18.
+//
+// Each line is emitted separately because the breaks are AUTHORED, not
+// incidental: disks 5 and 11 use leading whitespace for alignment, which
+// joining into one string would force the renderer to guess back.
 std::string buildHolodisksPayload(const CompanionHolodiskSnapshot& holodisks)
 {
     std::string body;
-    body.reserve(32 + holodisks.holodisks.size() * 64);
+    // Measured: ~2 KiB per disk escaped, largest (index 11) ~5.7 KiB.
+    // A reserve hint, not a bound.
+    body.reserve(32 + holodisks.holodisks.size() * 2048);
     body.append(R"({"holodisks":[)");
 
     for (size_t index = 0; index < holodisks.holodisks.size(); ++index) {
@@ -714,7 +738,20 @@ std::string buildHolodisksPayload(const CompanionHolodiskSnapshot& holodisks)
         }
         body.append(head, static_cast<size_t>(n));
         companionAppendEscapedJsonString(body, holodisk.title);
-        body.append(R"("})");
+
+        // An empty array is meaningful: it says the text could not be
+        // resolved, and the client renders a visible failure. It never
+        // means "this disk has no text".
+        body.append(R"(","body":[)");
+        for (size_t line = 0; line < holodisk.body.size(); ++line) {
+            if (line != 0) {
+                body.push_back(',');
+            }
+            body.push_back('"');
+            companionAppendEscapedJsonString(body, holodisk.body[line].c_str());
+            body.push_back('"');
+        }
+        body.append(R"(]})");
     }
 
     body.append("]}");
@@ -860,7 +897,7 @@ std::string companionBuildWorld(bool playerAvailable)
     char buffer[96];
     int n = snprintf(buffer,
         sizeof(buffer),
-        R"({"type":"world","schemaVersion":13,"game":"fallout1-ce","playerAvailable":%s})"
+        R"({"type":"world","schemaVersion":14,"game":"fallout1-ce","playerAvailable":%s})"
         "\n",
         flag);
     if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
@@ -1193,7 +1230,7 @@ std::string companionBuildAnnounce(std::string_view host)
 {
     std::string message;
     message.reserve(host.size() + 96);
-    message.append(R"({"type":"announce","game":"fallout1-ce","schemaVersion":13,"host":")");
+    message.append(R"({"type":"announce","game":"fallout1-ce","schemaVersion":14,"host":")");
     message.append(host);
     message.append(R"(","port":28080,"authRequired":true})"
                    "\n");

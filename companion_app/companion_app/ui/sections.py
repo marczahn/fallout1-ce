@@ -114,6 +114,7 @@ class SectionsUiState:
     activated: bool = False
     inventory_cursor: ListCursor = ListCursor()
     quest_cursor: ListCursor = ListCursor()
+    holodisk_cursor: ListCursor = ListCursor()
     transmission_cursor: ListCursor = ListCursor()
     # Drill-down depth, as the level-1 row key being viewed. ``""`` means
     # level 1. A key rather than an index — see the module docstring.
@@ -127,6 +128,7 @@ class SectionsUiState:
     # sub-sections drill, because then it is true for both.
     # (``quest_drill_key`` was ``quest_location_key`` before TASK-024.)
     quest_drill_key: str = ""
+    holodisk_drill_key: str = ""
     transmission_drill_key: str = ""
 
 
@@ -155,6 +157,7 @@ ACTIVATABLE: frozenset[tuple[Page, str]] = frozenset(
     {
         (Page.STATUS, STATUS_INVENTORY),
         (Page.ARCHIVES, ARCHIVES_QUESTS),
+        (Page.ARCHIVES, ARCHIVES_HOLODISKS),
         (Page.ARCHIVES, ARCHIVES_TRANSMISSIONS),
     }
 )
@@ -167,6 +170,13 @@ ACTIVATABLE: frozenset[tuple[Page, str]] = frozenset(
 DRILLABLE: frozenset[tuple[Page, str]] = frozenset(
     {
         (Page.ARCHIVES, ARCHIVES_QUESTS),
+        # HOLODISKS drills from the disk list into that disk's document.
+        # Its level 2 IS a list, but of *scroll positions* rather than of
+        # anything the player picks: the cursor index is the index of the top
+        # visible line, so the ordinary cursor machinery scrolls the text one
+        # line per click. Contrast TRANSMISSIONS directly below, whose level 2
+        # has no rows at all.
+        (Page.ARCHIVES, ARCHIVES_HOLODISKS),
         # TRANSMISSIONS drills from the disk list into one disk's player.
         # Its level 2 has no list, so the encoder finds no rows to move
         # through and is state-inert there by construction -- the playback
@@ -215,6 +225,7 @@ _FIELD_BY_PAGE: dict[Page, str] = {
 _CURSOR_FIELD_BY_SUBSECTION: dict[tuple[Page, str], str] = {
     (Page.STATUS, STATUS_INVENTORY): "inventory_cursor",
     (Page.ARCHIVES, ARCHIVES_QUESTS): "quest_cursor",
+    (Page.ARCHIVES, ARCHIVES_HOLODISKS): "holodisk_cursor",
     (Page.ARCHIVES, ARCHIVES_TRANSMISSIONS): "transmission_cursor",
 }
 
@@ -228,6 +239,7 @@ _DEFAULT_CURSOR_FIELD: str = "inventory_cursor"
 # owns. Same shape and same rationale as ``_CURSOR_FIELD_BY_SUBSECTION``.
 _DRILL_FIELD_BY_SUBSECTION: dict[tuple[Page, str], str] = {
     (Page.ARCHIVES, ARCHIVES_QUESTS): "quest_drill_key",
+    (Page.ARCHIVES, ARCHIVES_HOLODISKS): "holodisk_drill_key",
     (Page.ARCHIVES, ARCHIVES_TRANSMISSIONS): "transmission_drill_key",
 }
 
@@ -250,6 +262,19 @@ def is_drillable(page: Page, selected_key: str) -> bool:
 def _drill_field(page: Page, selected_key: str) -> str | None:
     """The drill-depth field this sub-section owns, or ``None``."""
     return _DRILL_FIELD_BY_SUBSECTION.get((page, selected_key))
+
+
+def _cleared_drill_keys() -> dict[str, str]:
+    """Every drill-depth field, reset to level 1.
+
+    Derived from the registry rather than written out, because **two** places
+    must clear all of them — leaving a section, and ``Back`` at level 1 — and
+    both used to name the fields literally. Adding a third drillable
+    sub-section then silently left its depth behind in both, and the symptom
+    (activation appearing not to reset) looks like a renderer fault rather
+    than a missing literal.
+    """
+    return {field: "" for field in _DRILL_FIELD_BY_SUBSECTION.values()}
 
 
 def drill_key_for(ui: SectionsUiState, page: Page, selected_key: str) -> str:
@@ -300,7 +325,7 @@ def deactivated(ui: SectionsUiState) -> SectionsUiState:
     sub-section selections and every content cursor survive, so the list
     resumes on the row it was outlining.
     """
-    return replace(ui, activated=False, quest_drill_key="", transmission_drill_key="")
+    return replace(ui, activated=False, **_cleared_drill_keys())
 
 
 def is_activatable(page: Page, selected_key: str) -> bool:
@@ -399,7 +424,7 @@ def handle_input(
                     },
                 )
             # Cursor deliberately left intact.
-            return replace(ui, activated=False, quest_drill_key="", transmission_drill_key="")
+            return replace(ui, activated=False, **_cleared_drill_keys())
         # Inert at the sub-section row, by decision, not by omission: the
         # device's fourth button already owns close/shutdown.
         return ui

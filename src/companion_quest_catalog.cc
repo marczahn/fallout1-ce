@@ -30,9 +30,11 @@ MessageList gQuestMessageList;
 
 // Keyed by `pipboy.msg` message id. Misses are cached as empty strings so
 // an absent id is not re-searched on every sample. Bounded by the tables
-// it serves (12 locations + 12*9 quest slots, 18 holodisk titles, and
-// 14 transmission titles),
-// so it never grows large.
+// it serves (12 locations + 12*9 quest slots, 18 holodisk titles, 14
+// transmission titles, and the 18 holodisk bodies at ~1030 lines
+// including their `**END-PAR**` and `**END-DISK**` markers), so it never
+// grows large - about 1.2k entries and ~37 KiB of text at the absolute
+// maximum, reached only if the player finds every disk.
 std::unordered_map<int, std::string> gQuestTextCache;
 
 bool ensureLoaded()
@@ -132,6 +134,53 @@ bool companionQuestText(int location, int slot, char* out, size_t outSize)
 bool companionHolodiskTitle(int index, char* out, size_t outSize)
 {
     return copyMessage(400 + index, out, outSize);
+}
+
+bool companionHolodiskBody(int index, std::vector<std::string>& out)
+{
+    out.clear();
+
+    // The engine's own bounds and sentinels (`ShowHoloDisk`,
+    // `pipboy.cc:1355-1363`). Kept as the same arithmetic rather than
+    // pulled into a constant, so the two walks stay visibly identical.
+    const int first = 1000 * index + 1000;
+    const int last = 1000 * index + 1500;
+
+    for (int messageId = first; messageId < last; ++messageId) {
+        const std::string* line = resolveMessage(messageId);
+        if (line == nullptr) {
+            // Catalog unavailable. Distinct from a resolvable-but-absent
+            // id only in cause, not in consequence.
+            out.clear();
+            return false;
+        }
+
+        if (line->empty()) {
+            // `resolveMessage` caches a miss as an empty string, and no
+            // real holodisk line is empty - a blank line is spelled
+            // `**END-PAR**`. So this is a gap in the message file, and a
+            // body with a hole in it is not a body.
+            debug_printf("companion: holodisk %d missing message %d\n", index, messageId);
+            out.clear();
+            return false;
+        }
+
+        if (*line == "**END-DISK**") {
+            return true;
+        }
+
+        if (*line == "**END-PAR**") {
+            out.emplace_back();
+            continue;
+        }
+
+        out.push_back(*line);
+    }
+
+    // Mirrors the engine's own `"Holodisk text end not found!"`.
+    debug_printf("companion: holodisk %d text end not found\n", index);
+    out.clear();
+    return false;
 }
 
 bool companionTransmissionTitle(int movie, char* out, size_t outSize)

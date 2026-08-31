@@ -1,4 +1,4 @@
-"""ARCHIVES section — QUESTS and TRANSMISSIONS.
+"""ARCHIVES section — QUESTS, HOLODISKS and TRANSMISSIONS.
 
 Replaces the old DATA page (TASK-017). That page's root/detail model for
 *sub-section* navigation (select a tab, ``Confirm`` to enter it) is
@@ -32,6 +32,13 @@ Three rules this renderer inherits rather than invents:
   unexpectedly long line has to degrade into a second row rather than lose
   text.
 
+**HOLODISKS is live as of TASK-025**, and is the third shape this section
+holds: level 1 is the disk list, and level 2 is a **document, not a list and
+not a player**. It draws no cursor, so the encoder scrolls the text — its
+level-2 rows are one per scroll position, built here rather than in
+``holodisk_list`` because the extent depends on soft-wrapping. Nothing on this
+path touches audio; a holodisk is a document and a transmission is a recording.
+
 Completed quests render **struck through**, mirroring the engine's own
 ``PIPBOY_TEXT_STYLE_STRIKE_THROUGH``. ``DIM`` is deliberately not reused
 for them: it means *disabled* everywhere else on the device, and a finished
@@ -47,6 +54,7 @@ from companion_app.render import font, palette
 from companion_app.state import AppState
 from companion_app.audio import equalizer
 from companion_app.ui import (
+    holodisk_list,
     transmission_list,
     list_geometry,
     quest_list,
@@ -81,6 +89,38 @@ PAUSED_TEXT: str = "PAUSED"
 # Level-1 empty state, centred like the TRANSMISSIONS placeholder so the two
 # read as the same kind of message.
 _EMPTY_SIZE: int = 20
+
+# Holodisk reader (level 2) typography.
+#
+# **9. Settled on the device, after trying the alternative.** This is the one
+# number in the reader that was argued twice, so the reasoning is recorded
+# here rather than left to be rediscovered.
+#
+# The game's holodisk prose was authored for the Pip-Boy's ~604px content
+# view; the reader has ~398px. Measured with the real vendored face over the
+# 790 non-blank lines in the 18 bodies:
+#
+#     size 14 (ROW_SIZE) -> 626 lines overflow    size 10 -> 319
+#     size 13            -> 608 lines overflow    size  9 -> 6
+#     size 11            -> 541 lines overflow    size  8 -> 0
+#
+# So the size *is* the formatting: below ~10 the game's line breaks fit, above
+# it almost nothing does. It shipped at 9, was raised to 13 when the human
+# called 9 too small, and went back to 9 when the wrapping that 13 forced
+# turned out to be the worse problem - "quite small, yet readable, and the
+# formatting is correct". **Raising this is not a local change**; it re-breaks
+# every line on the screen, and the fix for that is paragraph reflow, not a
+# bigger number.
+_READER_SIZE: int = 9
+_READER_LINE_HEIGHT: int = 12
+# Air between the title header and the first line of the document.
+_READER_HEADER_GAP: int = 14
+# Continuation marker for a soft-wrapped line. At the settled size only 3 of
+# the game's 912 lines wrap, so this is rare by design - but when it fires it
+# is what stops a continuation from reading as a new authored line. Kept from
+# the size-13 experiment because it costs nothing and those 3 lines are
+# exactly the ones a reader would otherwise misread.
+_READER_WRAP_INDENT: str = "  "
 
 # Each extra wrapped line, and the water label, cost one of these.
 _WRAP_LINE_HEIGHT: int = 18
@@ -151,6 +191,41 @@ def wrap_label(label: str, width: int, size: int) -> tuple[str, ...]:
     if current:
         lines.append(current)
     return tuple(lines)
+
+
+def wrap_body_line(line: str, width: int, size: int) -> tuple[str, ...]:
+    """Wrap one holodisk body line, **preserving its leading indent**.
+
+    ``wrap_label`` cannot be reused here: it wraps with ``label.split()``,
+    which collapses leading whitespace. Two disks depend on that whitespace —
+    index 11 right-aligns its timestamps with ~52 leading spaces, index 5
+    indents its measurements — and losing it is exactly the "re-wrapped prose"
+    the acceptance criteria rule out.
+
+    An empty line returns ``("",)`` rather than ``()`` so a paragraph break
+    (the engine's ``**END-PAR**``, already translated) still occupies one line
+    of vertical space, the way the in-game screen draws it.
+
+    Continuations carry ``_READER_WRAP_INDENT`` on top of the original indent.
+    Rare at the reader's settled size — 3 of the game's 912 lines — but those
+    3 are exactly the ones where a continuation would otherwise read as a new
+    authored line, which is what the authored-line-break criterion is about.
+    """
+    if not line:
+        return ("",)
+
+    stripped = line.lstrip(" ")
+    indent = line[: len(line) - len(stripped)]
+    if not stripped:
+        # Whitespace only: keep it as one line rather than wrapping nothing.
+        return (line,)
+
+    available = width - font.measure_width(indent, size) if indent else width
+    wrapped = wrap_label(stripped, available, size) or (stripped,)
+    return tuple(
+        indent + (part if position == 0 else _READER_WRAP_INDENT + part)
+        for position, part in enumerate(wrapped)
+    )
 
 
 def _text_width(list_rect: pygame.Rect) -> int:
@@ -341,6 +416,221 @@ def render_quests(
     )
 
 
+def reader_text_rect(body_rect: pygame.Rect) -> pygame.Rect:
+    """The document area: inner body, below the title header, left of gutter."""
+    inner = list_geometry.body_inner_rect(body_rect)
+    header_height = _DISK_TITLE_SIZE + _READER_HEADER_GAP
+    return pygame.Rect(
+        inner.left,
+        inner.top + header_height,
+        inner.width - list_geometry.GUTTER_WIDTH - list_geometry.GUTTER_GAP,
+        inner.height - header_height,
+    )
+
+
+def reader_display_lines(disk, body_rect: pygame.Rect) -> list[str]:
+    """The disk's body flattened into drawable lines, wrapping applied.
+
+    One authored line becomes one or more display lines. This is the single
+    place that expansion happens, so the input router and the renderer cannot
+    disagree about how far the document scrolls.
+
+    ``body_rect`` is threaded through from the real layout rather than taken
+    from a module constant. An earlier version assumed the app's fixed 480x800
+    surface and derived it here; that quietly made the input path and the
+    renderer two sources of truth, which would diverge the moment either the
+    layout gained an inset or a test rendered into a different rect.
+    """
+    text_rect = reader_text_rect(body_rect)
+    width = text_rect.width - 2 * list_geometry.ROW_PAD_X
+    lines: list[str] = []
+    for line in disk.body:
+        lines.extend(wrap_body_line(holodisk_list.renderable(line), width, _READER_SIZE))
+    return lines
+
+
+def reader_visible_line_count(body_rect: pygame.Rect) -> int:
+    return max(1, reader_text_rect(body_rect).height // _READER_LINE_HEIGHT)
+
+
+def reader_scroll_rows(disk, body_rect: pygame.Rect) -> list[scroll_list.ListRow]:
+    """One row per **scroll position**, not one per line.
+
+    This is what makes the encoder scroll properly, and it is a correction to
+    how the reader was first built. It originally handed ``scroll_list`` one
+    row per body line and let ``scroll_list.visible`` pick the window — but
+    that function keeps the *selection* roughly centred, which is right for a
+    list that draws a selection box and wrong for a document that draws none.
+    The measured effect was **26 encoder clicks with no visible change** before
+    the page moved at all, and the unit test missed it because it asserted the
+    cursor moved rather than that the page did.
+
+    Modelling a scroll position as a row instead means the cursor index *is*
+    the index of the top visible line: every click moves the document by
+    exactly one line, in both directions, with no dead zone at either end. The
+    count is clamped so the last position still fills the screen, so scrolling
+    can never run off into blank space.
+    """
+    total = len(reader_display_lines(disk, body_rect))
+    visible = reader_visible_line_count(body_rect)
+    positions = max(1, total - visible + 1)
+    return [
+        scroll_list.ListRow(key=holodisk_list.line_key(offset), label="")
+        for offset in range(positions)
+    ]
+
+
+def render_holodisk_reader(
+    surface: pygame.Surface,
+    body_rect: pygame.Rect,
+    state: AppState,
+    focus: SubSectionFocus,
+    disk,
+) -> None:
+    """Level 2: the disk's document, scrolled by the encoder.
+
+    Deliberately **not** a list: no chevron, no selection box, no strike.
+    ``_draw_row`` would put a filled rectangle around whichever line the
+    encoder happens to sit on, which is right for a menu and wrong for a
+    document. The cursor is a scroll anchor here, nothing more — its position
+    is visible only as the text moving.
+
+    No pagination and no "n of m" counter, unlike the engine's own screen,
+    which pages at 35 lines. One encoder and two buttons make paging fiddly to
+    navigate; scrolling is what INVENTORY and QUESTS already teach.
+    """
+    inner = list_geometry.body_inner_rect(body_rect)
+
+    row = holodisk_list.row_for_key(
+        state.player.holodisks, holodisk_list.holodisk_key(disk.index)
+    )
+    title = row.title if row is not None else holodisk_list.NO_TITLE_LABEL
+    header_height = _DISK_TITLE_SIZE + _READER_HEADER_GAP
+    font.draw_text_centered(
+        surface,
+        title,
+        pygame.Rect(inner.left, inner.top, inner.width, _DISK_TITLE_SIZE + 8),
+        _DISK_TITLE_SIZE,
+        palette.FOREGROUND,
+    )
+
+    text_rect = reader_text_rect(body_rect)
+
+    lines = reader_display_lines(disk, body_rect)
+    if not lines:
+        # An empty body means the server could not resolve the text — never
+        # that the disk has none. A visible failure, not a blank screen.
+        font.draw_text_centered(
+            surface,
+            holodisk_list.NO_TEXT_TEXT,
+            text_rect,
+            _EMPTY_SIZE,
+            palette.FOREGROUND,
+        )
+        return
+
+    # The cursor index IS the top visible line — see `reader_scroll_rows`.
+    # Resolving against the same rows the input router used keeps the two in
+    # step, and clamping guards a cursor left over from a longer document.
+    rows = reader_scroll_rows(disk, body_rect)
+    cursor = scroll_list.resolve_cursor(rows, focus.cursor)
+    top = min(max(cursor.selected_index, 0), max(len(rows) - 1, 0))
+
+    visible_count = reader_visible_line_count(body_rect)
+    window = lines[top:top + visible_count]
+
+    y = text_rect.top
+    for line in window:
+        font.draw_text_left(
+            surface,
+            line,
+            (text_rect.left + list_geometry.ROW_PAD_X, y),
+            _READER_SIZE,
+            palette.FOREGROUND,
+        )
+        y += _READER_LINE_HEIGHT
+
+    # Measured in display lines, which is what actually scrolls. No-ops when
+    # the whole document fits, which is what keeps a single-line disk free of
+    # a gutter.
+    list_geometry.draw_scroll_gutter(
+        surface,
+        pygame.Rect(
+            inner.right - list_geometry.GUTTER_WIDTH,
+            text_rect.top,
+            list_geometry.GUTTER_WIDTH,
+            text_rect.height,
+        ),
+        len(lines),
+        top,
+        len(window),
+    )
+
+
+def render_holodisks(
+    surface: pygame.Surface,
+    body_rect: pygame.Rect,
+    state: AppState,
+    focus: SubSectionFocus,
+) -> None:
+    """Draw whichever of the two holodisk levels ``focus`` selects."""
+    holodisks = state.player.holodisks
+
+    if focus.location_key:
+        disk = holodisk_list.disk_for_key(holodisks, focus.location_key)
+        if disk is not None:
+            render_holodisk_reader(surface, body_rect, state, focus, disk)
+            return
+        # Drilled into a disk the server has since stopped reporting. Fall
+        # through to level 1 rather than blanking; `_active_rows` pops the
+        # same way, so the next `Back` lands on a coherent list.
+
+    if not holodisks:
+        # An explicit message, not a blank body: the app cannot tell "the
+        # player has found no disks" from "the server has not reported any
+        # yet", and either way a blank screen reads as a failure to draw.
+        font.draw_text_centered(
+            surface,
+            holodisk_list.EMPTY_TEXT,
+            list_geometry.body_inner_rect(body_rect),
+            _EMPTY_SIZE,
+            palette.FOREGROUND,
+        )
+        return
+
+    rows = holodisk_list.list_rows(holodisks)
+    list_rect = list_rect_for(body_rect)
+    cursor = scroll_list.resolve_cursor(rows, focus.cursor)
+    visible = scroll_list.visible(
+        rows, cursor, list_rect.height, lambda _row: list_geometry.ROW_HEIGHT
+    )
+
+    for position, (_row_index, row) in enumerate(visible):
+        row_rect = pygame.Rect(
+            list_rect.left,
+            list_rect.top + position * list_geometry.ROW_HEIGHT,
+            list_rect.width,
+            list_geometry.ROW_HEIGHT,
+        )
+        _draw_row(
+            surface,
+            row_rect,
+            [row.label],
+            selected=row.key == cursor.selected_key,
+            activated=focus.activated,
+            struck=False,
+            water_label="",
+        )
+
+    list_geometry.draw_scroll_gutter(
+        surface,
+        gutter_rect_for(body_rect),
+        len(rows),
+        visible[0][0] if visible else 0,
+        len(visible),
+    )
+
+
 def _draw_equalizer(
     surface: pygame.Surface,
     rect: pygame.Rect,
@@ -497,11 +787,14 @@ def render_transmissions(
 
 
 class ArchivesSection:
-    """ARCHIVES section: QUESTS and TRANSMISSIONS live, HOLODISKS pending.
+    """ARCHIVES section: QUESTS, HOLODISKS and TRANSMISSIONS, all live.
 
     Three sub-sections, and the two that sound alike are not:
-    **HOLODISKS** are text documents (TASK-025, not yet built) and
-    **TRANSMISSIONS** are replayable cutscenes played back as audio.
+    **HOLODISKS** are text documents you read (TASK-025) and
+    **TRANSMISSIONS** are replayable cutscenes played back as audio
+    (TASK-024). Nothing on the holodisk path touches audio, and nothing on
+    the transmission path renders body text — keeping them apart is the whole
+    point of the split that created these two tickets.
     """
 
     title = "ARCHIVES"
@@ -524,11 +817,15 @@ class ArchivesSection:
         if selected_key == ARCHIVES_QUESTS:
             render_quests(surface, body_rect, state, focus)
             return
+        if selected_key == ARCHIVES_HOLODISKS:
+            render_holodisks(surface, body_rect, state, focus)
+            return
         if selected_key == ARCHIVES_TRANSMISSIONS:
             render_transmissions(surface, body_rect, state, focus, self._sink)
             return
-        # ARCHIVES_HOLODISKS falls through to the placeholder until
-        # TASK-025 builds the text reader.
+        # No sub-section reaches this any more; kept as the branch for a key
+        # that is not one of the three, so an unknown segment degrades to a
+        # message rather than a blank body.
         font.draw_text_centered(
             surface,
             _PLACEHOLDER_TEXT,

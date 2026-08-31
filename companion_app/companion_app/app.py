@@ -46,9 +46,11 @@ from companion_app.ui.pages.boot import (
     BootSequence,
     SplashPage,
 )
+from companion_app.ui.pages import archives
 from companion_app.ui.pages.archives import ArchivesSection
 from companion_app.ui.pages.automaps import AutomapsSection
 from companion_app.ui import (
+    holodisk_list,
     transmission_list,
     transmission_playback,
     inventory_list,
@@ -60,6 +62,7 @@ from companion_app.ui import (
 from companion_app.audio import create_sink
 from companion_app.ui.scroll_list import ListRow
 from companion_app.ui.sections import (
+    ARCHIVES_HOLODISKS,
     ARCHIVES_TRANSMISSIONS,
     ARCHIVES_QUESTS,
     SECTION_TITLES,
@@ -99,6 +102,7 @@ def _active_rows(
     current_page: Page,
     sections_ui: SectionsUiState,
     state: AppState,
+    content_rect: "pygame.Rect",
 ) -> tuple[ListRow, ...]:
     """Content rows for the active sub-section, or empty if it has none.
 
@@ -127,6 +131,28 @@ def _active_rows(
             # raising: the screen pops up a level instead of crashing.
             return quest_list.build_location_rows(quests)
         return quest_list.build_quest_rows(quests, location_index)
+    if current_page is Page.ARCHIVES and seg.selected_key == ARCHIVES_HOLODISKS:
+        holodisks = state.player.holodisks
+        drill_key = sections.drill_key_for(sections_ui, current_page, seg.selected_key)
+        if drill_key == "":
+            return tuple(holodisk_list.list_rows(holodisks))
+        disk = holodisk_list.disk_for_key(holodisks, drill_key)
+        if disk is None:
+            # A depth key that no longer decodes, or a disk the server has
+            # stopped reporting. Fall back to level 1 rather than raising --
+            # the screen pops up a level instead of crashing, the same rule
+            # QUESTS follows.
+            return tuple(holodisk_list.list_rows(holodisks))
+        # Level 2 IS a list, one row per **scroll position** — so the cursor
+        # index is the index of the top visible line and every encoder click
+        # moves the document exactly one line. Rows come from `archives`
+        # because the extent depends on soft-wrapping, and the router and the
+        # renderer must not disagree about it. (Returning `()`, as
+        # TRANSMISSIONS deliberately does to free the gesture for seeking,
+        # would freeze the reader.)
+        return tuple(
+            archives.reader_scroll_rows(disk, archives.body_rect_for(content_rect))
+        )
     if current_page is Page.ARCHIVES and seg.selected_key == ARCHIVES_TRANSMISSIONS:
         if sections.drill_key_for(sections_ui, current_page, seg.selected_key) != "":
             # Level 2 is a player, not a list. Returning no rows is what
@@ -153,6 +179,7 @@ def _route_input(
     sections_ui: SectionsUiState,
     input_event: InputEvent,
     state: AppState,
+    content_rect: "pygame.Rect",
 ) -> tuple[Page, SectionsUiState]:
     """Route one input event to the section model.
 
@@ -175,7 +202,7 @@ def _route_input(
         sections_ui,
         current_page,
         input_event,
-        rows=_active_rows(current_page, sections_ui, state),
+        rows=_active_rows(current_page, sections_ui, state, content_rect),
     )
 
 
@@ -434,7 +461,7 @@ def _run_loop(config: Config) -> int:
                         continue
                 before_page, before_ui = current_page, sections_ui
                 current_page, sections_ui = _route_input(
-                    current_page, sections_ui, input_event, state
+                    current_page, sections_ui, input_event, state, layout.content_rect
                 )
                 transmission_playback.apply(
                     audio_sink,

@@ -2,6 +2,8 @@
 #define FALLOUT_COMPANION_QUEST_CATALOG_H_
 
 #include <cstddef>
+#include <string>
+#include <vector>
 
 namespace fallout {
 
@@ -36,11 +38,35 @@ bool companionQuestLocationName(int location, char* out, size_t outSize);
 bool companionQuestText(int location, int slot, char* out, size_t outSize);
 
 // Holodisk title, message id `400 + index` (`pipboy.cc:1485`), for the
-// in-game STATUS screen's document list. A *different* range again from
-// the body text (`1000 * index + 1000`, terminated by `**END-DISK**`),
-// which nothing carries yet - TASK-025 adds it when holodisks become a
-// readable screen.
+// in-game STATUS screen's document list. A *different* range from the
+// body text below.
 bool companionHolodiskTitle(int index, char* out, size_t outSize);
+
+// Holodisk body text: message ids `1000 * index + 1000` upward, one line
+// per id, terminated by the `**END-DISK**` sentinel - the same walk
+// `ShowHoloDisk` performs (`pipboy.cc:1355-1432`).
+//
+// Two markers live in this range and NEITHER is ever emitted:
+//
+//  * `**END-DISK**` ends the disk.
+//  * `**END-PAR**` is a blank line. The engine prints nothing for it and
+//    advances one line (`pipboy.cc:1425-1427`); it appears 122 times
+//    across the 18 bodies. It is returned as an EMPTY STRING so the
+//    client renders the same vertical gap without ever seeing a literal.
+//
+// **All or nothing.** On any failure - an id the catalog cannot resolve,
+// or reaching the engine's own `+1500` bound with no sentinel - `out` is
+// cleared and `false` is returned. A partial body is deliberately NOT
+// forwarded: "empty body" is then the single unambiguous signal the
+// client renders as a visible failure, instead of a truncated document
+// that looks complete. All 18 disks are verified terminated, so this
+// path means a modded or damaged `pipboy.msg`.
+//
+// Unlike the engine's loop, which uses `getmsg` and therefore silently
+// substitutes the literal string "Error" for a missing id, this walks
+// `message_search` - see `resolveMessage`. "Error" must never reach the
+// wire as a line of a holodisk.
+bool companionHolodiskBody(int index, std::vector<std::string>& out);
 
 // Transmission (replayable cutscene) title, message id `500 + movie`
 // (`ListArchive`, `pipboy.cc:1801`). A DIFFERENT range from the holodisk

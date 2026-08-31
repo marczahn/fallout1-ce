@@ -16,7 +16,9 @@ from companion_app.app import (
     _start_network_client,
     _visible_page,
 )
+from companion_app.app import VIRTUAL_HEIGHT, VIRTUAL_WIDTH
 from companion_app.config import Config
+from companion_app.ui.layout import Layout
 from companion_app.ui.console import TypewriterConsole
 from companion_app.input.events import (
     BackEvent,
@@ -88,6 +90,11 @@ def _quest_route_state() -> AppState:
 
 
 _QUEST_ROUTE_STATE = _quest_route_state()
+
+# The reader's scroll extent depends on the real layout, so the input path now
+# takes a `content_rect`. Taken from `Layout` rather than hand-built, so these
+# tests cannot drift from what the app actually renders into.
+_ROUTE_RECT = Layout((VIRTUAL_WIDTH, VIRTUAL_HEIGHT)).content_rect
 
 # A player who is connected but has no quests at all, for the empty-list
 # guard: activation must refuse rather than trap the encoder.
@@ -177,7 +184,7 @@ class SectionRoutingTests(unittest.TestCase):
             (2, Page.AUTOMAPS),
             (3, Page.ARCHIVES),
         ):
-            page, out_ui = _route_input(Page.STATUS, ui, PageButtonEvent(index), _ROUTE_STATE)
+            page, out_ui = _route_input(Page.STATUS, ui, PageButtonEvent(index), _ROUTE_STATE, _ROUTE_RECT)
             self.assertEqual(page, expected)
             self.assertEqual(out_ui, ui)
 
@@ -190,24 +197,24 @@ class SectionRoutingTests(unittest.TestCase):
         ui = sections.handle_input(
             sections.default_sections_ui(), Page.AUTOMAPS, EncoderRightEvent()
         )
-        page, out_ui = _route_input(Page.AUTOMAPS, ui, PageButtonEvent(4), _ROUTE_STATE)
+        page, out_ui = _route_input(Page.AUTOMAPS, ui, PageButtonEvent(4), _ROUTE_STATE, _ROUTE_RECT)
         self.assertEqual(page, Page.AUTOMAPS)
         self.assertEqual(out_ui, ui)
 
     def test_encoder_cycles_the_active_section(self) -> None:
         ui = sections.default_sections_ui()
-        page, ui = _route_input(Page.AUTOMAPS, ui, EncoderRightEvent(), _ROUTE_STATE)
+        page, ui = _route_input(Page.AUTOMAPS, ui, EncoderRightEvent(), _ROUTE_STATE, _ROUTE_RECT)
         self.assertEqual(page, Page.AUTOMAPS)
         self.assertEqual(sections.for_page(ui, Page.AUTOMAPS).selected_key, "WORLD")
 
     def test_encoder_left_wraps_to_last_subsection(self) -> None:
         ui = sections.default_sections_ui()
-        _page, ui = _route_input(Page.AUTOMAPS, ui, EncoderLeftEvent(), _ROUTE_STATE)
+        _page, ui = _route_input(Page.AUTOMAPS, ui, EncoderLeftEvent(), _ROUTE_STATE, _ROUTE_RECT)
         self.assertEqual(sections.for_page(ui, Page.AUTOMAPS).selected_key, "ATLAS")
 
     def test_encoder_leaves_other_sections_untouched(self) -> None:
         base = sections.default_sections_ui()
-        _page, ui = _route_input(Page.AUTOMAPS, base, EncoderRightEvent(), _ROUTE_STATE)
+        _page, ui = _route_input(Page.AUTOMAPS, base, EncoderRightEvent(), _ROUTE_STATE, _ROUTE_RECT)
         self.assertEqual(ui.status, base.status)
         self.assertEqual(ui.archives, base.archives)
 
@@ -240,7 +247,7 @@ class SectionRoutingTests(unittest.TestCase):
             for input_event in (ConfirmEvent(), BackEvent()):
                 with self.subTest(page=page, sub_section=sub_section):
                     out_page, out_ui = _route_input(
-                        page, ui, input_event, _QUEST_ROUTE_STATE
+                        page, ui, input_event, _QUEST_ROUTE_STATE, _ROUTE_RECT
                     )
                     self.assertEqual(out_page, page)
                     self.assertEqual(out_ui, ui)
@@ -259,20 +266,20 @@ class SectionRoutingTests(unittest.TestCase):
             for input_event in (ConfirmEvent(), BackEvent()):
                 with self.subTest(sub_section=sub_section):
                     _page, out_ui = _route_input(
-                        Page.AUTOMAPS, ui, input_event, _QUEST_ROUTE_STATE
+                        Page.AUTOMAPS, ui, input_event, _QUEST_ROUTE_STATE, _ROUTE_RECT
                     )
                     self.assertEqual(out_ui, ui)
 
     def test_selection_is_preserved_across_section_switches(self) -> None:
         """Selected sub-sections survive leaving and re-entering a section."""
         ui = sections.default_sections_ui()
-        _page, ui = _route_input(Page.STATUS, ui, EncoderRightEvent(), _ROUTE_STATE)
-        _page, ui = _route_input(Page.AUTOMAPS, ui, EncoderRightEvent(), _ROUTE_STATE)
-        _page, ui = _route_input(Page.ARCHIVES, ui, EncoderRightEvent(), _ROUTE_STATE)
+        _page, ui = _route_input(Page.STATUS, ui, EncoderRightEvent(), _ROUTE_STATE, _ROUTE_RECT)
+        _page, ui = _route_input(Page.AUTOMAPS, ui, EncoderRightEvent(), _ROUTE_STATE, _ROUTE_RECT)
+        _page, ui = _route_input(Page.ARCHIVES, ui, EncoderRightEvent(), _ROUTE_STATE, _ROUTE_RECT)
 
         page = Page.ARCHIVES
         for index in (1, 2, 3):
-            page, ui = _route_input(page, ui, PageButtonEvent(index), _ROUTE_STATE)
+            page, ui = _route_input(page, ui, PageButtonEvent(index), _ROUTE_STATE, _ROUTE_RECT)
 
         self.assertEqual(sections.for_page(ui, Page.STATUS).selected_key, "INVENTORY")
         self.assertEqual(sections.for_page(ui, Page.AUTOMAPS).selected_key, "WORLD")
@@ -289,13 +296,13 @@ class SubSectionActivationTests(unittest.TestCase):
     def _on_inventory(self) -> sections.SectionsUiState:
         """STATUS with INVENTORY selected, not yet activated."""
         ui = sections.default_sections_ui()
-        _page, ui = _route_input(Page.STATUS, ui, EncoderRightEvent(), _ROUTE_STATE)
+        _page, ui = _route_input(Page.STATUS, ui, EncoderRightEvent(), _ROUTE_STATE, _ROUTE_RECT)
         self.assertEqual(sections.for_page(ui, Page.STATUS).selected_key, "INVENTORY")
         return ui
 
     def test_confirm_activates_inventory(self) -> None:
         ui = self._on_inventory()
-        page, ui = _route_input(Page.STATUS, ui, ConfirmEvent(), _ROUTE_STATE)
+        page, ui = _route_input(Page.STATUS, ui, ConfirmEvent(), _ROUTE_STATE, _ROUTE_RECT)
         self.assertEqual(page, Page.STATUS)
         self.assertTrue(ui.activated)
         # Seeded onto a real item row (pid:slot:occurrence), never onto a
@@ -305,44 +312,44 @@ class SubSectionActivationTests(unittest.TestCase):
 
     def test_encoder_while_activated_moves_cursor_not_subsection(self) -> None:
         ui = self._on_inventory()
-        _page, ui = _route_input(Page.STATUS, ui, ConfirmEvent(), _ROUTE_STATE)
+        _page, ui = _route_input(Page.STATUS, ui, ConfirmEvent(), _ROUTE_STATE, _ROUTE_RECT)
         first = ui.inventory_cursor.selected_key
-        _page, ui = _route_input(Page.STATUS, ui, EncoderRightEvent(), _ROUTE_STATE)
+        _page, ui = _route_input(Page.STATUS, ui, EncoderRightEvent(), _ROUTE_STATE, _ROUTE_RECT)
         self.assertNotEqual(ui.inventory_cursor.selected_key, first)
         # The sub-section itself did not move.
         self.assertEqual(sections.for_page(ui, Page.STATUS).selected_key, "INVENTORY")
 
     def test_back_deactivates_and_keeps_the_cursor(self) -> None:
         ui = self._on_inventory()
-        _page, ui = _route_input(Page.STATUS, ui, ConfirmEvent(), _ROUTE_STATE)
-        _page, ui = _route_input(Page.STATUS, ui, EncoderRightEvent(), _ROUTE_STATE)
+        _page, ui = _route_input(Page.STATUS, ui, ConfirmEvent(), _ROUTE_STATE, _ROUTE_RECT)
+        _page, ui = _route_input(Page.STATUS, ui, EncoderRightEvent(), _ROUTE_STATE, _ROUTE_RECT)
         moved = ui.inventory_cursor
-        _page, ui = _route_input(Page.STATUS, ui, BackEvent(), _ROUTE_STATE)
+        _page, ui = _route_input(Page.STATUS, ui, BackEvent(), _ROUTE_STATE, _ROUTE_RECT)
         self.assertFalse(ui.activated)
         self.assertEqual(ui.inventory_cursor, moved)
 
     def test_confirm_after_back_resumes_the_same_row(self) -> None:
         """The deactivated list outlines a row; re-entry must honour it."""
         ui = self._on_inventory()
-        _page, ui = _route_input(Page.STATUS, ui, ConfirmEvent(), _ROUTE_STATE)
-        _page, ui = _route_input(Page.STATUS, ui, EncoderRightEvent(), _ROUTE_STATE)
+        _page, ui = _route_input(Page.STATUS, ui, ConfirmEvent(), _ROUTE_STATE, _ROUTE_RECT)
+        _page, ui = _route_input(Page.STATUS, ui, EncoderRightEvent(), _ROUTE_STATE, _ROUTE_RECT)
         resumed_on = ui.inventory_cursor.selected_key
-        _page, ui = _route_input(Page.STATUS, ui, BackEvent(), _ROUTE_STATE)
-        _page, ui = _route_input(Page.STATUS, ui, ConfirmEvent(), _ROUTE_STATE)
+        _page, ui = _route_input(Page.STATUS, ui, BackEvent(), _ROUTE_STATE, _ROUTE_RECT)
+        _page, ui = _route_input(Page.STATUS, ui, ConfirmEvent(), _ROUTE_STATE, _ROUTE_RECT)
         self.assertTrue(ui.activated)
         self.assertEqual(ui.inventory_cursor.selected_key, resumed_on)
 
     def test_section_switch_deactivates_but_preserves_cursor(self) -> None:
         ui = self._on_inventory()
-        _page, ui = _route_input(Page.STATUS, ui, ConfirmEvent(), _ROUTE_STATE)
-        _page, ui = _route_input(Page.STATUS, ui, EncoderRightEvent(), _ROUTE_STATE)
+        _page, ui = _route_input(Page.STATUS, ui, ConfirmEvent(), _ROUTE_STATE, _ROUTE_RECT)
+        _page, ui = _route_input(Page.STATUS, ui, EncoderRightEvent(), _ROUTE_STATE, _ROUTE_RECT)
         cursor = ui.inventory_cursor
 
-        page, ui = _route_input(Page.STATUS, ui, PageButtonEvent(2), _ROUTE_STATE)
+        page, ui = _route_input(Page.STATUS, ui, PageButtonEvent(2), _ROUTE_STATE, _ROUTE_RECT)
         self.assertEqual(page, Page.AUTOMAPS)
         self.assertFalse(ui.activated)
 
-        page, ui = _route_input(page, ui, PageButtonEvent(1), _ROUTE_STATE)
+        page, ui = _route_input(page, ui, PageButtonEvent(1), _ROUTE_STATE, _ROUTE_RECT)
         self.assertEqual(page, Page.STATUS)
         self.assertEqual(sections.for_page(ui, Page.STATUS).selected_key, "INVENTORY")
         self.assertFalse(ui.activated)
@@ -355,22 +362,22 @@ class SubSectionActivationTests(unittest.TestCase):
             connection=ConnectionState.READY,
             player=PlayerState(available=True),
         )
-        _page, out = _route_input(Page.STATUS, ui, ConfirmEvent(), empty)
+        _page, out = _route_input(Page.STATUS, ui, ConfirmEvent(), empty, _ROUTE_RECT)
         self.assertFalse(out.activated)
         self.assertEqual(out, ui)
 
     def test_encoder_at_the_subsection_row_still_cycles(self) -> None:
         """Not activated: the encoder belongs to the sub-header as before."""
         ui = sections.default_sections_ui()
-        _page, ui = _route_input(Page.STATUS, ui, EncoderRightEvent(), _ROUTE_STATE)
+        _page, ui = _route_input(Page.STATUS, ui, EncoderRightEvent(), _ROUTE_STATE, _ROUTE_RECT)
         self.assertEqual(sections.for_page(ui, Page.STATUS).selected_key, "INVENTORY")
         self.assertFalse(ui.activated)
 
     def test_confirm_is_inert_while_already_activated(self) -> None:
         ui = self._on_inventory()
-        _page, ui = _route_input(Page.STATUS, ui, ConfirmEvent(), _ROUTE_STATE)
+        _page, ui = _route_input(Page.STATUS, ui, ConfirmEvent(), _ROUTE_STATE, _ROUTE_RECT)
         activated = ui
-        _page, ui = _route_input(Page.STATUS, ui, ConfirmEvent(), _ROUTE_STATE)
+        _page, ui = _route_input(Page.STATUS, ui, ConfirmEvent(), _ROUTE_STATE, _ROUTE_RECT)
         self.assertEqual(ui, activated)
 
     def test_confirm_is_still_inert_on_an_activated_inventory(self) -> None:
@@ -380,9 +387,9 @@ class SubSectionActivationTests(unittest.TestCase):
         ``Confirm`` cannot leak to the other activatable sub-section.
         """
         ui = self._on_inventory()
-        _page, ui = _route_input(Page.STATUS, ui, ConfirmEvent(), _QUEST_ROUTE_STATE)
+        _page, ui = _route_input(Page.STATUS, ui, ConfirmEvent(), _QUEST_ROUTE_STATE, _ROUTE_RECT)
         activated = ui
-        _page, ui = _route_input(Page.STATUS, ui, ConfirmEvent(), _QUEST_ROUTE_STATE)
+        _page, ui = _route_input(Page.STATUS, ui, ConfirmEvent(), _QUEST_ROUTE_STATE, _ROUTE_RECT)
         self.assertEqual(ui, activated)
         self.assertEqual(ui.quest_drill_key, "")
 
@@ -402,7 +409,7 @@ class QuestNavigationTests(unittest.TestCase):
     def _activated(self) -> sections.SectionsUiState:
         ui = self._on_quests()
         _page, ui = _route_input(
-            Page.ARCHIVES, ui, ConfirmEvent(), _QUEST_ROUTE_STATE
+            Page.ARCHIVES, ui, ConfirmEvent(), _QUEST_ROUTE_STATE, _ROUTE_RECT
         )
         self.assertTrue(ui.activated)
         return ui
@@ -410,7 +417,7 @@ class QuestNavigationTests(unittest.TestCase):
     def _drilled(self) -> sections.SectionsUiState:
         ui = self._activated()
         _page, ui = _route_input(
-            Page.ARCHIVES, ui, ConfirmEvent(), _QUEST_ROUTE_STATE
+            Page.ARCHIVES, ui, ConfirmEvent(), _QUEST_ROUTE_STATE, _ROUTE_RECT
         )
         self.assertNotEqual(ui.quest_drill_key, "")
         return ui
@@ -436,7 +443,7 @@ class QuestNavigationTests(unittest.TestCase):
         ui = self._activated()
         first = ui.quest_cursor.selected_key
         _page, ui = _route_input(
-            Page.ARCHIVES, ui, EncoderRightEvent(), _QUEST_ROUTE_STATE
+            Page.ARCHIVES, ui, EncoderRightEvent(), _QUEST_ROUTE_STATE, _ROUTE_RECT
         )
         self.assertNotEqual(ui.quest_cursor.selected_key, first)
         # The sub-section itself did not move.
@@ -450,7 +457,7 @@ class QuestNavigationTests(unittest.TestCase):
         ui = self._activated()
         selected = ui.quest_cursor.selected_key
         _page, ui = _route_input(
-            Page.ARCHIVES, ui, ConfirmEvent(), _QUEST_ROUTE_STATE
+            Page.ARCHIVES, ui, ConfirmEvent(), _QUEST_ROUTE_STATE, _ROUTE_RECT
         )
         self.assertEqual(ui.quest_drill_key, selected)
         self.assertTrue(ui.activated)
@@ -459,19 +466,19 @@ class QuestNavigationTests(unittest.TestCase):
         ui = self._drilled()
         location_index = quest_list.location_index_from_key(ui.quest_drill_key)
         assert location_index is not None
-        rows = _active_rows(Page.ARCHIVES, ui, _QUEST_ROUTE_STATE)
+        rows = _active_rows(Page.ARCHIVES, ui, _QUEST_ROUTE_STATE, _ROUTE_RECT)
         self.assertTrue(rows)
         for row in rows:
             self.assertTrue(row.key.startswith(f"Q{location_index}."))
 
     def test_encoder_wraps_within_level_two_only(self) -> None:
         ui = self._drilled()
-        rows = _active_rows(Page.ARCHIVES, ui, _QUEST_ROUTE_STATE)
+        rows = _active_rows(Page.ARCHIVES, ui, _QUEST_ROUTE_STATE, _ROUTE_RECT)
         keys = [row.key for row in rows]
         seen = []
         for _step in range(len(keys) + 1):
             _page, ui = _route_input(
-                Page.ARCHIVES, ui, EncoderRightEvent(), _QUEST_ROUTE_STATE
+                Page.ARCHIVES, ui, EncoderRightEvent(), _QUEST_ROUTE_STATE, _ROUTE_RECT
             )
             seen.append(ui.quest_cursor.selected_key)
         # Every visited key is a level-2 row of this location, and the walk
@@ -488,9 +495,9 @@ class QuestNavigationTests(unittest.TestCase):
         # Move around inside level 2 first, so the cursor genuinely holds a
         # level-2 key that has to be replaced on the way out.
         _page, ui = _route_input(
-            Page.ARCHIVES, ui, EncoderRightEvent(), _QUEST_ROUTE_STATE
+            Page.ARCHIVES, ui, EncoderRightEvent(), _QUEST_ROUTE_STATE, _ROUTE_RECT
         )
-        _page, ui = _route_input(Page.ARCHIVES, ui, BackEvent(), _QUEST_ROUTE_STATE)
+        _page, ui = _route_input(Page.ARCHIVES, ui, BackEvent(), _QUEST_ROUTE_STATE, _ROUTE_RECT)
 
         self.assertEqual(ui.quest_drill_key, "", "Back goes up one level")
         self.assertTrue(ui.activated, "...and not out of the list entirely")
@@ -499,16 +506,16 @@ class QuestNavigationTests(unittest.TestCase):
     def test_back_at_level_one_deactivates(self) -> None:
         ui = self._activated()
         cursor = ui.quest_cursor
-        _page, ui = _route_input(Page.ARCHIVES, ui, BackEvent(), _QUEST_ROUTE_STATE)
+        _page, ui = _route_input(Page.ARCHIVES, ui, BackEvent(), _QUEST_ROUTE_STATE, _ROUTE_RECT)
         self.assertFalse(ui.activated)
         self.assertEqual(ui.quest_drill_key, "")
         self.assertEqual(ui.quest_cursor, cursor, "the cursor survives")
 
     def test_two_backs_from_level_two_reach_the_subsection_row(self) -> None:
         ui = self._drilled()
-        _page, ui = _route_input(Page.ARCHIVES, ui, BackEvent(), _QUEST_ROUTE_STATE)
+        _page, ui = _route_input(Page.ARCHIVES, ui, BackEvent(), _QUEST_ROUTE_STATE, _ROUTE_RECT)
         self.assertTrue(ui.activated)
-        _page, ui = _route_input(Page.ARCHIVES, ui, BackEvent(), _QUEST_ROUTE_STATE)
+        _page, ui = _route_input(Page.ARCHIVES, ui, BackEvent(), _QUEST_ROUTE_STATE, _ROUTE_RECT)
         self.assertFalse(ui.activated)
         self.assertEqual(ui.quest_drill_key, "")
 
@@ -520,7 +527,7 @@ class QuestNavigationTests(unittest.TestCase):
         quest.
         """
         ui = self._drilled()
-        rows = _active_rows(Page.ARCHIVES, ui, _QUEST_ROUTE_STATE)
+        rows = _active_rows(Page.ARCHIVES, ui, _QUEST_ROUTE_STATE, _ROUTE_RECT)
         # The cursor is fresh; the renderer and router both resolve it to
         # the first selectable row.
         from companion_app.ui import scroll_list
@@ -534,18 +541,18 @@ class QuestNavigationTests(unittest.TestCase):
         """The documented rule, applied to a two-level list."""
         ui = self._drilled()
         _page, ui = _route_input(
-            Page.ARCHIVES, ui, EncoderRightEvent(), _QUEST_ROUTE_STATE
+            Page.ARCHIVES, ui, EncoderRightEvent(), _QUEST_ROUTE_STATE, _ROUTE_RECT
         )
         quest_cursor = ui.quest_cursor
 
         page, ui = _route_input(
-            Page.ARCHIVES, ui, PageButtonEvent(1), _QUEST_ROUTE_STATE
+            Page.ARCHIVES, ui, PageButtonEvent(1), _QUEST_ROUTE_STATE, _ROUTE_RECT
         )
         self.assertEqual(page, Page.STATUS)
         self.assertFalse(ui.activated)
         self.assertEqual(ui.quest_drill_key, "", "depth must not survive")
 
-        page, ui = _route_input(page, ui, PageButtonEvent(3), _QUEST_ROUTE_STATE)
+        page, ui = _route_input(page, ui, PageButtonEvent(3), _QUEST_ROUTE_STATE, _ROUTE_RECT)
         self.assertEqual(page, Page.ARCHIVES)
         self.assertEqual(
             sections.for_page(ui, Page.ARCHIVES).selected_key, sections.ARCHIVES_QUESTS
@@ -558,7 +565,7 @@ class QuestNavigationTests(unittest.TestCase):
         """Activating an empty list would trap the encoder."""
         ui = self._on_quests()
         _page, out = _route_input(
-            Page.ARCHIVES, ui, ConfirmEvent(), _NO_QUEST_STATE
+            Page.ARCHIVES, ui, ConfirmEvent(), _NO_QUEST_STATE, _ROUTE_RECT
         )
         self.assertFalse(out.activated)
         self.assertEqual(out, ui)
@@ -567,7 +574,7 @@ class QuestNavigationTests(unittest.TestCase):
         """Not activated, the encoder belongs to the sub-header as before."""
         ui = self._on_quests()
         _page, ui = _route_input(
-            Page.ARCHIVES, ui, EncoderRightEvent(), _QUEST_ROUTE_STATE
+            Page.ARCHIVES, ui, EncoderRightEvent(), _QUEST_ROUTE_STATE, _ROUTE_RECT
         )
         self.assertEqual(
             sections.for_page(ui, Page.ARCHIVES).selected_key,
@@ -579,16 +586,16 @@ class QuestNavigationTests(unittest.TestCase):
         """Inventory and quests must not clobber each other's position."""
         ui = self._activated()
         _page, ui = _route_input(
-            Page.ARCHIVES, ui, EncoderRightEvent(), _QUEST_ROUTE_STATE
+            Page.ARCHIVES, ui, EncoderRightEvent(), _QUEST_ROUTE_STATE, _ROUTE_RECT
         )
         quest_cursor = ui.quest_cursor
 
         page, ui = _route_input(
-            Page.ARCHIVES, ui, PageButtonEvent(1), _QUEST_ROUTE_STATE
+            Page.ARCHIVES, ui, PageButtonEvent(1), _QUEST_ROUTE_STATE, _ROUTE_RECT
         )
         ui = _with_subsection(ui, Page.STATUS, sections.STATUS_INVENTORY)
-        _page, ui = _route_input(page, ui, ConfirmEvent(), _QUEST_ROUTE_STATE)
-        _page, ui = _route_input(page, ui, EncoderRightEvent(), _QUEST_ROUTE_STATE)
+        _page, ui = _route_input(page, ui, ConfirmEvent(), _QUEST_ROUTE_STATE, _ROUTE_RECT)
+        _page, ui = _route_input(page, ui, EncoderRightEvent(), _QUEST_ROUTE_STATE, _ROUTE_RECT)
 
         self.assertNotEqual(ui.inventory_cursor, ListCursor())
         self.assertEqual(
@@ -597,15 +604,15 @@ class QuestNavigationTests(unittest.TestCase):
 
     def test_active_rows_switch_level_with_the_depth_key(self) -> None:
         level_one = _active_rows(
-            Page.ARCHIVES, self._activated(), _QUEST_ROUTE_STATE
+            Page.ARCHIVES, self._activated(), _QUEST_ROUTE_STATE, _ROUTE_RECT
         )
-        level_two = _active_rows(Page.ARCHIVES, self._drilled(), _QUEST_ROUTE_STATE)
+        level_two = _active_rows(Page.ARCHIVES, self._drilled(), _QUEST_ROUTE_STATE, _ROUTE_RECT)
         self.assertTrue(all(key.key.startswith("L") for key in level_one))
         self.assertTrue(all(key.key.startswith("Q") for key in level_two))
 
     def test_active_rows_falls_back_to_level_one_on_an_undecodable_key(self) -> None:
         ui = replace(self._activated(), quest_drill_key="not-a-key")
-        rows = _active_rows(Page.ARCHIVES, ui, _QUEST_ROUTE_STATE)
+        rows = _active_rows(Page.ARCHIVES, ui, _QUEST_ROUTE_STATE, _ROUTE_RECT)
         self.assertTrue(rows)
         self.assertTrue(all(row.key.startswith("L") for row in rows))
 
@@ -621,9 +628,9 @@ class QuestNavigationTests(unittest.TestCase):
         ui = _with_subsection(
             sections.default_sections_ui(), Page.ARCHIVES, sections.ARCHIVES_TRANSMISSIONS
         )
-        self.assertEqual(list(_active_rows(Page.ARCHIVES, ui, _QUEST_ROUTE_STATE)), [])
+        self.assertEqual(list(_active_rows(Page.ARCHIVES, ui, _QUEST_ROUTE_STATE, _ROUTE_RECT)), [])
         _page, out = _route_input(
-            Page.ARCHIVES, ui, ConfirmEvent(), _QUEST_ROUTE_STATE
+            Page.ARCHIVES, ui, ConfirmEvent(), _QUEST_ROUTE_STATE, _ROUTE_RECT
         )
         self.assertEqual(out, ui)
 
