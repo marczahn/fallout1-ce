@@ -29,8 +29,10 @@ QuestCatalogState gQuestCatalogState = QuestCatalogState::NotLoaded;
 MessageList gQuestMessageList;
 
 // Keyed by `pipboy.msg` message id. Misses are cached as empty strings so
-// an absent id is not re-searched on every sample. Bounded by the quest
-// table's own size (12 locations + 12*9 slots), so it never grows large.
+// an absent id is not re-searched on every sample. Bounded by the tables
+// it serves (12 locations + 12*9 quest slots, 18 holodisk titles, and
+// 14 transmission titles),
+// so it never grows large.
 std::unordered_map<int, std::string> gQuestTextCache;
 
 bool ensureLoaded()
@@ -125,6 +127,16 @@ bool companionQuestLocationName(int location, char* out, size_t outSize)
 bool companionQuestText(int location, int slot, char* out, size_t outSize)
 {
     return copyMessage(701 + 10 * location + slot, out, outSize);
+}
+
+bool companionHolodiskTitle(int index, char* out, size_t outSize)
+{
+    return copyMessage(400 + index, out, outSize);
+}
+
+bool companionTransmissionTitle(int movie, char* out, size_t outSize)
+{
+    return copyMessage(500 + movie, out, outSize);
 }
 
 void companionWarmQuestCatalog()

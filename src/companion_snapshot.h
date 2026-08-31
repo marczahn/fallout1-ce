@@ -230,6 +230,82 @@ struct CompanionQuestSnapshot {
     bool waterCountdownActive;
 };
 
+// Title of one holodisk the player has found. Defensive ceiling, like
+// `kCompanionQuestTextSize`; the client wraps rather than truncates.
+static constexpr size_t kCompanionHolodiskTitleSize = 128;
+
+// One row of the in-game Pip-Boy STATUS screen's holodisk column - NOT
+// the ARCHIVES screen, which lists movies (see `CompanionTransmission`
+// below). Identity is `index`:
+// the position in the engine's fixed 18-entry `holodisks` table, which is
+// compile-time-stable and is all a client-side row key needs. As with
+// `CompanionQuest`, the backing `GVAR_*` index is deliberately not
+// carried - it is an engine internal with no meaning to the companion.
+//
+// Body text is deliberately absent *for now*. The engine has it (message
+// ids `1000 * index + 1000`, terminated by `**END-DISK**`); TASK-025 adds
+// it when holodisks become a readable screen. It is not carried yet
+// because nothing renders it.
+struct CompanionHolodisk {
+    int index; // 0..companionHolodiskCount()-1
+
+    // Message id `400 + index`, verbatim. Empty when the catalog could
+    // not resolve it; the client renders that as a visible failure rather
+    // than dropping the row - the same rule `CompanionQuest::text` follows.
+    char title[kCompanionHolodiskTitleSize];
+};
+
+// `player.holodisks` payload: the complete set of *found* holodisks in
+// engine table order - a full replacement on every change, like
+// `player.quests`.
+//
+// Found-ness is `game_global_vars[holodisks[i]] != 0`, which is
+// `PipStatus`'s own rule (`pipboy.cc:980-983`, where it computes
+// `holocount`). Note this is `!= 0`, not the `> 0` quest visibility uses:
+// the two screens genuinely differ upstream and are not merged here.
+//
+// Holodisks have no audio at all - they are documents. Recordings belong
+// to `CompanionTransmission` below.
+struct CompanionHolodiskSnapshot {
+    std::vector<CompanionHolodisk> holodisks;
+};
+
+// Title of one transmission (a replayable cutscene). Same ceiling and
+// same "empty means the catalog failed" rule as the holodisk title.
+static constexpr size_t kCompanionTransmissionTitleSize = 128;
+
+// One row of the in-game Pip-Boy ARCHIVES screen. Identity is `index`:
+// the `GameMovie` enum value, which is compile-time stable.
+//
+// This is a DIFFERENT screen from the holodisks above, which the vault
+// conflated for a while. `PipArchives` (`pipboy.cc:1730`) lists movies;
+// `PipStatus` (`:960`) lists holodisks beside the quests.
+//
+// Two entries legitimately share a title -- `MOVIE_WALKM` and
+// `MOVIE_WALKW` are both "Leaving Vault" -- so `index` is the only safe
+// identity and the title must never be used as a key.
+struct CompanionTransmission {
+    int index; // a `GameMovie` value, `MOVIE_VEXPLD`..`MOVIE_COUNT-1`
+
+    // Message id `500 + index`, verbatim; empty when unresolvable.
+    char title[kCompanionTransmissionTitleSize];
+};
+
+// `player.transmissions` payload: the cutscenes the player has actually
+// seen, in enum order -- a full replacement on every change.
+//
+// Seen-ness is `gmovie_has_been_played(movie)`, which the engine persists
+// across saves (`gmovie_load`/`gmovie_save`).
+//
+// **Only 11 of the 14 movies are listable.** `ListArchive` starts at
+// `MOVIE_VEXPLD`, deliberately skipping `MOVIE_IPLOGO`, `MOVIE_MPLOGO`,
+// and `MOVIE_INTRO` -- the logos and the intro are not archive material.
+// The companion applies the same rule, or it would offer the Interplay
+// logo as a transmission.
+struct CompanionTransmissionSnapshot {
+    std::vector<CompanionTransmission> transmissions;
+};
+
 // Aggregator over the three per-kind player payloads. The `surface`
 // field drives which of `localLocation` and `worldLocation` are
 // meaningful at any given sample; `vitals` is always meaningful when
@@ -246,6 +322,8 @@ struct CompanionSnapshot {
     CompanionPlayerWorldLocation worldLocation;
     CompanionInventorySnapshot inventory;
     CompanionQuestSnapshot quests;
+    CompanionHolodiskSnapshot holodisks;
+    CompanionTransmissionSnapshot transmissions;
 };
 
 CompanionSnapshot companionCollectSnapshot();

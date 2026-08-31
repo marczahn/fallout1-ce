@@ -188,6 +188,107 @@ class WaterStatus:
 
 
 @dataclass
+class Transmission:
+    """One row of the in-game Pip-Boy Archives screen (schemaVersion 13).
+
+    Identity is ``index`` — the engine's ``GameMovie`` enum value. The
+    listable range is ``MOVIE_VEXPLD..MOVIE_COUNT-1``, i.e. **3..13**, which
+    excludes the two logos and the intro exactly as the in-game screen does.
+    (It is *not* the 18-entry holodisk table; that is a different subject on
+    a different screen — see :class:`Holodisk`.) No GVAR crosses the wire,
+    matching :class:`Quest`.
+
+    ``title`` may legitimately be empty: the server emits the row anyway
+    when its message file could not resolve it, so the list can never
+    silently disagree with the in-game screen.
+
+    There is deliberately **no body text**. The engine has it, but the
+    transmission screen plays a recording rather than rendering a document —
+    see the TASK-024 audio-over-video decision. Whether a recording
+    actually exists is *not* a property of this row: that lives in
+    :class:`TransmissionAudioState`, because bakedness and availability are
+    independent and are only intersected when rendering.
+    """
+
+    index: int = 0
+    title: str = ""
+
+
+class TransmissionSyncStatus(Enum):
+    """Lifecycle of the on-connect transmission audio sync.
+
+    IDLE     -- not started (initial / post-reconnect).
+    FETCHING -- manifest or chunks in flight.
+    READY    -- every manifest entry landed.
+    UNAVAILABLE -- server too old, or the fetch gave up.
+    """
+
+    IDLE = 0
+    FETCHING = 1
+    READY = 2
+    UNAVAILABLE = 3
+
+
+@dataclass
+class TransmissionRecording:
+    """A fully-transferred narration plus its equalizer envelope.
+
+    ``duration_ms`` is derived, not sent: ``frames * frame_ms``. It is what
+    the transport clamps seeks against, and clamping is mandatory rather
+    than defensive — ``pygame.mixer.music.set_pos()`` raises
+    ``pygame.error`` for a target past the end of the track, with the
+    misleading message "Position not implemented for music type".
+    """
+
+    index: int = 0
+    path: str = ""
+    bands: int = 0
+    frames: int = 0
+    frame_ms: int = 0
+    # bands * frames bytes, row-major by frame.
+    envelope: bytes = b""
+
+    @property
+    def duration_ms(self) -> int:
+        return self.frames * self.frame_ms
+
+
+@dataclass
+class TransmissionAudioState:
+    """Sync bookkeeping plus the recordings that have landed.
+
+    Deliberately keyed by transmission index and deliberately independent of
+    which disks the player has found: the sync fetches every *baked* disk,
+    so a disk discovered mid-session already has its audio. See the
+    TASK-024 fetch-on-connect decision.
+    """
+
+    status: TransmissionSyncStatus = TransmissionSyncStatus.IDLE
+    # Indices the server reports as baked, in manifest order.
+    manifest: list[int] = field(default_factory=list)
+    recordings: dict[int, TransmissionRecording] = field(default_factory=dict)
+    # Indices that were attempted and failed (error, timeout, malformed
+    # envelope, short transfer). Tracked separately from ``recordings``
+    # because the sync advances by "not yet attempted", not by "not yet
+    # succeeded" -- keying only on success makes an unfetchable disk
+    # re-selected forever and the sync never converges.
+    failed: set[int] = field(default_factory=set)
+    # Fetch bookkeeping (client-only), mirroring WorldMapState's shape.
+    current_index: int = -1
+    chunk_count: int = 0
+    next_chunk: int = 0
+    chunk_bytes: int = 0
+    expected_bytes: int = 0
+    accumulator: bytearray = field(default_factory=bytearray)
+    pending_envelope: bytes = b""
+    last_request_at: float = 0.0
+    retries: int = 0
+
+    def has_recording(self, index: int) -> bool:
+        return index in self.recordings
+
+
+@dataclass
 class PlayerState:
     available: bool = False
     hp: int = 0
@@ -222,6 +323,7 @@ class PlayerState:
     inventory: list[InventoryItem] = field(default_factory=list)
     quests: list[Quest] = field(default_factory=list)
     water: WaterStatus = field(default_factory=WaterStatus)
+    transmissions: list[Transmission] = field(default_factory=list)
 
 
 @dataclass
@@ -231,6 +333,7 @@ class AppState:
     player: PlayerState = field(default_factory=PlayerState)
     world_map: WorldMapState = field(default_factory=WorldMapState)
     local_map: LocalMapState = field(default_factory=LocalMapState)
+    transmission_audio: TransmissionAudioState = field(default_factory=TransmissionAudioState)
     # Most recent world position ever seen, in image-pixel space. Persists
     # while the player is on a LOCAL surface so the map can show a
     # "LAST KNOWN" marker. ``has_world_fix`` gates whether it is meaningful.

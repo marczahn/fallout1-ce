@@ -6,6 +6,10 @@ in-memory state that the UI layer reads each frame.
 from companion_app.state.models import (
     AppState,
     ConnectionState,
+    Transmission,
+    TransmissionAudioState,
+    TransmissionRecording,
+    TransmissionSyncStatus,
     InventoryItem,
     LocalMapState,
     PlayerState,
@@ -20,6 +24,10 @@ from companion_app.state.models import (
 __all__ = [
     "AppState",
     "ConnectionState",
+    "Transmission",
+    "TransmissionAudioState",
+    "TransmissionRecording",
+    "TransmissionSyncStatus",
     "InventoryItem",
     "LocalMapState",
     "PlayerState",

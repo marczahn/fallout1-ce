@@ -2512,4 +2512,18 @@ int companionQuestGlobalVar(int location, int slot)
     return sthreads[location][slot];
 }
 
+int companionHolodiskCount()
+{
+    return HOLODISK_COUNT;
+}
+
+int companionHolodiskGlobalVar(int index)
+{
+    if (index < 0 || index >= HOLODISK_COUNT) {
+        return -1;
+    }
+
+    return holodisks[index];
+}
+
 } // namespace fallout

@@ -1,4 +1,4 @@
-"""ARCHIVES section — QUESTS and HOLODISKS.
+"""ARCHIVES section — QUESTS and TRANSMISSIONS.
 
 Replaces the old DATA page (TASK-017). That page's root/detail model for
 *sub-section* navigation (select a tab, ``Confirm`` to enter it) is
@@ -12,9 +12,13 @@ that location's quest lines, ``Back`` comes back up. That is drill-down
 *inside activated content*, which is the space TASK-018 opened — not a
 revival of the sub-section navigation TASK-017 removed.
 
-**HOLODISKS is still a placeholder.** Its content comes from a different
-source (holodisk message ids, ``holocount``) and is a separate ticket;
-QUESTS sets the pattern it will follow.
+**TRANSMISSIONS is live as of TASK-024**, and follows the pattern QUESTS set,
+with one difference that shapes the whole screen: its level 2 is a
+**player, not a list**. Level 1 is the disk list; ``Confirm`` opens a
+disk; level 2 draws an equalizer and a transport state, and the encoder
+seeks there rather than moving a cursor. It renders **no transmission body
+text at all** — the disk's content is the recording. See the TASK-024
+audio-over-video decision.
 
 Three rules this renderer inherits rather than invents:
 
@@ -41,8 +45,18 @@ import pygame
 
 from companion_app.render import font, palette
 from companion_app.state import AppState
-from companion_app.ui import list_geometry, quest_list, scroll_list
-from companion_app.ui.sections import ARCHIVES_QUESTS
+from companion_app.audio import equalizer
+from companion_app.ui import (
+    transmission_list,
+    list_geometry,
+    quest_list,
+    scroll_list,
+)
+from companion_app.ui.sections import (
+    ARCHIVES_HOLODISKS,
+    ARCHIVES_QUESTS,
+    ARCHIVES_TRANSMISSIONS,
+)
 from companion_app.ui.shell import SUBHEADER_BAND_HEIGHT
 
 if TYPE_CHECKING:
@@ -51,7 +65,20 @@ if TYPE_CHECKING:
 _PLACEHOLDER_TEXT: str = "NOT YET IMPLEMENTED"
 _PLACEHOLDER_SIZE: int = 24
 
-# Level-1 empty state, centred like the HOLODISKS placeholder so the two
+# Transmission player (level 2) geometry.
+_DISK_TITLE_SIZE: int = 18
+_DISK_STATE_SIZE: int = 16
+_EQ_BAR_GAP: int = 4
+_EQ_HEIGHT: int = 160
+_EQ_TOP_GAP: int = 40
+# A paused/stopped bar is still drawn, as a floor, so the equalizer reads
+# as "present but still" rather than as a failure to draw.
+_EQ_FLOOR_PX: int = 2
+
+PLAYING_TEXT: str = "PLAYING"
+PAUSED_TEXT: str = "PAUSED"
+
+# Level-1 empty state, centred like the TRANSMISSIONS placeholder so the two
 # read as the same kind of message.
 _EMPTY_SIZE: int = 20
 
@@ -314,10 +341,176 @@ def render_quests(
     )
 
 
+def _draw_equalizer(
+    surface: pygame.Surface,
+    rect: pygame.Rect,
+    levels: Sequence[float],
+) -> None:
+    """Bottom-anchored bars, one per envelope band.
+
+    Every bar keeps a floor so a paused or silent moment still reads as an
+    equalizer at rest rather than as a screen that failed to draw.
+    """
+    if not levels or rect.width <= 0 or rect.height <= 0:
+        return
+
+    count = len(levels)
+    total_gap = _EQ_BAR_GAP * (count - 1)
+    bar_width = max(1, (rect.width - total_gap) // count)
+    x = rect.left
+    for level in levels:
+        clamped = 0.0 if level < 0.0 else (1.0 if level > 1.0 else level)
+        height = max(_EQ_FLOOR_PX, int(round(rect.height * clamped)))
+        surface.fill(
+            palette.FOREGROUND,
+            pygame.Rect(x, rect.bottom - height, bar_width, height),
+        )
+        x += bar_width + _EQ_BAR_GAP
+
+
+def render_transmission_player(
+    surface: pygame.Surface,
+    body_rect: pygame.Rect,
+    state: AppState,
+    index: int,
+    sink,
+) -> None:
+    """Level 2: title, equalizer, transport state. No body text."""
+    inner = list_geometry.body_inner_rect(body_rect)
+    audio = state.transmission_audio
+
+    row = transmission_list.row_for_key(
+        state.player.transmissions, audio, transmission_list.transmission_key(index)
+    )
+    title = row.title if row is not None else transmission_list.NO_TITLE_LABEL
+    font.draw_text_centered(
+        surface,
+        title,
+        pygame.Rect(inner.left, inner.top, inner.width, _DISK_TITLE_SIZE + 8),
+        _DISK_TITLE_SIZE,
+        palette.FOREGROUND,
+    )
+
+    recording = audio.recordings.get(index)
+    if recording is None:
+        # One state for all three causes — unreachable filler disk, not
+        # baked, or still syncing — by decision. `unavailable_text` only
+        # distinguishes "the sync may still deliver it".
+        font.draw_text_centered(
+            surface,
+            transmission_list.unavailable_text(audio),
+            inner,
+            _EMPTY_SIZE,
+            palette.FOREGROUND,
+        )
+        return
+
+    eq_rect = pygame.Rect(
+        inner.left,
+        inner.top + _DISK_TITLE_SIZE + _EQ_TOP_GAP,
+        inner.width,
+        min(_EQ_HEIGHT, max(0, inner.height - _DISK_TITLE_SIZE - _EQ_TOP_GAP - 40)),
+    )
+
+    if sink is not None and sink.is_playing and not sink.is_paused:
+        levels = equalizer.bar_levels(
+            recording.envelope,
+            recording.bands,
+            recording.frames,
+            recording.frame_ms,
+            sink.position_ms,
+        )
+    else:
+        # Paused or stopped: bars hold at the floor, which is what makes
+        # pause visible at a glance as well as in the state line.
+        levels = equalizer.silent_levels(recording.bands)
+
+    _draw_equalizer(surface, eq_rect, levels)
+
+    paused = sink is not None and sink.is_paused
+    font.draw_text_centered(
+        surface,
+        PAUSED_TEXT if paused else PLAYING_TEXT,
+        pygame.Rect(inner.left, eq_rect.bottom + 12, inner.width, _DISK_STATE_SIZE + 8),
+        _DISK_STATE_SIZE,
+        palette.FOREGROUND if not paused else palette.DIM,
+    )
+
+
+def render_transmissions(
+    surface: pygame.Surface,
+    body_rect: pygame.Rect,
+    state: AppState,
+    focus: SubSectionFocus,
+    sink=None,
+) -> None:
+    """Draw whichever of the two transmission levels ``focus`` selects."""
+    audio = state.transmission_audio
+    rows_source = state.player.transmissions
+
+    index = transmission_list.transmission_index_from_key(focus.location_key)
+    if index is not None:
+        render_transmission_player(surface, body_rect, state, index, sink)
+        return
+
+    if not rows_source:
+        font.draw_text_centered(
+            surface,
+            transmission_list.EMPTY_TEXT,
+            list_geometry.body_inner_rect(body_rect),
+            _EMPTY_SIZE,
+            palette.FOREGROUND,
+        )
+        return
+
+    rows = transmission_list.list_rows(rows_source, audio)
+    list_rect = list_rect_for(body_rect)
+    cursor = scroll_list.resolve_cursor(rows, focus.cursor)
+    visible = scroll_list.visible(
+        rows, cursor, list_rect.height, lambda _row: list_geometry.ROW_HEIGHT
+    )
+
+    for position, (row_index, row) in enumerate(visible):
+        row_rect = pygame.Rect(
+            list_rect.left,
+            list_rect.top + position * list_geometry.ROW_HEIGHT,
+            list_rect.width,
+            list_geometry.ROW_HEIGHT,
+        )
+        _draw_row(
+            surface,
+            row_rect,
+            [row.label],
+            selected=row.key == cursor.selected_key,
+            activated=focus.activated,
+            struck=False,
+            water_label="",
+        )
+
+    list_geometry.draw_scroll_gutter(
+        surface,
+        gutter_rect_for(body_rect),
+        len(rows),
+        visible[0][0] if visible else 0,
+        len(visible),
+    )
+
+
 class ArchivesSection:
-    """ARCHIVES section: the live QUESTS list, plus a HOLODISKS placeholder."""
+    """ARCHIVES section: QUESTS and TRANSMISSIONS live, HOLODISKS pending.
+
+    Three sub-sections, and the two that sound alike are not:
+    **HOLODISKS** are text documents (TASK-025, not yet built) and
+    **TRANSMISSIONS** are replayable cutscenes played back as audio.
+    """
 
     title = "ARCHIVES"
+
+    def __init__(self, sink=None) -> None:
+        # The sink is read-only here: the renderer asks it for position and
+        # paused-ness, never drives it. All transport lives in
+        # `ui/transmission_playback.py`, called from the frame loop.
+        self._sink = sink
 
     def render(
         self,
@@ -331,6 +524,11 @@ class ArchivesSection:
         if selected_key == ARCHIVES_QUESTS:
             render_quests(surface, body_rect, state, focus)
             return
+        if selected_key == ARCHIVES_TRANSMISSIONS:
+            render_transmissions(surface, body_rect, state, focus, self._sink)
+            return
+        # ARCHIVES_HOLODISKS falls through to the placeholder until
+        # TASK-025 builds the text reader.
         font.draw_text_centered(
             surface,
             _PLACEHOLDER_TEXT,

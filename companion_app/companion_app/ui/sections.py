@@ -85,7 +85,13 @@ AUTOMAPS_WORLD: str = "WORLD"
 AUTOMAPS_ATLAS: str = "ATLAS"
 
 ARCHIVES_QUESTS: str = "QUESTS"
+# Holodisks (text documents) and transmissions (replayable cutscenes) are
+# DIFFERENT things and are deliberately separate sub-sections. In-game
+# they are on different screens entirely -- `PipStatus` lists holodisks
+# beside the quests, `PipArchives` lists movies -- and conflating them is
+# exactly the mistake TASK-024 was built on before the correction.
 ARCHIVES_HOLODISKS: str = "HOLODISKS"
+ARCHIVES_TRANSMISSIONS: str = "TRANSMISSIONS"
 
 
 @dataclass(frozen=True)
@@ -108,10 +114,20 @@ class SectionsUiState:
     activated: bool = False
     inventory_cursor: ListCursor = ListCursor()
     quest_cursor: ListCursor = ListCursor()
-    # Drill-down depth for ARCHIVES/QUESTS, as the level-1 row key of the
-    # location being viewed. ``""`` means level 1. A key rather than an
-    # index — see the module docstring.
-    quest_location_key: str = ""
+    transmission_cursor: ListCursor = ListCursor()
+    # Drill-down depth, as the level-1 row key being viewed. ``""`` means
+    # level 1. A key rather than an index — see the module docstring.
+    #
+    # ONE FIELD PER DRILLABLE SUB-SECTION, for the same reason there is one
+    # cursor each: a shared anchor lets one sub-section's depth be read as
+    # the other's. Not theoretical — TASK-017's
+    # ``test_transmissions_gets_no_depth_even_while_quests_is_drilled`` caught
+    # exactly that leak when TASK-024 first tried a single shared field.
+    # Guarding on ``is_drillable`` is too weak once *both* ARCHIVES
+    # sub-sections drill, because then it is true for both.
+    # (``quest_drill_key`` was ``quest_location_key`` before TASK-024.)
+    quest_drill_key: str = ""
+    transmission_drill_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -119,7 +135,7 @@ class SubSectionFocus:
     """What a section renderer needs to draw its content's focus state.
 
     Passed instead of loose parameters so later consumers (per-type item
-    detail, QUESTS, HOLODISKS) extend one dataclass rather than every
+    detail, QUESTS, TRANSMISSIONS) extend one dataclass rather than every
     section's signature again.
 
     ``location_key`` is the drill-down depth for a drillable sub-section
@@ -134,11 +150,12 @@ class SubSectionFocus:
 
 
 # Sub-sections whose content can take the encoder. Everything absent here
-# is why ``Confirm`` is inert on CHARACTER and HOLODISKS.
+# is why ``Confirm`` is inert on CHARACTER.
 ACTIVATABLE: frozenset[tuple[Page, str]] = frozenset(
     {
         (Page.STATUS, STATUS_INVENTORY),
         (Page.ARCHIVES, ARCHIVES_QUESTS),
+        (Page.ARCHIVES, ARCHIVES_TRANSMISSIONS),
     }
 )
 
@@ -148,7 +165,14 @@ ACTIVATABLE: frozenset[tuple[Page, str]] = frozenset(
 # sub-sections that actually have somewhere to go up to, or ``Back`` would
 # become unpredictable across the device.
 DRILLABLE: frozenset[tuple[Page, str]] = frozenset(
-    {(Page.ARCHIVES, ARCHIVES_QUESTS)}
+    {
+        (Page.ARCHIVES, ARCHIVES_QUESTS),
+        # TRANSMISSIONS drills from the disk list into one disk's player.
+        # Its level 2 has no list, so the encoder finds no rows to move
+        # through and is state-inert there by construction -- the playback
+        # controller in `app.py` reads that gesture as a seek instead.
+        (Page.ARCHIVES, ARCHIVES_TRANSMISSIONS),
+    }
 )
 
 
@@ -172,6 +196,7 @@ def default_sections_ui() -> SectionsUiState:
             (
                 Segment(ARCHIVES_QUESTS, ARCHIVES_QUESTS),
                 Segment(ARCHIVES_HOLODISKS, ARCHIVES_HOLODISKS),
+                Segment(ARCHIVES_TRANSMISSIONS, ARCHIVES_TRANSMISSIONS),
             )
         ),
     )
@@ -190,6 +215,7 @@ _FIELD_BY_PAGE: dict[Page, str] = {
 _CURSOR_FIELD_BY_SUBSECTION: dict[tuple[Page, str], str] = {
     (Page.STATUS, STATUS_INVENTORY): "inventory_cursor",
     (Page.ARCHIVES, ARCHIVES_QUESTS): "quest_cursor",
+    (Page.ARCHIVES, ARCHIVES_TRANSMISSIONS): "transmission_cursor",
 }
 
 # Fallback for a sub-section with no list of its own. Nothing reads the
@@ -197,6 +223,13 @@ _CURSOR_FIELD_BY_SUBSECTION: dict[tuple[Page, str], str] = {
 # and only activatable sub-sections activate), but returning a real field
 # keeps every path total rather than optional.
 _DEFAULT_CURSOR_FIELD: str = "inventory_cursor"
+
+# Which ``SectionsUiState`` drill-depth field each drillable sub-section
+# owns. Same shape and same rationale as ``_CURSOR_FIELD_BY_SUBSECTION``.
+_DRILL_FIELD_BY_SUBSECTION: dict[tuple[Page, str], str] = {
+    (Page.ARCHIVES, ARCHIVES_QUESTS): "quest_drill_key",
+    (Page.ARCHIVES, ARCHIVES_TRANSMISSIONS): "transmission_drill_key",
+}
 
 
 def _cursor_field(page: Page, selected_key: str) -> str:
@@ -212,6 +245,19 @@ def cursor_for(ui: SectionsUiState, page: Page, selected_key: str) -> ListCursor
 
 def is_drillable(page: Page, selected_key: str) -> bool:
     return (page, selected_key) in DRILLABLE
+
+
+def _drill_field(page: Page, selected_key: str) -> str | None:
+    """The drill-depth field this sub-section owns, or ``None``."""
+    return _DRILL_FIELD_BY_SUBSECTION.get((page, selected_key))
+
+
+def drill_key_for(ui: SectionsUiState, page: Page, selected_key: str) -> str:
+    """This sub-section's own depth, never another's."""
+    field = _drill_field(page, selected_key)
+    if field is None:
+        return ""
+    return getattr(ui, field)
 
 
 def for_page(ui: SectionsUiState, page: Page) -> SegmentedHeaderState:
@@ -242,9 +288,7 @@ def focus_for(
     return SubSectionFocus(
         activated=ui.activated,
         cursor=cursor_for(ui, page, selected_key),
-        location_key=(
-            ui.quest_location_key if is_drillable(page, selected_key) else ""
-        ),
+        location_key=drill_key_for(ui, page, selected_key),
     )
 
 
@@ -256,7 +300,7 @@ def deactivated(ui: SectionsUiState) -> SectionsUiState:
     sub-section selections and every content cursor survive, so the list
     resumes on the row it was outlining.
     """
-    return replace(ui, activated=False, quest_location_key="")
+    return replace(ui, activated=False, quest_drill_key="", transmission_drill_key="")
 
 
 def is_activatable(page: Page, selected_key: str) -> bool:
@@ -283,7 +327,8 @@ def handle_input(
     drillable = is_drillable(page, seg.selected_key)
     # Only meaningful for a drillable sub-section; guarded so a stale key
     # can never make a non-drillable list look drilled.
-    drilled = drillable and ui.quest_location_key != ""
+    drill_field = _drill_field(page, seg.selected_key)
+    drilled = drillable and drill_field is not None and getattr(ui, drill_field) != ""
 
     if isinstance(input_event, (EncoderLeftEvent, EncoderRightEvent)):
         if ui.activated:
@@ -317,10 +362,10 @@ def handle_input(
             # arbitrary quest. A fresh cursor resolves to the location's
             # first quest, which is both predictable and what the in-game
             # screen does on entry.
+            assert drill_field is not None  # implied by `drillable`
             return replace(
                 ui,
-                quest_location_key=resolved.selected_key,
-                **{cursor_field: ListCursor()},
+                **{drill_field: resolved.selected_key, cursor_field: ListCursor()},
             )
 
         if scroll_list.first_selectable(rows) == scroll_list.NO_SELECTION:
@@ -344,13 +389,17 @@ def handle_input(
                 # the level-2 key fall back to an index clamp would put the
                 # cursor on whichever location happened to share the
                 # position.
+                assert drill_field is not None  # implied by `drilled`
+                previous = getattr(ui, drill_field)
                 return replace(
                     ui,
-                    quest_location_key="",
-                    **{cursor_field: ListCursor(selected_key=ui.quest_location_key)},
+                    **{
+                        drill_field: "",
+                        cursor_field: ListCursor(selected_key=previous),
+                    },
                 )
             # Cursor deliberately left intact.
-            return replace(ui, activated=False, quest_location_key="")
+            return replace(ui, activated=False, quest_drill_key="", transmission_drill_key="")
         # Inert at the sub-section row, by decision, not by omission: the
         # device's fourth button already owns close/shutdown.
         return ui

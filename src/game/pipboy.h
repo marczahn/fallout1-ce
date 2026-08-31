@@ -36,6 +36,30 @@ int companionQuestSlotCount();
 // reads are indistinguishable from "no quest here" by design.
 int companionQuestGlobalVar(int location, int slot);
 
+// Companion read-only accessors over the Pip-Boy holodisk table
+// (`holodisks` in `pipboy.cc`) - the same table `ListHoloDiskTitles`
+// walks, which `PipStatus` calls to build the right-hand column of the
+// in-game STATUS screen, beside the quests.
+//
+// NOT the in-game ARCHIVES screen: that is `PipArchives` -> `ListArchive`,
+// which lists replayable movies and has nothing to do with this table.
+// The two were conflated during TASK-024 and the correction is worth
+// keeping visible here, since the names invite the same mistake again.
+//
+// Same rationale and same safety as the quest accessors above: pure reads
+// of file-static const data, valid while the Pip-Boy screen is closed.
+//
+// Availability is deliberately NOT decided here. A disk is "known" when
+// `game_global_vars[companionHolodiskGlobalVar(i)] != 0` - the rule
+// `PipArchives` uses at `pipboy.cc:981` - and the companion layer applies
+// it, exactly as it does for quests.
+int companionHolodiskCount();
+
+// The `GVAR_*` index of holodisk `index`, or -1 when out of range.
+// Unlike the quest table there is no in-band terminator value, so an
+// out-of-range read is reported distinctly rather than as a valid 0.
+int companionHolodiskGlobalVar(int index);
+
 } // namespace fallout
 
 #endif /* FALLOUT_GAME_PIPBOY_H_ */

@@ -215,9 +215,9 @@ class SectionRoutingTests(unittest.TestCase):
         """Narrowed from TASK-017's blanket no-op test, twice.
 
         TASK-018 made STATUS/INVENTORY activatable and narrowed this to
-        CHARACTER, QUESTS and HOLODISKS. TASK-021 makes ARCHIVES/QUESTS
+        CHARACTER, QUESTS and TRANSMISSIONS. TASK-021 makes ARCHIVES/QUESTS
         activatable too, so QUESTS is out and only **CHARACTER and
-        HOLODISKS** remain guaranteed inert — narrowed rather than deleted,
+        TRANSMISSIONS** remain guaranteed inert — narrowed rather than deleted,
         because the guarantee still has to hold for the sub-sections that
         keep it.
 
@@ -232,7 +232,7 @@ class SectionRoutingTests(unittest.TestCase):
         base = sections.default_sections_ui()
         cases = (
             (Page.STATUS, sections.STATUS_CHARACTER),
-            (Page.ARCHIVES, sections.ARCHIVES_HOLODISKS),
+            (Page.ARCHIVES, sections.ARCHIVES_TRANSMISSIONS),
         )
         for page, sub_section in cases:
             ui = _with_subsection(base, page, sub_section)
@@ -245,7 +245,7 @@ class SectionRoutingTests(unittest.TestCase):
                     self.assertEqual(out_page, page)
                     self.assertEqual(out_ui, ui)
                     self.assertFalse(out_ui.activated)
-                    self.assertEqual(out_ui.quest_location_key, "")
+                    self.assertEqual(out_ui.quest_drill_key, "")
 
     def test_automaps_subsections_are_all_inert(self) -> None:
         """AUTOMAPS has no activatable sub-section at all."""
@@ -276,6 +276,8 @@ class SectionRoutingTests(unittest.TestCase):
 
         self.assertEqual(sections.for_page(ui, Page.STATUS).selected_key, "INVENTORY")
         self.assertEqual(sections.for_page(ui, Page.AUTOMAPS).selected_key, "WORLD")
+        # One encoder step from QUESTS lands on HOLODISKS: ARCHIVES has
+        # three sub-sections since TASK-024's subject correction.
         self.assertEqual(
             sections.for_page(ui, Page.ARCHIVES).selected_key, "HOLODISKS"
         )
@@ -382,7 +384,7 @@ class SubSectionActivationTests(unittest.TestCase):
         activated = ui
         _page, ui = _route_input(Page.STATUS, ui, ConfirmEvent(), _QUEST_ROUTE_STATE)
         self.assertEqual(ui, activated)
-        self.assertEqual(ui.quest_location_key, "")
+        self.assertEqual(ui.quest_drill_key, "")
 
 
 class QuestNavigationTests(unittest.TestCase):
@@ -410,7 +412,7 @@ class QuestNavigationTests(unittest.TestCase):
         _page, ui = _route_input(
             Page.ARCHIVES, ui, ConfirmEvent(), _QUEST_ROUTE_STATE
         )
-        self.assertNotEqual(ui.quest_location_key, "")
+        self.assertNotEqual(ui.quest_drill_key, "")
         return ui
 
     def test_quests_is_activatable(self) -> None:
@@ -420,7 +422,7 @@ class QuestNavigationTests(unittest.TestCase):
 
     def test_confirm_activates_level_one_onto_a_location_row(self) -> None:
         ui = self._activated()
-        self.assertEqual(ui.quest_location_key, "", "activation is not drill-down")
+        self.assertEqual(ui.quest_drill_key, "", "activation is not drill-down")
         self.assertIsNotNone(
             quest_list.location_index_from_key(ui.quest_cursor.selected_key)
         )
@@ -450,12 +452,12 @@ class QuestNavigationTests(unittest.TestCase):
         _page, ui = _route_input(
             Page.ARCHIVES, ui, ConfirmEvent(), _QUEST_ROUTE_STATE
         )
-        self.assertEqual(ui.quest_location_key, selected)
+        self.assertEqual(ui.quest_drill_key, selected)
         self.assertTrue(ui.activated)
 
     def test_level_two_rows_belong_to_the_drilled_location(self) -> None:
         ui = self._drilled()
-        location_index = quest_list.location_index_from_key(ui.quest_location_key)
+        location_index = quest_list.location_index_from_key(ui.quest_drill_key)
         assert location_index is not None
         rows = _active_rows(Page.ARCHIVES, ui, _QUEST_ROUTE_STATE)
         self.assertTrue(rows)
@@ -477,12 +479,12 @@ class QuestNavigationTests(unittest.TestCase):
         for key in seen:
             self.assertIn(key, keys)
         self.assertEqual(len(set(seen)), len(keys))
-        self.assertNotEqual(ui.quest_location_key, "")
+        self.assertNotEqual(ui.quest_drill_key, "")
 
     def test_back_at_level_two_returns_to_level_one_same_location(self) -> None:
         """The acceptance criterion: Back leaves the location selected."""
         ui = self._drilled()
-        drilled_into = ui.quest_location_key
+        drilled_into = ui.quest_drill_key
         # Move around inside level 2 first, so the cursor genuinely holds a
         # level-2 key that has to be replaced on the way out.
         _page, ui = _route_input(
@@ -490,7 +492,7 @@ class QuestNavigationTests(unittest.TestCase):
         )
         _page, ui = _route_input(Page.ARCHIVES, ui, BackEvent(), _QUEST_ROUTE_STATE)
 
-        self.assertEqual(ui.quest_location_key, "", "Back goes up one level")
+        self.assertEqual(ui.quest_drill_key, "", "Back goes up one level")
         self.assertTrue(ui.activated, "...and not out of the list entirely")
         self.assertEqual(ui.quest_cursor.selected_key, drilled_into)
 
@@ -499,7 +501,7 @@ class QuestNavigationTests(unittest.TestCase):
         cursor = ui.quest_cursor
         _page, ui = _route_input(Page.ARCHIVES, ui, BackEvent(), _QUEST_ROUTE_STATE)
         self.assertFalse(ui.activated)
-        self.assertEqual(ui.quest_location_key, "")
+        self.assertEqual(ui.quest_drill_key, "")
         self.assertEqual(ui.quest_cursor, cursor, "the cursor survives")
 
     def test_two_backs_from_level_two_reach_the_subsection_row(self) -> None:
@@ -508,7 +510,7 @@ class QuestNavigationTests(unittest.TestCase):
         self.assertTrue(ui.activated)
         _page, ui = _route_input(Page.ARCHIVES, ui, BackEvent(), _QUEST_ROUTE_STATE)
         self.assertFalse(ui.activated)
-        self.assertEqual(ui.quest_location_key, "")
+        self.assertEqual(ui.quest_drill_key, "")
 
     def test_drilling_in_seeds_the_first_quest_of_the_location(self) -> None:
         """Entering a location starts at its top, deterministically.
@@ -541,7 +543,7 @@ class QuestNavigationTests(unittest.TestCase):
         )
         self.assertEqual(page, Page.STATUS)
         self.assertFalse(ui.activated)
-        self.assertEqual(ui.quest_location_key, "", "depth must not survive")
+        self.assertEqual(ui.quest_drill_key, "", "depth must not survive")
 
         page, ui = _route_input(page, ui, PageButtonEvent(3), _QUEST_ROUTE_STATE)
         self.assertEqual(page, Page.ARCHIVES)
@@ -549,7 +551,7 @@ class QuestNavigationTests(unittest.TestCase):
             sections.for_page(ui, Page.ARCHIVES).selected_key, sections.ARCHIVES_QUESTS
         )
         self.assertFalse(ui.activated)
-        self.assertEqual(ui.quest_location_key, "")
+        self.assertEqual(ui.quest_drill_key, "")
         self.assertEqual(ui.quest_cursor, quest_cursor, "the cursor survives")
 
     def test_confirm_is_inert_with_no_quest_data(self) -> None:
@@ -602,16 +604,24 @@ class QuestNavigationTests(unittest.TestCase):
         self.assertTrue(all(key.key.startswith("Q") for key in level_two))
 
     def test_active_rows_falls_back_to_level_one_on_an_undecodable_key(self) -> None:
-        ui = replace(self._activated(), quest_location_key="not-a-key")
+        ui = replace(self._activated(), quest_drill_key="not-a-key")
         rows = _active_rows(Page.ARCHIVES, ui, _QUEST_ROUTE_STATE)
         self.assertTrue(rows)
         self.assertTrue(all(row.key.startswith("L") for row in rows))
 
-    def test_holodisks_has_no_rows_and_cannot_be_activated(self) -> None:
+    def test_transmissions_with_no_disks_has_no_rows_and_cannot_be_activated(self) -> None:
+        """Rewritten by TASK-024, not deleted.
+
+        This asserted TRANSMISSIONS was inert *because it was a placeholder*.
+        It is now a live sub-section, so the property it protects — you
+        cannot activate into an empty list and trap the encoder — is
+        re-expressed against an ARCHIVES state that reports no transmissions.
+        The activation case is covered by ``TransmissionNavigationTests``.
+        """
         ui = _with_subsection(
-            sections.default_sections_ui(), Page.ARCHIVES, sections.ARCHIVES_HOLODISKS
+            sections.default_sections_ui(), Page.ARCHIVES, sections.ARCHIVES_TRANSMISSIONS
         )
-        self.assertEqual(_active_rows(Page.ARCHIVES, ui, _QUEST_ROUTE_STATE), ())
+        self.assertEqual(list(_active_rows(Page.ARCHIVES, ui, _QUEST_ROUTE_STATE)), [])
         _page, out = _route_input(
             Page.ARCHIVES, ui, ConfirmEvent(), _QUEST_ROUTE_STATE
         )

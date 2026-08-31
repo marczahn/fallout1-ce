@@ -8,7 +8,8 @@ is enabled only when `fallout.cfg` has both `[companion] bind` and
 environment variable) and uses it for the `auth` step of the handshake.
 
 T0 protocol changes verified:
-- `world.schemaVersion` is `12` (was `11`; bumped when the `player.quests`
+- `world.schemaVersion` is `13` (was `12`; bumped when the `player.transmissions`
+  kind and the transmission audio fetch landed). Previously `12` for `player.quests`
   kind was added).
 - `update` carries a `kind` field and a `payload` wrapper (no `entity`,
   no `data`).
@@ -50,6 +51,7 @@ import base64
 import json
 import math
 import os
+import struct
 import socket
 import sys
 
@@ -138,7 +140,7 @@ def test_auth_then_hello(sock, password):
     assert_equal(msg.get("type"), "world", "type")
     assert_field(msg, "schemaVersion", "world")
     # Current protocol version after the player.quests kind was added.
-    assert_equal(msg.get("schemaVersion"), 12, "world.schemaVersion")
+    assert_equal(msg.get("schemaVersion"), 13, "world.schemaVersion")
     assert_field(msg, "game", "world")
     assert_field(msg, "playerAvailable", "world")
     assert_is_bool(msg["playerAvailable"], "world.playerAvailable")
@@ -236,6 +238,32 @@ def test_getSnapshot(sock, expected_seq):
         fail("snapshot.payload.player.quests must be an object "
              f"(quests + water), got {type(quests_payload).__name__}: {quests_payload!r}")
     ok("snapshot.payload.player.quests is an object")
+
+    # player.transmissions and player.holodisks (schemaVersion 13). Both are
+    # present whenever the player is loaded, and both may legitimately be
+    # EMPTY -- a fresh character has seen no cutscenes and found no disks --
+    # so only the shape is asserted. They are deliberately separate kinds:
+    # transmissions are replayable movies (the in-game ARCHIVES screen),
+    # holodisks are text documents (the in-game STATUS screen).
+    for kind, inner in (("player.transmissions", "transmissions"),
+                        ("player.holodisks", "holodisks")):
+        assert_field(payload, kind, "snapshot.payload")
+        block = payload[kind]
+        if not isinstance(block, dict):
+            fail(f"snapshot.payload.{kind} must be an object, "
+                 f"got {type(block).__name__}: {block!r}")
+        assert_field(block, inner, f"snapshot.payload.{kind}")
+        rows = block[inner]
+        if not isinstance(rows, list):
+            fail(f"snapshot.payload.{kind}.{inner} must be an array, "
+                 f"got {type(rows).__name__}: {rows!r}")
+        for row in rows:
+            if not isinstance(row, dict):
+                fail(f"{kind}.{inner} rows must be objects, got {row!r}")
+            assert_field(row, "index", f"snapshot.payload.{kind}.{inner}[]")
+            assert_is_int(row["index"], f"{kind}.{inner}[].index")
+            assert_field(row, "title", f"snapshot.payload.{kind}.{inner}[]")
+        ok(f"snapshot.payload.{kind} has {len(rows)} row(s), shape valid")
 
     assert_field(quests_payload, "quests", "snapshot.payload.player.quests")
     quests = quests_payload["quests"]
@@ -759,7 +787,96 @@ def test_server_still_listening(host, port, password):
             fail("server did not respond to a new auth + hello after the bad client")
         msg = json.loads(line)
         assert_equal(msg.get("type"), "world", "type after recovery")
-        assert_equal(msg.get("schemaVersion"), 12, "world.schemaVersion (recovery)")
+        assert_equal(msg.get("schemaVersion"), 13, "world.schemaVersion (recovery)")
+
+
+def test_transmission_audio(sock):
+    """Manifest, then a full audio+envelope fetch, then three negative cases.
+
+    Uses its own `_LineStream` rather than `recv_line_bytes` for the same
+    reason `test_inventory_action_emits_update` does: the negative cases
+    below deliberately provoke replies while a sample may be in flight, so
+    a reader that discards the remainder of a `recv` chunk would lose one.
+
+    The negative cases are the point of this test as much as the happy
+    path: every one of them must produce a `transmissionAudioError` AND leave
+    the connection alive. An out-of-range index reaching the filesystem,
+    or a malformed request dropping the connection, would both be bugs.
+    """
+    stream = _LineStream(sock)
+
+    send(sock, {"type": "getTransmissionManifest"})
+    manifest = stream.next_message(RECV_TIMEOUT_SECONDS)
+    if manifest is None:
+        fail("no transmissionManifest reply")
+    assert_equal(manifest.get("type"), "transmissionManifest", "manifest type")
+    entries = manifest.get("entries")
+    if not isinstance(entries, list):
+        fail("transmissionManifest.entries must be a list")
+    print(f"  transmissionManifest: {len(entries)} baked disk(s)")
+
+    if entries:
+        entry = entries[0]
+        index = entry["index"]
+        expected_bytes = entry["bytes"]
+
+        send(sock, {"type": "getTransmissionAudio", "index": index})
+        header = stream.next_message(RECV_TIMEOUT_SECONDS)
+        if header is None:
+            fail("no transmissionAudioHeader reply")
+        assert_equal(header.get("type"), "transmissionAudioHeader", "audio header type")
+        assert_equal(header.get("index"), index, "audio header index")
+        assert_equal(header.get("bytes"), expected_bytes, "audio header bytes matches manifest")
+
+        envelope = base64.b64decode(header["envelopeB64"])
+        if len(envelope) < 12 or envelope[:4] != b"HDEV":
+            fail(f"envelope magic is not HDEV: {envelope[:4]!r}")
+        version, bands = struct.unpack_from("<HH", envelope, 4)
+        frames, frame_ms = struct.unpack_from("<IH", envelope, 8)
+        assert_equal(version, 1, "envelope version")
+        if len(envelope) != 14 + bands * frames:
+            fail(f"envelope payload is {len(envelope) - 14} bytes, expected {bands * frames}")
+        print(f"  envelope: {bands} bands x {frames} frames @ {frame_ms}ms "
+              f"({frames * frame_ms / 1000:.1f}s)")
+
+        received = bytearray()
+        for chunk_index in range(header["chunkCount"]):
+            send(sock, {"type": "getTransmissionAudioChunk", "index": index, "chunk": chunk_index})
+            chunk_msg = stream.next_message(RECV_TIMEOUT_SECONDS)
+            if chunk_msg is None:
+                fail(f"no transmissionAudioChunk reply for chunk {chunk_index}")
+            assert_equal(chunk_msg.get("type"), "transmissionAudioChunk", "chunk type")
+            received.extend(base64.b64decode(chunk_msg["dataB64"]))
+        assert_equal(len(received), expected_bytes, "reassembled audio length")
+        if bytes(received[:4]) != b"OggS":
+            fail(f"reassembled audio is not Ogg: {bytes(received[:4])!r}")
+        print(f"  audio: {len(received)} bytes reassembled, OggS magic intact")
+    else:
+        print("  info: no baked transmissions on this install; happy path skipped")
+
+    # Negative 1: index out of range must be rejected before any file access.
+    send(sock, {"type": "getTransmissionAudio", "index": 9999})
+    err = stream.next_message(RECV_TIMEOUT_SECONDS)
+    if err is None:
+        fail("server went silent on an out-of-range transmission index")
+    assert_equal(err.get("type"), "transmissionAudioError", "out-of-range yields an error")
+    assert_equal(err.get("reason"), "index", "out-of-range reason")
+
+    # Negative 2: a chunk with no matching header is recoverable, not fatal.
+    send(sock, {"type": "getTransmissionAudioChunk", "index": 4242, "chunk": 0})
+    err = stream.next_message(RECV_TIMEOUT_SECONDS)
+    if err is None:
+        fail("server went silent on a chunk with no transfer")
+    assert_equal(err.get("type"), "transmissionAudioError", "orphan chunk yields an error")
+    assert_equal(err.get("reason"), "noTransfer", "orphan chunk reason")
+
+    # Negative 3: the connection must have survived all of the above.
+    send(sock, {"type": "getSnapshot"})
+    alive = stream.next_message(RECV_TIMEOUT_SECONDS)
+    if alive is None:
+        fail("server disconnected after transmissionAudioError (must stay connected)")
+    assert_equal(alive.get("type"), "snapshot", "connection alive after transmissionAudioError")
+    print("  negative cases: 3/3 errored without dropping the connection")
 
 
 def main():
@@ -791,6 +908,9 @@ def main():
         test_get_map(sock)
         test_get_local_map(sock)
         test_post_handshake_hello_is_ignored(sock)
+        # Keeps its own reader, so it must run after the strict first-line
+        # readers above, alongside the other buffered case.
+        test_transmission_audio(sock)
         # Last on this connection: it is the only case that keeps a read
         # buffer of its own, so anything it leaves behind cannot reach the
         # strict first-line readers above.

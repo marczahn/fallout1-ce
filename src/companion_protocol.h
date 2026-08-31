@@ -4,6 +4,7 @@
 #include <stddef.h>
 
 #include <string>
+#include <vector>
 #include <string_view>
 
 #include "companion_snapshot.h"
@@ -21,6 +22,8 @@ constexpr char kCompanionKindPlayerLocalLocation[] = "player.localLocation";
 constexpr char kCompanionKindPlayerWorldLocation[] = "player.worldLocation";
 constexpr char kCompanionKindPlayerInventory[] = "player.inventory";
 constexpr char kCompanionKindPlayerQuests[] = "player.quests";
+constexpr char kCompanionKindPlayerHolodisks[] = "player.holodisks";
+constexpr char kCompanionKindPlayerTransmissions[] = "player.transmissions";
 
 enum class CompanionClientMessage {
     Hello,
@@ -31,6 +34,9 @@ enum class CompanionClientMessage {
     GetMapChunk,
     GetLocalMap,
     GetLocalMapChunk,
+    GetTransmissionManifest,
+    GetTransmissionAudio,
+    GetTransmissionAudioChunk,
     Invalid,
 };
 
@@ -41,8 +47,9 @@ struct CompanionCommandRequest {
     bool hasObjectId;
 };
 
-// `world` (handshake response). `schemaVersion` is `12` after adding the
-// `player.quests` kind (was `11` for live item identity and the two-handed
+// `world` (handshake response). `schemaVersion` is `13` after adding the
+// `player.holodisks` kind and the transmission manifest/audio fetch (was `12`
+// for the `player.quests` kind, `11` for live item identity and the two-handed
 // marker on `player.inventory`, `10` for the additive per-type detail
 // blocks, `9` for `player.localLocation.mapName`, `8` for
 // `localMapHeader.explored`, `7` for `player.localLocation.worldX/worldY`,
@@ -89,6 +96,61 @@ std::string companionBuildInventoryUpdate(unsigned int seq,
 std::string companionBuildQuestsUpdate(unsigned int seq,
     const CompanionQuestSnapshot& current);
 
+// `player.holodisks`. Payload is an object -- `{"holodisks":[...]}` -- not
+// a bare array, so a later per-disk or archive-level field can be added
+// without changing the kind's shape. Rows carry `index` and `title` only;
+// holodisk body text is deliberately never sent (see
+// `CompanionHolodiskSnapshot`).
+std::string companionBuildHolodisksUpdate(unsigned int seq,
+    const CompanionHolodiskSnapshot& current);
+
+// `player.transmissions`. Same object-not-array shape as the holodisk
+// kind, and the same index+title-only payload.
+std::string companionBuildTransmissionsUpdate(unsigned int seq,
+    const CompanionTransmissionSnapshot& current);
+
+// One row of the transmission manifest: a disk that has a readable narration
+// AND a readable envelope on the game device. Deliberately says nothing
+// about whether the player has found it - bakedness and availability are
+// separate sources, intersected only at render time on the client.
+struct CompanionTransmissionManifestEntry {
+    int index;
+    size_t bytes;
+    size_t envelopeBytes;
+};
+
+std::string companionBuildTransmissionManifest(
+    const std::vector<CompanionTransmissionManifestEntry>& entries);
+
+// The envelope rides inside this header rather than arriving as chunks:
+// the client needs it before the first audio byte, to size the equalizer,
+// clamp seeks, and know the track length.
+std::string companionBuildTransmissionAudioHeader(int index,
+    size_t bytes,
+    size_t chunkBytes,
+    const unsigned char* envelope,
+    size_t envelopeLength);
+
+std::string companionBuildTransmissionAudioChunk(int index,
+    int chunk,
+    const unsigned char* data,
+    size_t length);
+
+// Non-fatal. Reasons: `index` (out of range), `noRecord` (no readable
+// asset), `noTransfer` (chunk with no matching header), `tooLarge`,
+// `chunk` (formatting). The connection always survives these.
+std::string companionBuildTransmissionAudioError(int index, const char* reason);
+
+bool companionExtractTransmissionIndex(const char* line,
+    size_t length,
+    const char* expectedType,
+    int& outIndex);
+
+bool companionExtractTransmissionChunkRequest(const char* line,
+    size_t length,
+    int& outIndex,
+    int& outChunk);
+
 // `onPlayerUnavailable`. One-shot on the present -> absent transition.
 // No `kind`, no `payload`.
 std::string companionBuildOnPlayerUnavailable(unsigned int seq);
@@ -107,7 +169,7 @@ std::string companionBuildCmdAck(int id,
     std::string_view data = {});
 
 // `announce` UDP broadcast. `schemaVersion` follows the live protocol
-// version (`12` after adding `player.quests`), so discovery and TCP
+// version (`13` after adding `player.transmissions`), so discovery and TCP
 // advertise the same wire contract. Bump it here *and* in
 // `companionBuildWorld` -- the smoke test only sees the TCP handshake, so
 // an un-bumped broadcast would pass unnoticed.

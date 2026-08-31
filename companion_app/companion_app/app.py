@@ -49,14 +49,18 @@ from companion_app.ui.pages.boot import (
 from companion_app.ui.pages.archives import ArchivesSection
 from companion_app.ui.pages.automaps import AutomapsSection
 from companion_app.ui import (
+    transmission_list,
+    transmission_playback,
     inventory_list,
     item_actions,
     quest_list,
     sections,
     segmented_header,
 )
+from companion_app.audio import create_sink
 from companion_app.ui.scroll_list import ListRow
 from companion_app.ui.sections import (
+    ARCHIVES_TRANSMISSIONS,
     ARCHIVES_QUESTS,
     SECTION_TITLES,
     STATUS_INVENTORY,
@@ -112,10 +116,10 @@ def _active_rows(
         return inventory_list.build_rows(state.player.inventory)
     if current_page is Page.ARCHIVES and seg.selected_key == ARCHIVES_QUESTS:
         quests = state.player.quests
-        if sections_ui.quest_location_key == "":
+        if sections.drill_key_for(sections_ui, current_page, seg.selected_key) == "":
             return quest_list.build_location_rows(quests)
         location_index = quest_list.location_index_from_key(
-            sections_ui.quest_location_key
+            sections.drill_key_for(sections_ui, current_page, seg.selected_key)
         )
         if location_index is None:
             # A depth key that no longer decodes — only reachable if the
@@ -123,6 +127,15 @@ def _active_rows(
             # raising: the screen pops up a level instead of crashing.
             return quest_list.build_location_rows(quests)
         return quest_list.build_quest_rows(quests, location_index)
+    if current_page is Page.ARCHIVES and seg.selected_key == ARCHIVES_TRANSMISSIONS:
+        if sections.drill_key_for(sections_ui, current_page, seg.selected_key) != "":
+            # Level 2 is a player, not a list. Returning no rows is what
+            # makes the encoder state-inert here, freeing that gesture for
+            # the playback controller to read as a seek.
+            return ()
+        return transmission_list.list_rows(
+            state.player.transmissions, state.transmission_audio
+        )
     return ()
 
 
@@ -331,6 +344,11 @@ def _run_loop(config: Config) -> int:
     if config.debug_event_log:
         debug_overlay = EventLogOverlay()
 
+    # Sole owner of mixer initialization (see `audio/sink.py`). Returns a
+    # null sink on any failure, so nothing downstream branches on
+    # availability and a device with no audio degrades to silence.
+    audio_sink = create_sink()
+
     layout = Layout((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
     splash_page = SplashPage()
     boot_page = BootPage((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
@@ -340,7 +358,7 @@ def _run_loop(config: Config) -> int:
         green_levels=config.map_green_levels,
         pixel_blocks=config.map_pixel_blocks,
     )
-    archives_section = ArchivesSection()
+    archives_section = ArchivesSection(audio_sink)
     section_renderers = {
         Page.STATUS: status_section,
         Page.AUTOMAPS: automaps_section,
@@ -414,8 +432,18 @@ def _run_loop(config: Config) -> int:
                         item_modal = item_actions.ModalState(open=True)
                         state.command_error = ""
                         continue
+                before_page, before_ui = current_page, sections_ui
                 current_page, sections_ui = _route_input(
                     current_page, sections_ui, input_event, state
+                )
+                transmission_playback.apply(
+                    audio_sink,
+                    before_page,
+                    before_ui,
+                    current_page,
+                    sections_ui,
+                    input_event,
+                    state,
                 )
         elif debug_overlay is not None:
             for input_event in input_events:
@@ -423,6 +451,9 @@ def _run_loop(config: Config) -> int:
 
         if net is not None:
             net.poll()
+        # Per-frame reconciliation: a disconnect never reaches input
+        # routing, and a finished track produces no event at all.
+        transmission_playback.sync(audio_sink, current_page, sections_ui, state)
         if item_modal.pending and not state.command_pending:
             if state.command_error:
                 item_modal = item_actions.ModalState(open=True, index=item_modal.index)

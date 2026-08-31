@@ -5,7 +5,11 @@
 
 namespace fallout {
 
-// Resolved `pipboy.msg` text for the quest screen.
+// Resolved `pipboy.msg` text for the quest screen, and for holodisk
+// titles (TASK-024). The module keeps its `quest` name because it is one
+// `MessageList` over one file with one lifecycle - splitting holodisks
+// into a parallel catalog would mean a second `message_load` of the very
+// same `pipboy.msg`, and a second warm/reset pair to keep in sync.
 //
 // The engine's own `pipboy_message_file` is `message_init`'d at
 // `pipboy.cc:624-633` and `message_exit`'d at `:821`, so it exists *only*
@@ -30,6 +34,21 @@ bool companionQuestLocationName(int location, char* out, size_t outSize);
 // Quest line, message id `701 + 10 * location + slot` (`pipboy.cc:1250`).
 // The 10-wide stride is why there are only 9 slots per location.
 bool companionQuestText(int location, int slot, char* out, size_t outSize);
+
+// Holodisk title, message id `400 + index` (`pipboy.cc:1485`), for the
+// in-game STATUS screen's document list. A *different* range again from
+// the body text (`1000 * index + 1000`, terminated by `**END-DISK**`),
+// which nothing carries yet - TASK-025 adds it when holodisks become a
+// readable screen.
+bool companionHolodiskTitle(int index, char* out, size_t outSize);
+
+// Transmission (replayable cutscene) title, message id `500 + movie`
+// (`ListArchive`, `pipboy.cc:1801`). A DIFFERENT range from the holodisk
+// titles above, for a different screen: `PipArchives` lists movies, while
+// `PipStatus` lists holodisks. Note two movies legitimately share a title
+// ("Leaving Vault", `MOVIE_WALKM` and `MOVIE_WALKW`), so callers must key
+// on the movie index and never on this string.
+bool companionTransmissionTitle(int movie, char* out, size_t outSize);
 
 // Loads the message list now, off the sampling path. Called from the
 // session-lifecycle sites in `companion_server.cc` that already reset the

@@ -19,7 +19,7 @@ from companion_app.ui.pages import Page
 from companion_app.ui.pages import archives
 from companion_app.ui.pages.archives import ArchivesSection
 from companion_app.ui.scroll_list import ListCursor
-from companion_app.ui.sections import ARCHIVES_HOLODISKS, ARCHIVES_QUESTS, SubSectionFocus
+from companion_app.ui.sections import ARCHIVES_TRANSMISSIONS, ARCHIVES_QUESTS, SubSectionFocus
 
 SURFACE_SIZE = (480, 800)
 # The rect app.py hands a section: full virtual width, below the header.
@@ -149,24 +149,24 @@ class EmptyStateTests(unittest.TestCase):
                 )
 
 
-class HolodisksUnchangedTests(unittest.TestCase):
-    def test_holodisks_still_renders_the_placeholder(self) -> None:
+class TransmissionsUnchangedTests(unittest.TestCase):
+    def test_transmissions_still_renders_the_placeholder(self) -> None:
         with_quests = _render(
-            _state(VAULT13), _focus(), key=ARCHIVES_HOLODISKS
+            _state(VAULT13), _focus(), key=ARCHIVES_TRANSMISSIONS
         )
-        without = _render(_state(()), _focus(), key=ARCHIVES_HOLODISKS)
+        without = _render(_state(()), _focus(), key=ARCHIVES_TRANSMISSIONS)
         self.assertEqual(
             pygame.image.tostring(with_quests, "RGB"),
             pygame.image.tostring(without, "RGB"),
-            "HOLODISKS must ignore quest state entirely",
+            "TRANSMISSIONS must ignore quest state entirely",
         )
 
-    def test_holodisks_is_unaffected_by_focus_and_depth(self) -> None:
-        plain = _render(_state(VAULT13), _focus(), key=ARCHIVES_HOLODISKS)
+    def test_transmissions_is_unaffected_by_focus_and_depth(self) -> None:
+        plain = _render(_state(VAULT13), _focus(), key=ARCHIVES_TRANSMISSIONS)
         focused = _render(
             _state(VAULT13),
             _focus(activated=True, cursor=ListCursor("L0", 0), location_key="L0"),
-            key=ARCHIVES_HOLODISKS,
+            key=ARCHIVES_TRANSMISSIONS,
         )
         self.assertEqual(
             pygame.image.tostring(plain, "RGB"),
@@ -497,7 +497,7 @@ class FocusPlumbingTests(unittest.TestCase):
             activated=True,
             inventory_cursor=ListCursor("inv", 1),
             quest_cursor=ListCursor("L3", 2),
-            quest_location_key="L3",
+            quest_drill_key="L3",
         )
         focus = sections.focus_for(ui, Page.ARCHIVES, ARCHIVES_QUESTS)
         self.assertEqual(focus.cursor, ListCursor("L3", 2))
@@ -512,7 +512,7 @@ class FocusPlumbingTests(unittest.TestCase):
             activated=True,
             inventory_cursor=ListCursor("inv", 1),
             quest_cursor=ListCursor("L3", 2),
-            quest_location_key="L3",
+            quest_drill_key="L3",
         )
         focus = sections.focus_for(ui, Page.STATUS, sections.STATUS_INVENTORY)
         self.assertEqual(focus.cursor, ListCursor("inv", 1))
@@ -520,15 +520,15 @@ class FocusPlumbingTests(unittest.TestCase):
             focus.location_key, "", "depth must not leak to a non-drillable list"
         )
 
-    def test_holodisks_gets_no_depth_even_while_quests_is_drilled(self) -> None:
+    def test_transmissions_gets_no_depth_even_while_quests_is_drilled(self) -> None:
         ui = sections.default_sections_ui()
         ui = sections.SectionsUiState(
             status=ui.status,
             automaps=ui.automaps,
             archives=ui.archives,
-            quest_location_key="L3",
+            quest_drill_key="L3",
         )
-        focus = sections.focus_for(ui, Page.ARCHIVES, ARCHIVES_HOLODISKS)
+        focus = sections.focus_for(ui, Page.ARCHIVES, ARCHIVES_TRANSMISSIONS)
         self.assertEqual(focus.location_key, "")
 
 

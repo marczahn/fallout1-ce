@@ -29,7 +29,7 @@
 //                                 normal auth/hello handshake.
 //
 // Server -> client:
-//   {"type":"world","schemaVersion":12,"game":"fallout1-ce","playerAvailable":bool}
+//   {"type":"world","schemaVersion":13,"game":"fallout1-ce","playerAvailable":bool}
 //
 //   {"type":"snapshot","seq":N,"playerAvailable":bool,"payload":{
 //      "player.vitals":          {"hp":H,"maxHp":M},
@@ -91,6 +91,17 @@
 //        (var != 2). The two disagree above 2 and are both reported as-is
 //        rather than merged. `waterChip` marks the one row the countdown
 //        belongs to.
+//     "player.holodisks": {"holodisks":[{"index":i,"title":"..."}]}
+//        (schemaVersion 13.) Holodisks the player has FOUND - the
+//        right-hand column of the in-game STATUS screen. Index is the
+//        engine's `holodisks` table position. Body text is not carried
+//        (TASK-025).
+//     "player.transmissions": {"transmissions":[{"index":i,"title":"..."}]}
+//        (schemaVersion 13.) Cutscenes the player has SEEN - the in-game
+//        ARCHIVES screen. Index is a `GameMovie` value in
+//        `MOVIE_VEXPLD..MOVIE_COUNT`; the two logos and the intro are
+//        never listed. Two entries legitimately share a title, so the
+//        index is the only safe identity.
 //   }}
 //   The `payload` of `snapshot` is a kind->object map. Only kinds valid
 //   in the current state are present. `player.localLocation` and
@@ -178,7 +189,11 @@
 // `payload`. `onPlayerUnavailable` and `onPlayerAvailable` have
 // neither.
 //
-// `world.schemaVersion` is now `12` (was `5`). Version 12 adds the
+// `world.schemaVersion` is now `13` (was `5`). Version 13 adds the
+// `player.holodisks` kind (found holodisks, index + title only -- never
+// body text) plus the `getTransmissionManifest` / `getTransmissionAudio` fetch
+// surface for narration audio and its equalizer envelope.
+// Version 12 adds the
 // `player.quests` kind: the visible Pip-Boy quest list plus the Vault 13
 // water countdown. Version 11 adds stable live
 // inventory object identity and the two-handed marker for companion actions.
@@ -227,6 +242,12 @@ constexpr char kAuthPrefix[] = R"({"type":"auth")";
 constexpr char kCmdPrefix[] = R"({"type":"cmd")";
 constexpr char kGetMapChunkPrefix[] = R"({"type":"getMapChunk")";
 constexpr char kGetLocalMap[] = R"({"type":"getLocalMap"})";
+constexpr char kGetTransmissionManifest[] = R"({"type":"getTransmissionManifest"})";
+constexpr size_t kGetTransmissionManifestLen = sizeof(kGetTransmissionManifest) - 1;
+constexpr char kGetTransmissionAudioChunkPrefix[] = R"({"type":"getTransmissionAudioChunk")";
+constexpr size_t kGetTransmissionAudioChunkPrefixLen = sizeof(kGetTransmissionAudioChunkPrefix) - 1;
+constexpr char kGetTransmissionAudioPrefix[] = R"({"type":"getTransmissionAudio")";
+constexpr size_t kGetTransmissionAudioPrefixLen = sizeof(kGetTransmissionAudioPrefix) - 1;
 constexpr char kGetLocalMapChunkPrefix[] = R"({"type":"getLocalMapChunk")";
 constexpr size_t kHelloLen = sizeof(kHello) - 1;
 constexpr size_t kGetSnapshotLen = sizeof(kGetSnapshot) - 1;
@@ -284,6 +305,8 @@ constexpr char kLocalLocationKind[] = "player.localLocation";
 constexpr char kWorldLocationKind[] = "player.worldLocation";
 constexpr char kInventoryKind[] = "player.inventory";
 constexpr char kQuestsKind[] = "player.quests";
+constexpr char kHolodisksKind[] = "player.holodisks";
+constexpr char kTransmissionsKind[] = "player.transmissions";
 
 constexpr size_t kLocalLocationBodySize = 512;
 static_assert(
@@ -646,6 +669,58 @@ std::string buildQuestsPayload(const CompanionQuestSnapshot& quests)
     return body;
 }
 
+std::string buildTransmissionsPayload(const CompanionTransmissionSnapshot& transmissions)
+{
+    std::string body;
+    body.reserve(32 + transmissions.transmissions.size() * 64);
+    body.append(R"({"transmissions":[)");
+
+    for (size_t index = 0; index < transmissions.transmissions.size(); ++index) {
+        const CompanionTransmission& transmission = transmissions.transmissions[index];
+        if (index != 0) {
+            body.push_back(',');
+        }
+
+        char head[32];
+        int n = snprintf(head, sizeof(head), R"({"index":%d,"title":")", transmission.index);
+        if (n < 0 || static_cast<size_t>(n) >= sizeof(head)) {
+            return std::string();
+        }
+        body.append(head, static_cast<size_t>(n));
+        companionAppendEscapedJsonString(body, transmission.title);
+        body.append(R"("})");
+    }
+
+    body.append("]}");
+    return body;
+}
+
+std::string buildHolodisksPayload(const CompanionHolodiskSnapshot& holodisks)
+{
+    std::string body;
+    body.reserve(32 + holodisks.holodisks.size() * 64);
+    body.append(R"({"holodisks":[)");
+
+    for (size_t index = 0; index < holodisks.holodisks.size(); ++index) {
+        const CompanionHolodisk& holodisk = holodisks.holodisks[index];
+        if (index != 0) {
+            body.push_back(',');
+        }
+
+        char head[32];
+        int n = snprintf(head, sizeof(head), R"({"index":%d,"title":")", holodisk.index);
+        if (n < 0 || static_cast<size_t>(n) >= sizeof(head)) {
+            return std::string();
+        }
+        body.append(head, static_cast<size_t>(n));
+        companionAppendEscapedJsonString(body, holodisk.title);
+        body.append(R"("})");
+    }
+
+    body.append("]}");
+    return body;
+}
+
 void skipWhitespace(const char*& p, const char* end)
 {
     while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
@@ -785,7 +860,7 @@ std::string companionBuildWorld(bool playerAvailable)
     char buffer[96];
     int n = snprintf(buffer,
         sizeof(buffer),
-        R"({"type":"world","schemaVersion":12,"game":"fallout1-ce","playerAvailable":%s})"
+        R"({"type":"world","schemaVersion":13,"game":"fallout1-ce","playerAvailable":%s})"
         "\n",
         flag);
     if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
@@ -865,6 +940,17 @@ std::string companionBuildSnapshotPayload(const CompanionSnapshot& snapshot)
 
         std::string questsBody = buildQuestsPayload(snapshot.quests);
         if (questsBody.empty() || !appendKind(kQuestsKind, questsBody.c_str())) {
+            return std::string();
+        }
+
+        std::string holodisksBody = buildHolodisksPayload(snapshot.holodisks);
+        if (holodisksBody.empty() || !appendKind(kHolodisksKind, holodisksBody.c_str())) {
+            return std::string();
+        }
+
+        std::string transmissionsBody = buildTransmissionsPayload(snapshot.transmissions);
+        if (transmissionsBody.empty()
+            || !appendKind(kTransmissionsKind, transmissionsBody.c_str())) {
             return std::string();
         }
     }
@@ -1024,6 +1110,26 @@ std::string companionBuildQuestsUpdate(unsigned int seq,
     return wrapUpdate(seq, kQuestsKind, body.c_str());
 }
 
+std::string companionBuildHolodisksUpdate(unsigned int seq,
+    const CompanionHolodiskSnapshot& current)
+{
+    std::string body = buildHolodisksPayload(current);
+    if (body.empty()) {
+        return std::string();
+    }
+    return wrapUpdate(seq, kHolodisksKind, body.c_str());
+}
+
+std::string companionBuildTransmissionsUpdate(unsigned int seq,
+    const CompanionTransmissionSnapshot& current)
+{
+    std::string body = buildTransmissionsPayload(current);
+    if (body.empty()) {
+        return std::string();
+    }
+    return wrapUpdate(seq, kTransmissionsKind, body.c_str());
+}
+
 std::string companionBuildOnPlayerUnavailable(unsigned int seq)
 {
     char buffer[80];
@@ -1087,7 +1193,7 @@ std::string companionBuildAnnounce(std::string_view host)
 {
     std::string message;
     message.reserve(host.size() + 96);
-    message.append(R"({"type":"announce","game":"fallout1-ce","schemaVersion":12,"host":")");
+    message.append(R"({"type":"announce","game":"fallout1-ce","schemaVersion":13,"host":")");
     message.append(host);
     message.append(R"(","port":28080,"authRequired":true})"
                    "\n");
@@ -1157,6 +1263,113 @@ std::string companionBuildMapChunk(int index, const unsigned char* data, size_t 
     message.reserve(static_cast<size_t>(prefixLen) + ((length + 2) / 3) * 4 + 8);
     message.append(prefix, static_cast<size_t>(prefixLen));
     base64Encode(data, length, message);
+    message.append("\"}\n");
+    return message;
+}
+
+std::string companionBuildTransmissionManifest(
+    const std::vector<CompanionTransmissionManifestEntry>& entries)
+{
+    std::string message;
+    message.reserve(64 + entries.size() * 64);
+    message.append(R"({"type":"transmissionManifest","entries":[)");
+
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (i != 0) {
+            message.push_back(',');
+        }
+        char entry[128];
+        int n = snprintf(entry,
+            sizeof(entry),
+            R"({"index":%d,"bytes":%zu,"envelopeBytes":%zu})",
+            entries[i].index,
+            entries[i].bytes,
+            entries[i].envelopeBytes);
+        if (n < 0 || static_cast<size_t>(n) >= sizeof(entry)) {
+            return std::string();
+        }
+        message.append(entry, static_cast<size_t>(n));
+    }
+
+    message.append("]}\n");
+    return message;
+}
+
+std::string companionBuildTransmissionAudioHeader(int index,
+    size_t bytes,
+    size_t chunkBytes,
+    const unsigned char* envelope,
+    size_t envelopeLength)
+{
+    if (envelope == nullptr || chunkBytes == 0) {
+        return std::string();
+    }
+
+    size_t chunkCount = (bytes + chunkBytes - 1) / chunkBytes;
+
+    char prefix[192];
+    int prefixLen = snprintf(prefix,
+        sizeof(prefix),
+        R"({"type":"transmissionAudioHeader","index":%d,"bytes":%zu,"chunkCount":%zu,"chunkBytes":%zu,"envelopeB64":")",
+        index,
+        bytes,
+        chunkCount,
+        chunkBytes);
+    if (prefixLen < 0 || static_cast<size_t>(prefixLen) >= sizeof(prefix)) {
+        return std::string();
+    }
+
+    std::string message;
+    message.reserve(static_cast<size_t>(prefixLen) + ((envelopeLength + 2) / 3) * 4 + 8);
+    message.append(prefix, static_cast<size_t>(prefixLen));
+    base64Encode(envelope, envelopeLength, message);
+    message.append("\"}\n");
+    return message;
+}
+
+std::string companionBuildTransmissionAudioChunk(int index,
+    int chunk,
+    const unsigned char* data,
+    size_t length)
+{
+    if (data == nullptr) {
+        return std::string();
+    }
+
+    char prefix[96];
+    int prefixLen = snprintf(prefix,
+        sizeof(prefix),
+        R"({"type":"transmissionAudioChunk","index":%d,"chunk":%d,"dataB64":")",
+        index,
+        chunk);
+    if (prefixLen < 0 || static_cast<size_t>(prefixLen) >= sizeof(prefix)) {
+        return std::string();
+    }
+
+    std::string message;
+    message.reserve(static_cast<size_t>(prefixLen) + ((length + 2) / 3) * 4 + 8);
+    message.append(prefix, static_cast<size_t>(prefixLen));
+    base64Encode(data, length, message);
+    message.append("\"}\n");
+    return message;
+}
+
+std::string companionBuildTransmissionAudioError(int index, const char* reason)
+{
+    if (reason == nullptr) {
+        return std::string();
+    }
+
+    std::string message;
+    message.reserve(96);
+    char prefix[64];
+    int prefixLen = snprintf(prefix, sizeof(prefix),
+        R"({"type":"transmissionAudioError","index":%d,"reason":")", index);
+    if (prefixLen < 0 || static_cast<size_t>(prefixLen) >= sizeof(prefix)) {
+        return std::string();
+    }
+    message.append(prefix, static_cast<size_t>(prefixLen));
+    companionAppendEscapedJsonString(message, reason);
     message.append("\"}\n");
     return message;
 }
@@ -1347,6 +1560,30 @@ CompanionClientMessage companionParseClientMessage(const char* line, size_t leng
         return CompanionClientMessage::GetLocalMapChunk;
     }
 
+    // `getTransmissionAudioChunk` must be tested BEFORE `getTransmissionAudio`,
+    // which is a strict prefix of it - the same ordering trap `getMap` /
+    // `getMapChunk` documents above.
+    if (length - start >= kGetTransmissionAudioChunkPrefixLen
+        && memcmp(line + start, kGetTransmissionAudioChunkPrefix, kGetTransmissionAudioChunkPrefixLen) == 0) {
+        return CompanionClientMessage::GetTransmissionAudioChunk;
+    }
+    static constexpr char kGetTransmissionAudioChunkSpaced[] = R"({"type": "getTransmissionAudioChunk")";
+    constexpr size_t kGetTransmissionAudioChunkSpacedLen = sizeof(kGetTransmissionAudioChunkSpaced) - 1;
+    if (length - start >= kGetTransmissionAudioChunkSpacedLen
+        && memcmp(line + start, kGetTransmissionAudioChunkSpaced, kGetTransmissionAudioChunkSpacedLen) == 0) {
+        return CompanionClientMessage::GetTransmissionAudioChunk;
+    }
+    if (length - start >= kGetTransmissionAudioPrefixLen
+        && memcmp(line + start, kGetTransmissionAudioPrefix, kGetTransmissionAudioPrefixLen) == 0) {
+        return CompanionClientMessage::GetTransmissionAudio;
+    }
+    static constexpr char kGetTransmissionAudioSpaced[] = R"({"type": "getTransmissionAudio")";
+    constexpr size_t kGetTransmissionAudioSpacedLen = sizeof(kGetTransmissionAudioSpaced) - 1;
+    if (length - start >= kGetTransmissionAudioSpacedLen
+        && memcmp(line + start, kGetTransmissionAudioSpaced, kGetTransmissionAudioSpacedLen) == 0) {
+        return CompanionClientMessage::GetTransmissionAudio;
+    }
+
     char stripped[64];
     size_t j = 0;
     for (size_t i = 0; i < length; ++i) {
@@ -1371,6 +1608,10 @@ CompanionClientMessage companionParseClientMessage(const char* line, size_t leng
     }
     if (j == kGetLocalMapLen && memcmp(stripped, kGetLocalMap, kGetLocalMapLen) == 0) {
         return CompanionClientMessage::GetLocalMap;
+    }
+    if (j == kGetTransmissionManifestLen
+        && memcmp(stripped, kGetTransmissionManifest, kGetTransmissionManifestLen) == 0) {
+        return CompanionClientMessage::GetTransmissionManifest;
     }
     return CompanionClientMessage::Invalid;
 }
@@ -1669,6 +1910,105 @@ bool companionExtractMapChunkIndex(const char* line, size_t length, int& outInde
 bool companionExtractLocalMapChunkIndex(const char* line, size_t length, int& outIndex)
 {
     return extractTypedChunkIndex(line, length, "getLocalMapChunk", outIndex);
+}
+
+bool companionExtractTransmissionIndex(const char* line,
+    size_t length,
+    const char* expectedType,
+    int& outIndex)
+{
+    if (expectedType == nullptr) {
+        return false;
+    }
+    return extractTypedChunkIndex(line, length, expectedType, outIndex);
+}
+
+bool companionExtractTransmissionChunkRequest(const char* line,
+    size_t length,
+    int& outIndex,
+    int& outChunk)
+{
+    if (line == nullptr || length == 0) {
+        return false;
+    }
+
+    const char* p = line;
+    const char* end = line + length;
+    skipWhitespace(p, end);
+    if (p >= end || *p != '{') {
+        return false;
+    }
+    ++p;
+
+    bool sawType = false;
+    bool sawIndex = false;
+    bool sawChunk = false;
+
+    while (true) {
+        skipWhitespace(p, end);
+        if (p >= end) {
+            return false;
+        }
+
+        if (*p == '}') {
+            ++p;
+            break;
+        }
+
+        std::string_view key;
+        if (!parseJsonStringView(p, end, key)) {
+            return false;
+        }
+
+        skipWhitespace(p, end);
+        if (p >= end || *p != ':') {
+            return false;
+        }
+        ++p;
+
+        if (key == "type") {
+            std::string_view type;
+            if (!parseJsonStringView(p, end, type) || type != "getTransmissionAudioChunk") {
+                return false;
+            }
+            sawType = true;
+        } else if (key == "index") {
+            if (!parseJsonInt32(p, end, outIndex)) {
+                return false;
+            }
+            sawIndex = true;
+        } else if (key == "chunk") {
+            if (!parseJsonInt32(p, end, outChunk)) {
+                return false;
+            }
+            sawChunk = true;
+        } else {
+            if (!skipJsonValue(p, end)) {
+                return false;
+            }
+        }
+
+        skipWhitespace(p, end);
+        if (p >= end) {
+            return false;
+        }
+        if (*p == ',') {
+            ++p;
+            continue;
+        }
+        if (*p == '}') {
+            ++p;
+            break;
+        }
+        return false;
+    }
+
+    skipWhitespace(p, end);
+    if (p != end) {
+        return false;
+    }
+
+    return sawType && sawIndex && sawChunk;
 }
 
 } // namespace fallout

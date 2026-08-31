@@ -17,6 +17,7 @@ namespace fallout {
 
 #define GAME_CONFIG_COMPANION_BIND_KEY "bind"
 #define GAME_CONFIG_COMPANION_PASSWORD_KEY "password"
+#define GAME_CONFIG_COMPANION_TRANSMISSION_AUDIO_DIR_KEY "transmission_audio_dir"
 
 #define GAME_CONFIG_EXECUTABLE_KEY "executable"
 #define GAME_CONFIG_MASTER_DAT_KEY "master_dat"

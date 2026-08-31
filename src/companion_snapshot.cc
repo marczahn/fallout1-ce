@@ -15,6 +15,7 @@
 #include "game/map.h"
 #include "game/object.h"
 #include "game/object_types.h"
+#include "game/gmovie.h"
 #include "game/pipboy.h"
 #include "game/proto_types.h"
 #include "game/stat.h"
@@ -390,6 +391,61 @@ void collectQuestSnapshot(CompanionQuestSnapshot& quests)
     quests.waterCountdownActive = game_get_global_var(GVAR_FIND_WATER_CHIP) != 2;
 }
 
+void collectHolodiskSnapshot(CompanionHolodiskSnapshot& holodisks)
+{
+    holodisks.holodisks.clear();
+
+    const int count = companionHolodiskCount();
+
+    for (int index = 0; index < count; ++index) {
+        int gvar = companionHolodiskGlobalVar(index);
+        if (gvar < 0) {
+            // Out of range; the accessor reports that distinctly rather
+            // than with an in-band 0, so this cannot be confused with a
+            // real-but-unfound disk.
+            continue;
+        }
+
+        // `PipArchives`'s own rule (`pipboy.cc:980-983`): `!= 0`, not the
+        // `> 0` the quest screen uses. Not merged - see the header.
+        if (game_get_global_var(gvar) == 0) {
+            continue;
+        }
+
+        CompanionHolodisk holodisk = {};
+        holodisk.index = index;
+
+        if (!companionHolodiskTitle(index, holodisk.title, sizeof(holodisk.title))) {
+            holodisk.title[0] = '\0';
+        }
+
+        holodisks.holodisks.push_back(holodisk);
+    }
+}
+
+void collectTransmissionSnapshot(CompanionTransmissionSnapshot& transmissions)
+{
+    transmissions.transmissions.clear();
+
+    // `ListArchive`'s own bounds (`pipboy.cc:1793`): start at
+    // `MOVIE_VEXPLD`, not at 0. The three skipped entries are the two
+    // logos and the intro, which the in-game screen never lists either.
+    for (int movie = MOVIE_VEXPLD; movie < MOVIE_COUNT; ++movie) {
+        if (!gmovie_has_been_played(movie)) {
+            continue;
+        }
+
+        CompanionTransmission transmission = {};
+        transmission.index = movie;
+
+        if (!companionTransmissionTitle(movie, transmission.title, sizeof(transmission.title))) {
+            transmission.title[0] = '\0';
+        }
+
+        transmissions.transmissions.push_back(transmission);
+    }
+}
+
 } // namespace
 
 CompanionSnapshot companionCollectSnapshot()
@@ -440,6 +496,8 @@ CompanionSnapshot companionCollectSnapshot()
     snapshot.progression.nextLevelExp = stat_pc_min_exp();
     collectInventorySnapshot(snapshot.inventory);
     collectQuestSnapshot(snapshot.quests);
+    collectHolodiskSnapshot(snapshot.holodisks);
+    collectTransmissionSnapshot(snapshot.transmissions);
 
     if (worldMapIsActive()) {
         snapshot.surface = CompanionPlayerSurface::World;

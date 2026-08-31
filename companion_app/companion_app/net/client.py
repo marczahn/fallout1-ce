@@ -9,13 +9,19 @@ import base64
 import binascii
 import errno
 import os
+import shutil
 import socket
+import struct
 import sys
+import tempfile
 import time
 from typing import Any, Callable
 
 from companion_app.net.framing import encode_line, read_line
 from companion_app.state import (
+    TransmissionAudioState,
+    TransmissionRecording,
+    TransmissionSyncStatus,
     AppState,
     ConnectionState,
     LocalMapState,
@@ -35,6 +41,14 @@ MAP_REQUEST_TIMEOUT_SECONDS: float = 5.0
 MAP_MAX_RETRIES: int = 2
 # 256 RGB triples.
 MAP_PALETTE_BYTES: int = 768
+
+# Schema version that introduced the transmission kind and audio fetch.
+TRANSMISSION_MIN_SCHEMA_VERSION: int = 13
+TRANSMISSION_REQUEST_TIMEOUT_SECONDS: float = 5.0
+TRANSMISSION_MAX_RETRIES: int = 2
+# Envelope header: magic(4) + version(2) + bands(2) + frames(4) + frameMs(2).
+TRANSMISSION_ENVELOPE_HEADER_BYTES: int = 14
+TRANSMISSION_ENVELOPE_MAGIC: bytes = b"HDEV"
 
 # Schema version that introduced the local-map wire protocol (getLocalMap).
 LOCAL_MAP_MIN_SCHEMA_VERSION: int = 6
@@ -74,6 +88,9 @@ class NetworkClient:
         self._state.connection = ConnectionState.DISCONNECTED
         self._active: bool = True
         self._next_connect_at: float = 0.0
+        # Per-connection scratch for fetched narration. Not a cache:
+        # created lazily, discarded on every disconnect.
+        self._transmission_dir: str | None = None
 
     # ── public API ────────────────────────────────────────────────
 
@@ -113,6 +130,7 @@ class NetworkClient:
         # Drive the local-map fetch: (re)start on map/elevation change or a
         # throttled refresh, and re-send stalled requests.
         self._tick_local_map_fetch()
+        self._tick_transmission_sync()
 
     def cleanup(self) -> None:
         """Close the socket and reset the state to DISCONNECTED."""
@@ -294,6 +312,14 @@ class NetworkClient:
             self._on_local_map_header(msg)
         elif msg_type == "localMapChunk":
             self._on_local_map_chunk(msg)
+        elif msg_type == "transmissionManifest":
+            self._on_transmission_manifest(msg)
+        elif msg_type == "transmissionAudioHeader":
+            self._on_transmission_audio_header(msg)
+        elif msg_type == "transmissionAudioChunk":
+            self._on_transmission_audio_chunk(msg)
+        elif msg_type == "transmissionAudioError":
+            self._on_transmission_audio_error(msg)
         elif msg_type == "localMapError":
             self._on_local_map_error(msg)
         elif msg_type == "alreadyConnected":
@@ -344,6 +370,7 @@ class NetworkClient:
         self._log(f"snapshot (hp={self._state.player.hp}/{self._state.player.max_hp})")
 
         self._maybe_start_map_fetch()
+        self._maybe_start_transmission_sync()
 
     def _on_update(self, msg: dict[str, Any]) -> None:
         pa = msg.get("playerAvailable", True)
@@ -380,6 +407,9 @@ class NetworkClient:
         elif kind == "player.quests":
             self._apply_quests(msg.get("payload", {}) or {})
             self._log("update: player.quests")
+        elif kind == "player.transmissions":
+            self._apply_transmissions(msg.get("payload", {}) or {})
+            self._log("update: player.transmissions")
         elif kind is None:
             pass
         else:
@@ -546,6 +576,281 @@ class NetworkClient:
         else:
             self._request_map_chunk(wm.next_index)
             self._log(f"map: re-requesting chunk {wm.next_index} (retry {wm.retries})")
+
+    # ── transmission audio sync ────────────────────────────────────────
+
+    def _maybe_start_transmission_sync(self) -> None:
+        """Kick off the transmission audio sync once per connection on READY.
+
+        Bound plainly to the connection event, not to game state, boot
+        phase, or what is already on disk: the manifest lists every *baked*
+        disk and all of them are fetched, whether or not the player has
+        found them. That is what makes a disk discovered mid-session play
+        immediately, with no lazy path. See `decision-fetch-on-connect`.
+        """
+        world = self._state.world
+        schema = world.schema_version if world is not None else 0
+        ha = self._state.transmission_audio
+
+        if schema < TRANSMISSION_MIN_SCHEMA_VERSION:
+            if ha.status is TransmissionSyncStatus.IDLE:
+                ha.status = TransmissionSyncStatus.UNAVAILABLE
+                self._log(
+                    f"transmission audio unavailable (server schemaVersion {schema} "
+                    f"< {TRANSMISSION_MIN_SCHEMA_VERSION})"
+                )
+            return
+
+        if ha.status is not TransmissionSyncStatus.IDLE:
+            return
+
+        ha.status = TransmissionSyncStatus.FETCHING
+        ha.retries = 0
+        ha.last_request_at = time.monotonic()
+        self._queue_line({"type": "getTransmissionManifest"})
+        self._log("transmission: requesting manifest")
+
+    def _transmission_scratch_dir(self) -> str:
+        """Per-connection scratch directory, created lazily."""
+        if self._transmission_dir is None:
+            self._transmission_dir = tempfile.mkdtemp(prefix="companion-transmission-")
+        return self._transmission_dir
+
+    def _discard_transmission_scratch(self) -> None:
+        if self._transmission_dir is None:
+            return
+        shutil.rmtree(self._transmission_dir, ignore_errors=True)
+        self._transmission_dir = None
+
+    def _on_transmission_manifest(self, msg: dict[str, Any]) -> None:
+        ha = self._state.transmission_audio
+        if ha.status is not TransmissionSyncStatus.FETCHING:
+            return
+
+        entries = msg.get("entries")
+        indices: list[int] = []
+        if isinstance(entries, list):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                index = entry.get("index")
+                if isinstance(index, bool) or not isinstance(index, int):
+                    continue
+                indices.append(index)
+
+        ha.manifest = indices
+        self._log(f"transmission: manifest has {len(indices)} baked disk(s)")
+        self._request_next_transmission()
+
+    def _request_next_transmission(self) -> None:
+        """Request the next manifest entry not yet *attempted*, or finish.
+
+        Attempted, not held: a disk that errored must not be re-selected,
+        or the sync spins on it and never reaches READY.
+        """
+        ha = self._state.transmission_audio
+        for index in ha.manifest:
+            if index in ha.recordings or index in ha.failed:
+                continue
+            ha.current_index = index
+            ha.chunk_count = 0
+            ha.next_chunk = 0
+            ha.chunk_bytes = 0
+            ha.expected_bytes = 0
+            ha.accumulator = bytearray()
+            ha.pending_envelope = b""
+            ha.retries = 0
+            ha.last_request_at = time.monotonic()
+            self._queue_line({"type": "getTransmissionAudio", "index": index})
+            self._log(f"transmission: requesting audio {index}")
+            return
+
+        ha.current_index = -1
+        ha.status = TransmissionSyncStatus.READY
+        self._log(f"transmission: sync complete ({len(ha.recordings)} recording(s))")
+
+    def _on_transmission_audio_header(self, msg: dict[str, Any]) -> None:
+        ha = self._state.transmission_audio
+        if ha.status is not TransmissionSyncStatus.FETCHING:
+            return
+        if msg.get("index") != ha.current_index:
+            return
+
+        try:
+            envelope = base64.b64decode(msg.get("envelopeB64", ""), validate=True)
+        except (binascii.Error, ValueError):
+            self._log(f"transmission: envelope for {ha.current_index} is not valid base64; skipping")
+            self._skip_current_transmission()
+            return
+
+        if not self._envelope_is_valid(envelope):
+            self._log(f"transmission: envelope for {ha.current_index} is malformed; skipping")
+            self._skip_current_transmission()
+            return
+
+        def opt_int(key: str) -> int:
+            value = msg.get(key)
+            if isinstance(value, bool) or not isinstance(value, int):
+                return 0
+            return value
+
+        ha.expected_bytes = opt_int("bytes")
+        ha.chunk_count = opt_int("chunkCount")
+        ha.chunk_bytes = opt_int("chunkBytes")
+        ha.pending_envelope = envelope
+        ha.accumulator = bytearray()
+        ha.next_chunk = 0
+
+        if ha.chunk_count <= 0:
+            # A zero-length recording is not a recording.
+            self._skip_current_transmission()
+            return
+
+        self._request_transmission_chunk(0)
+
+    @staticmethod
+    def _envelope_is_valid(envelope: bytes) -> bool:
+        """Structural check on the `HDEV` envelope.
+
+        Validated before use rather than trusted: the payload length must
+        agree with the declared `bands * frames`, because the renderer
+        indexes into it every frame and the transport clamps seeks against
+        the duration derived from it.
+        """
+        if len(envelope) < TRANSMISSION_ENVELOPE_HEADER_BYTES:
+            return False
+        if envelope[:4] != TRANSMISSION_ENVELOPE_MAGIC:
+            return False
+        version, bands = struct.unpack_from("<HH", envelope, 4)
+        frames, frame_ms = struct.unpack_from("<IH", envelope, 8)
+        if version != 1 or bands <= 0 or frames <= 0 or frame_ms <= 0:
+            return False
+        return len(envelope) == TRANSMISSION_ENVELOPE_HEADER_BYTES + bands * frames
+
+    def _request_transmission_chunk(self, chunk: int) -> None:
+        ha = self._state.transmission_audio
+        ha.next_chunk = chunk
+        ha.last_request_at = time.monotonic()
+        self._queue_line(
+            {"type": "getTransmissionAudioChunk", "index": ha.current_index, "chunk": chunk}
+        )
+
+    def _on_transmission_audio_chunk(self, msg: dict[str, Any]) -> None:
+        ha = self._state.transmission_audio
+        if ha.status is not TransmissionSyncStatus.FETCHING:
+            return
+        if msg.get("index") != ha.current_index or msg.get("chunk") != ha.next_chunk:
+            return
+
+        try:
+            data = base64.b64decode(msg.get("dataB64", ""), validate=True)
+        except (binascii.Error, ValueError):
+            self._log(f"transmission: chunk {ha.next_chunk} is not valid base64; skipping disk")
+            self._skip_current_transmission()
+            return
+
+        ha.accumulator.extend(data)
+        ha.retries = 0
+
+        if ha.next_chunk + 1 < ha.chunk_count:
+            self._request_transmission_chunk(ha.next_chunk + 1)
+            return
+
+        if len(ha.accumulator) != ha.expected_bytes:
+            self._log(
+                f"transmission: {ha.current_index} reassembled to {len(ha.accumulator)} bytes, "
+                f"expected {ha.expected_bytes}; skipping"
+            )
+            self._skip_current_transmission()
+            return
+
+        self._commit_transmission_recording(bytes(ha.accumulator), ha.pending_envelope)
+
+    def _commit_transmission_recording(self, audio: bytes, envelope: bytes) -> None:
+        """Write the audio atomically, then publish the recording.
+
+        Temp file plus rename, deliberately: disconnects are routine here
+        (the client retries every second, indefinitely), and a truncated
+        OGG left behind would fail only later, at playback time, far from
+        the cause.
+        """
+        ha = self._state.transmission_audio
+        index = ha.current_index
+
+        _version, bands = struct.unpack_from("<HH", envelope, 4)
+        frames, frame_ms = struct.unpack_from("<IH", envelope, 8)
+
+        try:
+            directory = self._transmission_scratch_dir()
+            final_path = os.path.join(directory, f"transmission_{index:02d}.ogg")
+            tmp_path = final_path + ".part"
+            with open(tmp_path, "wb") as handle:
+                handle.write(audio)
+            os.replace(tmp_path, final_path)
+        except OSError as exc:
+            self._log(f"transmission: could not store {index} ({exc}); skipping")
+            self._skip_current_transmission()
+            return
+
+        ha.recordings[index] = TransmissionRecording(
+            index=index,
+            path=final_path,
+            bands=bands,
+            frames=frames,
+            frame_ms=frame_ms,
+            envelope=envelope[TRANSMISSION_ENVELOPE_HEADER_BYTES:],
+        )
+        self._log(f"transmission: stored {index} ({len(audio)} bytes, {frames * frame_ms}ms)")
+        self._request_next_transmission()
+
+    def _skip_current_transmission(self) -> None:
+        """Drop the in-flight disk and move on.
+
+        A disk that cannot be fetched is not fatal to the sync: it simply
+        has no recording, and the screen shows `NO RECORD AVAILABLE`.
+        """
+        ha = self._state.transmission_audio
+        if ha.current_index >= 0:
+            ha.failed.add(ha.current_index)
+        self._request_next_transmission()
+
+    def _on_transmission_audio_error(self, msg: dict[str, Any]) -> None:
+        ha = self._state.transmission_audio
+        if ha.status is not TransmissionSyncStatus.FETCHING:
+            return
+        reason = msg.get("reason")
+        self._log(f"transmission: audio error for {ha.current_index} ({reason}); skipping")
+        self._skip_current_transmission()
+
+    def _tick_transmission_sync(self) -> None:
+        """Re-send a stalled outstanding transmission request, or move on."""
+        ha = self._state.transmission_audio
+        if ha.status is not TransmissionSyncStatus.FETCHING:
+            return
+        if time.monotonic() - ha.last_request_at <= TRANSMISSION_REQUEST_TIMEOUT_SECONDS:
+            return
+
+        if ha.retries >= TRANSMISSION_MAX_RETRIES:
+            if ha.current_index < 0:
+                # The manifest itself never arrived.
+                ha.status = TransmissionSyncStatus.UNAVAILABLE
+                self._log("transmission: manifest timed out (retries exhausted)")
+                return
+            self._log(f"transmission: {ha.current_index} timed out (retries exhausted); skipping")
+            self._skip_current_transmission()
+            return
+
+        ha.retries += 1
+        ha.last_request_at = time.monotonic()
+        if ha.current_index < 0:
+            self._queue_line({"type": "getTransmissionManifest"})
+            self._log(f"transmission: re-requesting manifest (retry {ha.retries})")
+        elif ha.chunk_count == 0:
+            self._queue_line({"type": "getTransmissionAudio", "index": ha.current_index})
+            self._log(f"transmission: re-requesting audio {ha.current_index} (retry {ha.retries})")
+        else:
+            self._request_transmission_chunk(ha.next_chunk)
+            self._log(f"transmission: re-requesting chunk {ha.next_chunk} (retry {ha.retries})")
 
     # ── local-map fetch ────────────────────────────────────────────
 
@@ -815,6 +1120,11 @@ class NetworkClient:
         # across reconnect is not required, but resetting it is not either.)
         self._state.world_map = WorldMapState()
         self._state.local_map = LocalMapState()
+        # Same rule for transmission audio: a reconnect re-syncs from scratch.
+        # Scratch files from the previous connection are discarded rather
+        # than reused -- see `decision-fetch-on-connect`, there is no cache.
+        self._discard_transmission_scratch()
+        self._state.transmission_audio = TransmissionAudioState()
 
     def _apply_snapshot_payload(self, payload: dict[str, Any]) -> None:
         vitals = payload.get("player.vitals", {}) or {}
@@ -825,6 +1135,7 @@ class NetworkClient:
         world_location = payload.get("player.worldLocation", {}) or {}
         inventory = payload.get("player.inventory", []) or []
         quests = payload.get("player.quests", {}) or {}
+        transmissions = payload.get("player.transmissions", {}) or {}
 
         if vitals:
             self._apply_vitals(vitals)
@@ -840,6 +1151,7 @@ class NetworkClient:
             self._apply_world_location(world_location)
         self._apply_inventory(inventory)
         self._apply_quests(quests)
+        self._apply_transmissions(transmissions)
 
     def _apply_vitals(self, payload: dict[str, Any]) -> None:
         self._state.player.hp = int(payload.get("hp", self._state.player.hp))
@@ -956,6 +1268,40 @@ class NetworkClient:
                 )
             )
         self._state.player.inventory = items
+
+    def _apply_transmissions(self, payload: dict[str, Any]) -> None:
+        """Replace the found-transmission list wholesale, like ``_apply_quests``.
+
+        Payload is an object (``{"transmissions": [...]}``) rather than a bare
+        array so a later archive-level field can be added without changing
+        the kind's shape. Every part degrades to a default, so a
+        schemaVersion 12 server — which sends no ``player.transmissions`` —
+        leaves an empty list instead of raising.
+
+        Carries **no body text**: the transmission screen plays a recording.
+        """
+        from companion_app.state import Transmission
+
+        raw = payload.get("transmissions")
+        transmissions: list[Transmission] = []
+        if isinstance(raw, list):
+            for entry in raw:
+                if not isinstance(entry, dict):
+                    continue
+                index = entry.get("index")
+                if isinstance(index, bool) or not isinstance(index, int):
+                    continue
+                title = entry.get("title")
+                transmissions.append(
+                    Transmission(
+                        index=index,
+                        # `str(None)` would render the literal "None" —
+                        # the TASK-016 bug.
+                        title=title if isinstance(title, str) else "",
+                    )
+                )
+
+        self._state.player.transmissions = transmissions
 
     def _apply_quests(self, payload: dict[str, Any]) -> None:
         """Replace the quest list wholesale, like ``_apply_inventory``.
