@@ -75,6 +75,18 @@ def ok(message):
     print(f"  ok: {message}")
 
 
+# Cases that could not run on this save/install. Counted and re-printed as a
+# block at the end, because a run whose interesting half silently skipped
+# looks exactly like a run that passed -- and "all ok" scrolling past is how
+# a check that proves nothing gets mistaken for coverage.
+SKIPPED: list[str] = []
+
+
+def skipped(message):
+    SKIPPED.append(message)
+    print(f"  SKIPPED: {message}")
+
+
 def recv_line(sock):
     """Read bytes from the socket until a newline is found."""
     buf = bytearray()
@@ -273,7 +285,16 @@ def test_getSnapshot(sock, expected_seq):
     #
     # `body` may legitimately be empty -- that is how an unresolvable disk
     # is reported -- so emptiness is not a failure here.
-    for row in payload["player.holodisks"]["holodisks"]:
+    #
+    # **A save with no holodisks checks nothing here, and says so.** The first
+    # version of this block ended with an unconditional `ok(...)`, so against a
+    # fresh character it printed "bodies are string arrays, no sentinels"
+    # having examined zero rows -- reporting a pass for work it never did.
+    # That is the same failure this ticket hit three times app-side: a green
+    # result that proves nothing. Coverage that did not run must announce
+    # itself, or the run is worse than not having the check.
+    holodisks = payload["player.holodisks"]["holodisks"]
+    for row in holodisks:
         where = f"player.holodisks.holodisks[index={row.get('index')}]"
         assert_field(row, "body", where)
         body = row["body"]
@@ -287,7 +308,14 @@ def test_getSnapshot(sock, expected_seq):
             # engine's blank line and must arrive as "" instead.
             if line.strip() in ("**END-DISK**", "**END-PAR**"):
                 fail(f"{where}.body leaked the sentinel {line!r}")
-    ok("snapshot.payload.player.holodisks bodies are string arrays, no sentinels")
+    if holodisks:
+        lines = sum(len(row["body"]) for row in holodisks)
+        ok(f"player.holodisks: {len(holodisks)} disk(s), {lines} body line(s) "
+           f"checked, no sentinels")
+    else:
+        skipped("player.holodisks is empty on this save -- the sentinel and "
+                "body-shape checks did NOT run. Load a save that has found at "
+                "least one disk to exercise them.")
 
     assert_field(quests_payload, "quests", "snapshot.payload.player.quests")
     quests = quests_payload["quests"]
@@ -876,7 +904,9 @@ def test_transmission_audio(sock):
             fail(f"reassembled audio is not Ogg: {bytes(received[:4])!r}")
         print(f"  audio: {len(received)} bytes reassembled, OggS magic intact")
     else:
-        print("  info: no baked transmissions on this install; happy path skipped")
+        skipped("transmissionManifest is empty -- the audio header, envelope and "
+                "chunk-reassembly checks did NOT run. Expected until TASK-026 "
+                "makes the engine generate audio.")
 
     # Negative 1: index out of range must be rejected before any file access.
     send(sock, {"type": "getTransmissionAudio", "index": 9999})
@@ -948,7 +978,14 @@ def main():
     test_unknown_first_message_drops(args.host, args.port)
     test_server_still_listening(args.host, args.port, args.password)
 
-    print("\nAll smoke tests passed.")
+    if SKIPPED:
+        print(f"\nAll smoke tests passed, but {len(SKIPPED)} case(s) DID NOT RUN:")
+        for message in SKIPPED:
+            print(f"  - {message}")
+        print("\nThose are gaps, not passes. A run whose interesting half skipped")
+        print("looks identical to one that covered everything.")
+    else:
+        print("\nAll smoke tests passed.")
 
 
 if __name__ == "__main__":
