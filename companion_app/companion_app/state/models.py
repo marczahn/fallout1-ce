@@ -7,6 +7,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+# Transmission PCM format. FIXED, not negotiated: the engine emits at this
+# rate and the app's mixer is initialised to match, because
+# ``pygame.mixer.Sound(buffer=...)`` reads a buffer in the mixer's format and
+# nothing on the wire carries a rate. Mirrors ``kTransmissionSampleRate`` in
+# the engine's ``companion_audio_degrade.h``.
+TRANSMISSION_SAMPLE_RATE: int = 8000
+TRANSMISSION_BYTES_PER_SECOND: int = TRANSMISSION_SAMPLE_RATE * 2
+
 
 class ConnectionState(Enum):
     DISCONNECTED = 0
@@ -268,17 +276,29 @@ class TransmissionSyncStatus(Enum):
 
 @dataclass
 class TransmissionRecording:
-    """A fully-transferred narration plus its equalizer envelope.
+    """A fully-transferred recording plus its equalizer envelope.
 
-    ``duration_ms`` is derived, not sent: ``frames * frame_ms``. It is what
-    the transport clamps seeks against, and clamping is mandatory rather
-    than defensive — ``pygame.mixer.music.set_pos()`` raises
-    ``pygame.error`` for a target past the end of the track, with the
-    misleading message "Position not implemented for music type".
+    **There are two durations here and they are not the same number.** Using
+    the wrong one at the tail of a track silently stops playback while the
+    transport still shows time remaining:
+
+    * ``duration_ms`` is the ENVELOPE's, ``frames * frame_ms``, rounded UP to
+      a whole 50ms frame. Use it only to index the equalizer, which is what
+      it was computed for.
+    * ``pcm_duration_ms`` is the audio's actual length. Every playback bound
+      — seek clamping above all — derives from this.
+
+    ``boil1`` is the worked example: 175,090 bytes is 87,545 samples is
+    **10,943ms**, while its 219 envelope frames describe **10,950ms**. A seek
+    target landing in that 7ms gap passes a "before the end" test written
+    against the envelope and then slices an *empty* buffer.
     """
 
     index: int = 0
-    path: str = ""
+    # Raw little-endian int16 mono PCM at TRANSMISSION_SAMPLE_RATE. Held in
+    # memory, never written to disk: the engine generates it from MASTER.DAT
+    # per connection and nothing on either side persists it.
+    pcm: bytes = b""
     bands: int = 0
     frames: int = 0
     frame_ms: int = 0
@@ -287,7 +307,13 @@ class TransmissionRecording:
 
     @property
     def duration_ms(self) -> int:
+        """Envelope duration. Equalizer indexing ONLY — see the class docstring."""
         return self.frames * self.frame_ms
+
+    @property
+    def pcm_duration_ms(self) -> int:
+        """True audio duration. The bound for every playback decision."""
+        return len(self.pcm) * 1000 // TRANSMISSION_BYTES_PER_SECOND
 
 
 @dataclass

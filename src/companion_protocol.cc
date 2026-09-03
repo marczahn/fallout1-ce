@@ -29,7 +29,7 @@
 //                                 normal auth/hello handshake.
 //
 // Server -> client:
-//   {"type":"world","schemaVersion":14,"game":"fallout1-ce","playerAvailable":bool}
+//   {"type":"world","schemaVersion":15,"game":"fallout1-ce","playerAvailable":bool}
 //
 //   {"type":"snapshot","seq":N,"playerAvailable":bool,"payload":{
 //      "player.vitals":          {"hp":H,"maxHp":M},
@@ -195,7 +195,12 @@
 // `payload`. `onPlayerUnavailable` and `onPlayerAvailable` have
 // neither.
 //
-// `world.schemaVersion` is now `14` (was `5`). Version 14 adds `body`
+// `world.schemaVersion` is now `15` (was `5`). Version 15 (TASK-026) is the
+// first NON-additive bump: transmission audio is now decoded, degraded and
+// streamed from `MASTER.DAT` in-process rather than served from baked files,
+// so the manifest entry drops `bytes` and `envelopeBytes` - under lazy
+// generation those are properties of a buffer that does not exist until the
+// transmission is requested. They remain on the audio header. Version 14 adds `body`
 // text to the `player.holodisks` kind, and with it a protocol-wide
 // change: `companionAppendEscapedJsonString` now emits `\uXXXX` for every
 // byte >= 0x80 instead of passing it through, so every string on the wire
@@ -897,8 +902,9 @@ std::string companionBuildWorld(bool playerAvailable)
     char buffer[96];
     int n = snprintf(buffer,
         sizeof(buffer),
-        R"({"type":"world","schemaVersion":14,"game":"fallout1-ce","playerAvailable":%s})"
+        R"({"type":"world","schemaVersion":%d,"game":"fallout1-ce","playerAvailable":%s})"
         "\n",
+        kCompanionSchemaVersion,
         flag);
     if (n < 0 || static_cast<size_t>(n) >= sizeof(buffer)) {
         return std::string();
@@ -1228,9 +1234,18 @@ std::string companionBuildCmdAck(int id,
 
 std::string companionBuildAnnounce(std::string_view host)
 {
+    char prefix[96];
+    int prefixLen = snprintf(prefix,
+        sizeof(prefix),
+        R"({"type":"announce","game":"fallout1-ce","schemaVersion":%d,"host":")",
+        kCompanionSchemaVersion);
+    if (prefixLen < 0 || static_cast<size_t>(prefixLen) >= sizeof(prefix)) {
+        return std::string();
+    }
+
     std::string message;
     message.reserve(host.size() + 96);
-    message.append(R"({"type":"announce","game":"fallout1-ce","schemaVersion":14,"host":")");
+    message.append(prefix, static_cast<size_t>(prefixLen));
     message.append(host);
     message.append(R"(","port":28080,"authRequired":true})"
                    "\n");
@@ -1315,13 +1330,11 @@ std::string companionBuildTransmissionManifest(
         if (i != 0) {
             message.push_back(',');
         }
-        char entry[128];
+        char entry[64];
         int n = snprintf(entry,
             sizeof(entry),
-            R"({"index":%d,"bytes":%zu,"envelopeBytes":%zu})",
-            entries[i].index,
-            entries[i].bytes,
-            entries[i].envelopeBytes);
+            R"({"index":%d})",
+            entries[i].index);
         if (n < 0 || static_cast<size_t>(n) >= sizeof(entry)) {
             return std::string();
         }

@@ -1,5 +1,8 @@
 #include "companion_server.h"
 
+#include "companion_audio_degrade.h"
+#include "companion_mve_audio.h"
+
 #include <stddef.h>
 #include <string.h>
 
@@ -57,7 +60,27 @@ constexpr int kListenBacklog = 1;
 constexpr size_t kDiscoveryRequestBufferSize = 256;
 
 constexpr size_t kInboundBufferSize = 4096;
-constexpr size_t kOutboundCap = 256 * 1024;
+// Ceiling on the unflushed outbound backlog. A client that stops reading is
+// dropped when it exceeds this.
+//
+// It must be larger than the biggest burst the server can legitimately queue
+// in ONE tick, or it drops clients for the server's own behaviour.
+// `readFromClient` answers every complete line in the inbound buffer before
+// anything is flushed, so the worst legitimate case is roughly:
+//
+//     world-map chunk       196,608 (144 KiB raw, base64)
+//   + transmission chunk    196,608 (144 KiB raw, base64)
+//   + local-map chunk        ~53,000
+//   + a sampled update       ~50,000 (holodisk bodies are the largest)
+//   = ~496,000 bytes
+//
+// 256 KiB did not cover that. It was never reached before TASK-026 only
+// because the transmission manifest was always empty - no baked audio file
+// ever existed on any machine - so the map and transmission fetches had never
+// run concurrently. Generating audio in-process made the collision reachable
+// on every connection. `queueMessage` also drains before refusing, which is
+// the real fix; this bound is the margin behind it.
+constexpr size_t kOutboundCap = 1024 * 1024;
 constexpr unsigned int kSampleIntervalMs = 500;
 
 // Fixed raw chunk size for the world-map image fetch (144 KiB). Each
@@ -107,16 +130,17 @@ int gDiscoveryFd = -1;
 std::string gBindHost;
 std::string gPassword;
 
-// Directory holding baked transmission audio, from `fallout.cfg`. Empty
-// disables the whole transmission audio surface: the manifest comes back
-// empty and every fetch answers `noRecord`, which the client renders as
-// `NO RECORD AVAILABLE`. That is the graceful path, not an error path -
-// a game with no baked audio is a supported configuration.
-std::string gTransmissionAudioDir;
+// The radio degradation recipe, read from `[companion]` keys at init.
+// Read-only after that, so a connection can never see a half-updated recipe;
+// "takes effect on the next connection" follows from the recipe only changing
+// at init and every connection clearing its cached buffer.
+CompanionTransmissionRecipe gTransmissionRecipe;
 
-// Bounds from the TASK-024 asset contract. `kTransmissionAudioMax` is a
-// sanity ceiling on a single narration; `kTransmissionEnvelopeMax` bounds the
-// equalizer envelope, which rides *inside* the audio header and is
+// Bounds carried from the TASK-024 asset contract. `kTransmissionAudioMax` is
+// now a ceiling on a GENERATED buffer rather than on a file, which is still
+// worth asserting: a corrupt or modded MVE reporting absurd chunk lengths
+// would otherwise allocate without bound. `kTransmissionEnvelopeMax` bounds
+// the equalizer envelope, which rides *inside* the audio header and is
 // therefore the thing that can push that header past `kOutboundCap`.
 constexpr size_t kTransmissionAudioMax = 8u * 1024u * 1024u;
 constexpr size_t kTransmissionEnvelopeMax = 64u * 1024u;
@@ -130,20 +154,28 @@ constexpr size_t kTransmissionChunkBytes = 144u * 1024u;
 //
 // This DEPARTS from the world-map fetch deliberately. `handleGetMapChunk`
 // re-acquires the map image on every chunk request because the image is
-// already resident in the engine's cache - re-acquiring is free. Holodisk
-// audio is a file, so re-reading per chunk would put disk I/O on the
-// game's frame loop. The file is therefore read once, on the header
-// request, and chunks are served as slices of this buffer.
+// already resident in the engine's cache - re-acquiring is free. Transmission
+// audio is GENERATED - LZSS-extracted, DPCM-decoded, degraded - so
+// regenerating per chunk would decode `ovrintro` thirteen times.
 //
 // Being state, it needs rules, and they are enforced in the handlers:
 //   - a header request for a different index REPLACES the buffer;
+//   - a header request for the index ALREADY RESIDENT is served from here
+//     rather than regenerated. The client re-sends `getTransmissionAudio`
+//     after a stall (`net/client.py:828-845`), and on the largest movie a
+//     regeneration is exactly the stall that caused the timeout;
 //   - a chunk request with no buffer, or a mismatched index, is answered
 //     with `noTransfer` and never disconnects;
 //   - every connection reset clears it (see `resetConnectionState`).
+//
+// Single-entry on purpose: the client fetches each index once and never
+// returns to it, so holding all eight would cost 4.75 MiB resident to serve
+// zero extra requests. One entry bounds this at `ovrintro`'s 1.74 MiB.
 struct TransmissionTransfer {
     bool active = false;
     int index = -1;
     std::vector<unsigned char> bytes;
+    std::vector<unsigned char> envelope;
 
     void clear()
     {
@@ -151,6 +183,8 @@ struct TransmissionTransfer {
         index = -1;
         bytes.clear();
         bytes.shrink_to_fit();
+        envelope.clear();
+        envelope.shrink_to_fit();
     }
 };
 
@@ -200,7 +234,7 @@ void clearConfigBuffers()
 {
     gBindHost.clear();
     gPassword.clear();
-    gTransmissionAudioDir.clear();
+    gTransmissionRecipe = CompanionTransmissionRecipe{};
 }
 
 void resetConnectionState()
@@ -257,6 +291,10 @@ void disableDiscoverySocket(const char* reason)
     closeFd(&gDiscoveryFd);
 }
 
+// Defined below, next to the tick. Declared here because `queueMessage`
+// drains before it refuses - see the comment there.
+void flushOutbound();
+
 void disconnectClient(const char* reason)
 {
     if (reason != nullptr) {
@@ -278,8 +316,32 @@ bool queueMessage(const std::string& message)
     }
 
     if (gConnection.outbound.size() + message.size() > kOutboundCap) {
-        disconnectClient("outbound buffer overflow");
-        return false;
+        // Drain what is already queued before treating this as a stuck
+        // client, because those are two different conditions and only one of
+        // them is the client's fault.
+        //
+        // `kOutboundCap` exists to drop a client that has stopped reading. But
+        // the server can also exceed it entirely on its own, by answering two
+        // large requests in a SINGLE tick: `readFromClient` handles every
+        // complete line in the inbound buffer before `flushOutbound` runs, so
+        // a `getMapChunk` and a `getTransmissionAudioChunk` arriving together
+        // queue 196,608 + 196,608 bytes of base64 against a 262,144-byte cap.
+        // That client was reading perfectly well.
+        //
+        // Flushing first distinguishes the two: if the socket accepts the
+        // backlog, the client is fine and the burst was ours; if it does not,
+        // the client really is not draining and the disconnect is correct.
+        flushOutbound();
+
+        if (!hasClient()) {
+            // `flushOutbound` hit a send error and already disconnected.
+            return false;
+        }
+
+        if (gConnection.outbound.size() + message.size() > kOutboundCap) {
+            disconnectClient("outbound buffer overflow");
+            return false;
+        }
     }
 
     gConnection.outbound.append(message);
@@ -835,67 +897,45 @@ void buildNormalizedPalette(unsigned char out[768])
 
 // -- Transmission audio -----------------------------------------------
 
-// Builds `<dir>/transmission_NN.<ext>` for a VALIDATED movie index.
+// Generates a transmission's degraded PCM and its equalizer envelope.
 //
-// The index is the ONLY client-controlled input, and callers must have
-// already range-checked it against `MOVIE_VEXPLD..MOVIE_COUNT`. No part of
-// the path comes from the wire: the client cannot supply a directory, a
-// filename, or a fragment of one. This is what keeps a file-read
-// primitive inside the game engine from becoming a path-traversal hole.
-std::string transmissionAssetPath(int index, const char* extension)
+// Extract from MASTER.DAT -> DPCM decode -> radio degradation -> HDEV
+// envelope. Milliseconds of decode behind a much larger LZSS extraction: the
+// audio opcodes are interleaved through a stream that is overwhelmingly
+// video, so reaching them means decompressing the whole movie.
+//
+// Every failure - absent movie, no audio track, malformed data, oversized
+// result - returns false and is reported to the client as `noRecord`, never
+// as a disconnect.
+bool generateTransmission(int index,
+    std::vector<unsigned char>& pcm,
+    std::vector<unsigned char>& envelope)
 {
-    char name[64];
-    int n = snprintf(name, sizeof(name), "transmission_%02d.%s", index, extension);
-    if (n < 0 || static_cast<size_t>(n) >= sizeof(name)) {
-        return std::string();
-    }
+    pcm.clear();
+    envelope.clear();
 
-    std::string path = gTransmissionAudioDir;
-    if (!path.empty() && path.back() != '/' && path.back() != '\\') {
-        path.push_back('/');
-    }
-    path.append(name, static_cast<size_t>(n));
-    return path;
-}
-
-// Reads a whole file under `limit`. Returns false for missing, unreadable,
-// or oversized files - all of which are reported to the client as a
-// non-fatal error, never as a disconnect.
-bool readWholeFile(const std::string& path, size_t limit, std::vector<unsigned char>& out)
-{
-    out.clear();
-
-    if (path.empty()) {
+    CompanionMveAudio audio;
+    if (!companionMveReadAudio(index, audio)) {
         return false;
     }
 
-    FILE* stream = fopen(path.c_str(), "rb");
-    if (stream == nullptr) {
+    if (!companionDegradeAudio(audio, gTransmissionRecipe, pcm)) {
         return false;
     }
 
-    if (fseek(stream, 0, SEEK_END) != 0) {
-        fclose(stream);
+    if (pcm.empty() || pcm.size() > kTransmissionAudioMax) {
+        pcm.clear();
         return false;
     }
 
-    long size = ftell(stream);
-    if (size < 0 || static_cast<size_t>(size) > limit) {
-        fclose(stream);
+    if (!companionBuildEnvelope(pcm, gTransmissionRecipe, envelope)) {
+        pcm.clear();
         return false;
     }
 
-    if (fseek(stream, 0, SEEK_SET) != 0) {
-        fclose(stream);
-        return false;
-    }
-
-    out.resize(static_cast<size_t>(size));
-    size_t read = size > 0 ? fread(out.data(), 1, static_cast<size_t>(size), stream) : 0;
-    fclose(stream);
-
-    if (read != static_cast<size_t>(size)) {
-        out.clear();
+    if (envelope.size() > kTransmissionEnvelopeMax) {
+        pcm.clear();
+        envelope.clear();
         return false;
     }
 
@@ -906,24 +946,22 @@ void handleGetTransmissionManifestMessage()
 {
     std::vector<CompanionTransmissionManifestEntry> entries;
 
+    // The loop bound is what satisfies "the two logos and the intro are never
+    // offered": `MOVIE_VEXPLD..MOVIE_COUNT-1` is the *listable* range, the
+    // same one the in-game `ListArchive` uses. The probe below reports true
+    // for the logos and the intro - they do have audio tracks - so this range
+    // is doing real work, not decoration.
     for (int index = MOVIE_VEXPLD; index < MOVIE_COUNT; ++index) {
-        std::vector<unsigned char> audio;
-        if (!readWholeFile(transmissionAssetPath(index, "ogg"), kTransmissionAudioMax, audio)) {
-            continue;
-        }
-
-        std::vector<unsigned char> envelope;
-        if (!readWholeFile(transmissionAssetPath(index, "env"), kTransmissionEnvelopeMax, envelope)) {
-            // Audio without a usable envelope is not offered: the screen
-            // needs the envelope for the equalizer, for end-of-track, and
-            // for clamping seeks. Half a record is not a record.
+        // A bounded prefix scan: does this movie exist in the DAT and carry
+        // an audio track? Kilobytes of decompression, NOT a generation.
+        // Generating all eight here would spend ~1s of game time on every
+        // connection whether or not the player ever opens ARCHIVES.
+        if (!companionMveHasAudioTrack(index)) {
             continue;
         }
 
         CompanionTransmissionManifestEntry entry = {};
         entry.index = index;
-        entry.bytes = audio.size();
-        entry.envelopeBytes = envelope.size();
         entries.push_back(entry);
     }
 
@@ -947,38 +985,48 @@ void handleGetTransmissionAudioMessage(const char* line, size_t lineLength)
         return;
     }
 
-    // Range check BEFORE any filesystem call. Bounds are the *listable*
-    // movie range: `ListArchive` skips the two logos and the intro, so
-    // offering them here would contradict the in-game screen.
+    // Range check BEFORE any generation. The index is the ONLY
+    // client-controlled input on this path. Bounds are the *listable* movie
+    // range, so the two logos and the intro can never be requested.
     if (index < MOVIE_VEXPLD || index >= MOVIE_COUNT) {
         queueMessage(companionBuildTransmissionAudioError(index, "index"));
         return;
     }
 
-    std::vector<unsigned char> audio;
-    if (!readWholeFile(transmissionAssetPath(index, "ogg"), kTransmissionAudioMax, audio)) {
-        queueMessage(companionBuildTransmissionAudioError(index, "noRecord"));
-        return;
+    // Cache hit: serve the resident buffer rather than regenerating. This is
+    // what stops the client's stall-retry from re-paying the cost that caused
+    // the stall.
+    bool cached = gTransmissionTransfer.active && gTransmissionTransfer.index == index;
+
+    std::vector<unsigned char> pcm;
+    std::vector<unsigned char> envelope;
+
+    if (!cached) {
+        unsigned int startMs = compat_timeGetTime();
+        if (!generateTransmission(index, pcm, envelope)) {
+            queueMessage(companionBuildTransmissionAudioError(index, "noRecord"));
+            debug_printf("companion: transmission %d has no usable audio\n", index);
+            return;
+        }
+        debug_printf("companion: transmission %d generated in %u ms (%zu bytes)\n",
+            index, compat_timeGetTime() - startMs, pcm.size());
     }
 
-    std::vector<unsigned char> envelope;
-    if (!readWholeFile(transmissionAssetPath(index, "env"), kTransmissionEnvelopeMax, envelope)) {
-        queueMessage(companionBuildTransmissionAudioError(index, "noRecord"));
-        return;
-    }
+    const std::vector<unsigned char>& audioBytes = cached ? gTransmissionTransfer.bytes : pcm;
+    const std::vector<unsigned char>& envelopeBytes = cached ? gTransmissionTransfer.envelope : envelope;
 
     std::string message = companionBuildTransmissionAudioHeader(
-        index, audio.size(), kTransmissionChunkBytes, envelope.data(), envelope.size());
+        index, audioBytes.size(), kTransmissionChunkBytes, envelopeBytes.data(), envelopeBytes.size());
     if (message.empty()) {
         queueMessage(companionBuildTransmissionAudioError(index, "tooLarge"));
         return;
     }
 
     // The envelope rides inside this header, so the header is the one
-    // message whose size is driven by asset content rather than by our own
+    // message whose size is driven by content rather than by our own
     // chunking. Check it explicitly: overflowing `kOutboundCap` inside
     // `queueMessage` DISCONNECTS the client, which would turn an oversized
-    // asset into a confusing dropped connection.
+    // envelope into a confusing dropped connection.
     if (message.size() > kOutboundCap) {
         queueMessage(companionBuildTransmissionAudioError(index, "tooLarge"));
         debug_printf("companion: transmissionAudioHeader too large (index=%d bytes=%zu)\n",
@@ -986,17 +1034,20 @@ void handleGetTransmissionAudioMessage(const char* line, size_t lineLength)
         return;
     }
 
-    // Replace any previous transfer; a client may switch disks freely.
-    gTransmissionTransfer.clear();
-    gTransmissionTransfer.active = true;
-    gTransmissionTransfer.index = index;
-    gTransmissionTransfer.bytes = std::move(audio);
+    if (!cached) {
+        // Replace any previous transfer; a client may switch disks freely.
+        gTransmissionTransfer.clear();
+        gTransmissionTransfer.active = true;
+        gTransmissionTransfer.index = index;
+        gTransmissionTransfer.bytes = std::move(pcm);
+        gTransmissionTransfer.envelope = std::move(envelope);
+    }
 
     if (!queueMessage(message)) {
         return;
     }
-    debug_printf("companion: transmissionAudioHeader sent (index=%d bytes=%zu)\n",
-        index, gTransmissionTransfer.bytes.size());
+    debug_printf("companion: transmissionAudioHeader sent (index=%d bytes=%zu cached=%s)\n",
+        index, gTransmissionTransfer.bytes.size(), cached ? "yes" : "no");
 }
 
 void handleGetTransmissionAudioChunkMessage(const char* line, size_t lineLength)
@@ -1798,16 +1849,54 @@ bool companionServerInit()
     }
     gPassword = passwordPtr;
 
-    // Optional. Absence is not a failure: it disables transmission audio and
-    // the client shows `NO RECORD AVAILABLE`, which is a supported state.
-    char* transmissionDirPtr = nullptr;
-    if (config_get_string(&game_config,
+    // Transmission degradation recipe. Every key is optional and an absent
+    // one keeps the struct default, so an untouched `fallout.cfg` produces
+    // the intended sound - the feature must not depend on configuration to
+    // work at all.
+    gTransmissionRecipe = CompanionTransmissionRecipe{};
+
+    int intValue = 0;
+    if (config_get_value(&game_config,
             GAME_CONFIG_COMPANION_KEY,
-            GAME_CONFIG_COMPANION_TRANSMISSION_AUDIO_DIR_KEY,
-            &transmissionDirPtr)
-        && transmissionDirPtr != nullptr) {
-        gTransmissionAudioDir = transmissionDirPtr;
+            GAME_CONFIG_COMPANION_TRANSMISSION_BAND_LOW_KEY,
+            &intValue)) {
+        gTransmissionRecipe.bandLow = intValue;
     }
+    if (config_get_value(&game_config,
+            GAME_CONFIG_COMPANION_KEY,
+            GAME_CONFIG_COMPANION_TRANSMISSION_BAND_HIGH_KEY,
+            &intValue)) {
+        gTransmissionRecipe.bandHigh = intValue;
+    }
+
+    double doubleValue = 0.0;
+    if (config_get_double(&game_config,
+            GAME_CONFIG_COMPANION_KEY,
+            GAME_CONFIG_COMPANION_TRANSMISSION_NOISE_KEY,
+            &doubleValue)) {
+        gTransmissionRecipe.noise = doubleValue;
+    }
+    if (config_get_double(&game_config,
+            GAME_CONFIG_COMPANION_KEY,
+            GAME_CONFIG_COMPANION_TRANSMISSION_COMPRESS_RATIO_KEY,
+            &doubleValue)) {
+        gTransmissionRecipe.compressRatio = doubleValue;
+    }
+    if (config_get_double(&game_config,
+            GAME_CONFIG_COMPANION_KEY,
+            GAME_CONFIG_COMPANION_TRANSMISSION_LIMIT_KEY,
+            &doubleValue)) {
+        gTransmissionRecipe.limit = doubleValue;
+    }
+
+    companionClampRecipe(gTransmissionRecipe);
+    debug_printf("companion: transmission recipe band=%d-%dHz rate=%dHz noise=%.4f ratio=%.2f limit=%.2f\n",
+        gTransmissionRecipe.bandLow,
+        gTransmissionRecipe.bandHigh,
+        kTransmissionSampleRate,
+        gTransmissionRecipe.noise,
+        gTransmissionRecipe.compressRatio,
+        gTransmissionRecipe.limit);
 
     int fd = bindIPv4Socket(SOCK_STREAM, gBindHost, kListenPort, "listener");
     if (fd < 0) {

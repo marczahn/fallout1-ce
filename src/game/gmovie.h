@@ -38,6 +38,17 @@ int gmovie_save(DB_FILE* stream);
 int gmovie_play(int game_movie, int game_movie_flags);
 bool gmovie_has_been_played(int game_movie);
 
+// Returns the bare `.mve` filename for a `GameMovie` index, or NULL when the
+// index is out of range. Backed by the file-static `movie_list` table; a pure
+// read of string literals, so there is no lifetime concern and no state is
+// touched.
+//
+// Exposed so the companion server can resolve a movie to its `art\cuts\` DAT
+// entry without duplicating the table - a copy would drift the moment upstream
+// edits theirs. The caller builds the `art\cuts\` prefix itself, exactly as
+// `gmovie_play` does.
+const char* companionMovieFileName(int game_movie);
+
 } // namespace fallout
 
 #endif /* FALLOUT_GAME_GMOVIE_H_ */

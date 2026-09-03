@@ -41,10 +41,14 @@ endif()
 target_include_directories(${EXECUTABLE_NAME} PUBLIC src)
 
 target_sources(${EXECUTABLE_NAME} PUBLIC
+    "src/companion_audio_degrade.cc"
+    "src/companion_audio_degrade.h"
     "src/companion_item_catalog.cc"
     "src/companion_item_catalog.h"
     "src/companion_json_util.cc"
     "src/companion_json_util.h"
+    "src/companion_mve_audio.cc"
+    "src/companion_mve_audio.h"
     "src/companion_player_state.cc"
     "src/companion_player_state.h"
     "src/companion_protocol.cc"

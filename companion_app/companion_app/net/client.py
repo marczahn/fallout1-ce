@@ -9,11 +9,9 @@ import base64
 import binascii
 import errno
 import os
-import shutil
 import socket
 import struct
 import sys
-import tempfile
 import time
 from typing import Any, Callable
 
@@ -90,7 +88,6 @@ class NetworkClient:
         self._next_connect_at: float = 0.0
         # Per-connection scratch for fetched narration. Not a cache:
         # created lazily, discarded on every disconnect.
-        self._transmission_dir: str | None = None
 
     # ── public API ────────────────────────────────────────────────
 
@@ -613,18 +610,6 @@ class NetworkClient:
         self._queue_line({"type": "getTransmissionManifest"})
         self._log("transmission: requesting manifest")
 
-    def _transmission_scratch_dir(self) -> str:
-        """Per-connection scratch directory, created lazily."""
-        if self._transmission_dir is None:
-            self._transmission_dir = tempfile.mkdtemp(prefix="companion-transmission-")
-        return self._transmission_dir
-
-    def _discard_transmission_scratch(self) -> None:
-        if self._transmission_dir is None:
-            return
-        shutil.rmtree(self._transmission_dir, ignore_errors=True)
-        self._transmission_dir = None
-
     def _on_transmission_manifest(self, msg: dict[str, Any]) -> None:
         ha = self._state.transmission_audio
         if ha.status is not TransmissionSyncStatus.FETCHING:
@@ -770,12 +755,16 @@ class NetworkClient:
         self._commit_transmission_recording(bytes(ha.accumulator), ha.pending_envelope)
 
     def _commit_transmission_recording(self, audio: bytes, envelope: bytes) -> None:
-        """Write the audio atomically, then publish the recording.
+        """Publish the recording, holding the PCM in memory.
 
-        Temp file plus rename, deliberately: disconnects are routine here
-        (the client retries every second, indefinitely), and a truncated
-        OGG left behind would fail only later, at playback time, far from
-        the cause.
+        **Nothing is written to disk**, which retires a rule rather than
+        skipping one. This used to write temp-plus-rename so that a
+        disconnect mid-transfer could not leave a truncated OGG behind to
+        fail later at playback time, far from its cause. That failure mode no
+        longer exists: the audio never leaves memory, and the length check
+        against ``expected_bytes`` in :meth:`_on_transmission_audio_chunk`
+        runs *before* this method is reached, so a short transfer is rejected
+        rather than stored.
         """
         ha = self._state.transmission_audio
         index = ha.current_index
@@ -783,21 +772,9 @@ class NetworkClient:
         _version, bands = struct.unpack_from("<HH", envelope, 4)
         frames, frame_ms = struct.unpack_from("<IH", envelope, 8)
 
-        try:
-            directory = self._transmission_scratch_dir()
-            final_path = os.path.join(directory, f"transmission_{index:02d}.ogg")
-            tmp_path = final_path + ".part"
-            with open(tmp_path, "wb") as handle:
-                handle.write(audio)
-            os.replace(tmp_path, final_path)
-        except OSError as exc:
-            self._log(f"transmission: could not store {index} ({exc}); skipping")
-            self._skip_current_transmission()
-            return
-
         ha.recordings[index] = TransmissionRecording(
             index=index,
-            path=final_path,
+            pcm=audio,
             bands=bands,
             frames=frames,
             frame_ms=frame_ms,
@@ -1124,9 +1101,8 @@ class NetworkClient:
         self._state.world_map = WorldMapState()
         self._state.local_map = LocalMapState()
         # Same rule for transmission audio: a reconnect re-syncs from scratch.
-        # Scratch files from the previous connection are discarded rather
-        # than reused -- see `decision-fetch-on-connect`, there is no cache.
-        self._discard_transmission_scratch()
+        # Dropping the state drops the PCM with it -- see
+        # `decision-fetch-on-connect`, there is no cache and nothing on disk.
         self._state.transmission_audio = TransmissionAudioState()
 
     def _apply_snapshot_payload(self, payload: dict[str, Any]) -> None:

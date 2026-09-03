@@ -22,6 +22,17 @@ constexpr char kCompanionKindPlayerLocalLocation[] = "player.localLocation";
 constexpr char kCompanionKindPlayerWorldLocation[] = "player.worldLocation";
 constexpr char kCompanionKindPlayerInventory[] = "player.inventory";
 constexpr char kCompanionKindPlayerQuests[] = "player.quests";
+// THE wire schema version. Single definition site on purpose: this number is
+// emitted by both the `world` handshake and the UDP `announce` datagram, and
+// when they were two independent string literals they drifted - TASK-024's
+// reviewer gate found `announce` still saying 12 while the code emitted 13.
+//
+// 15 (TASK-026) is the protocol's first NON-additive change: the transmission
+// manifest lost `bytes` and `envelopeBytes`. Safe because their only consumer
+// reads `index` alone, but that is a fact about today's client, so the bump
+// is what records it for any other.
+constexpr int kCompanionSchemaVersion = 15;
+
 constexpr char kCompanionKindPlayerHolodisks[] = "player.holodisks";
 constexpr char kCompanionKindPlayerTransmissions[] = "player.transmissions";
 
@@ -47,9 +58,11 @@ struct CompanionCommandRequest {
     bool hasObjectId;
 };
 
-// `world` (handshake response). `schemaVersion` is `14` after adding
-// holodisk `body` text to `player.holodisks` and making every string on
-// the wire pure ASCII (`13` for the `player.holodisks` /
+// `world` (handshake response). `schemaVersion` is `15` after the
+// transmission manifest became index-only, with audio decoded and degraded
+// from `MASTER.DAT` in-process (`14` for holodisk `body` text on
+// `player.holodisks` plus pure-ASCII strings on the wire, `13` for the
+// `player.holodisks` /
 // `player.transmissions` kinds and the transmission manifest/audio fetch, `12`
 // for the `player.quests` kind, `11` for live item identity and the two-handed
 // marker on `player.inventory`, `10` for the additive per-type detail
@@ -113,14 +126,19 @@ std::string companionBuildHolodisksUpdate(unsigned int seq,
 std::string companionBuildTransmissionsUpdate(unsigned int seq,
     const CompanionTransmissionSnapshot& current);
 
-// One row of the transmission manifest: a disk that has a readable narration
-// AND a readable envelope on the game device. Deliberately says nothing
-// about whether the player has found it - bakedness and availability are
-// separate sources, intersected only at render time on the client.
+// One row of the transmission manifest: a listable movie that exists in the
+// DAT and carries an audio track. Deliberately says nothing about whether the
+// player has found it - playability and availability are separate sources,
+// intersected only at render time on the client.
+//
+// INDEX ONLY, since schemaVersion 15. `bytes` and `envelopeBytes` were
+// removed because under in-engine generation they are properties of a buffer
+// that does not exist until the transmission is actually requested - a
+// manifest reporting them would either be lying or would force a
+// generate-everything burst on connect. They live on the per-transmission
+// audio header, which is where they are genuinely known.
 struct CompanionTransmissionManifestEntry {
     int index;
-    size_t bytes;
-    size_t envelopeBytes;
 };
 
 std::string companionBuildTransmissionManifest(

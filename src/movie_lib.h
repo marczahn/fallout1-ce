@@ -25,6 +25,18 @@ int _MVE_rmStepMovie();
 void _MVE_rmEndMovie();
 void _MVE_ReleaseMem();
 
+// Fallout's Interplay-DPCM delta table: 256 entries, indexed by one input
+// byte, added to a running `unsigned short` predictor. Read-only, and NOT the
+// standard Interplay table - index 112 is 17685, max positive delta 32589.
+//
+// Exposed so the companion server's standalone MVE audio reader decodes with
+// the SAME table the engine plays with, rather than a transcribed copy. A copy
+// of 256 hex values is exactly the kind of silent divergence that the
+// companion transmission work has already been bitten by once (TASK-023's
+// Python decoder). This is a pure getter over a file-static array; it touches
+// nothing in the playback path.
+const unsigned short* companionMveDeltaTable();
+
 } // namespace fallout
 
 #endif /* MOVIE_LIB_H */

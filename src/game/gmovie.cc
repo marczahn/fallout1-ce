@@ -287,4 +287,16 @@ static char* gmovie_subtitle_func(char* movie_file_path)
     return full_path;
 }
 
+// Companion-specific read-only accessor over the file-static `movie_list`.
+// See the declaration in `gmovie.h` for why this exists rather than a copy of
+// the table.
+const char* companionMovieFileName(int game_movie)
+{
+    if (game_movie < 0 || game_movie >= MOVIE_COUNT) {
+        return NULL;
+    }
+
+    return movie_list[game_movie];
+}
+
 } // namespace fallout

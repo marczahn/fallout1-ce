@@ -6,16 +6,18 @@ the mixer; only :func:`create_sink` does.
 from companion_app.audio.equalizer import bar_levels, frame_index, silent_levels
 from companion_app.audio.sink import (
     AudioSink,
-    MusicAudioSink,
+    BufferAudioSink,
     NullAudioSink,
+    byte_offset,
     create_sink,
 )
 
 __all__ = [
     "AudioSink",
-    "MusicAudioSink",
+    "BufferAudioSink",
     "NullAudioSink",
     "bar_levels",
+    "byte_offset",
     "create_sink",
     "frame_index",
     "silent_levels",

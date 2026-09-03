@@ -6,13 +6,21 @@ only where rendering is the thing under test.
 """
 from __future__ import annotations
 
+import hashlib
+import os
 import unittest
 from dataclasses import replace
 
 import pygame
 
 from companion_app.audio import equalizer
-from companion_app.audio.sink import MusicAudioSink, NullAudioSink
+from companion_app.audio.sink import (
+    REQUIRED_MIXER_FORMAT,
+    BufferAudioSink,
+    NullAudioSink,
+    byte_offset,
+    create_sink,
+)
 from companion_app.input.events import (
     ConfirmEvent,
     EncoderLeftEvent,
@@ -27,6 +35,7 @@ from companion_app.state import (
     TransmissionSyncStatus,
 )
 from companion_app.ui import transmission_list, transmission_playback, sections
+from companion_app.render import palette
 from companion_app.ui.pages import archives
 from companion_app.ui.scroll_list import ListCursor
 from companion_app.ui.sections import (
@@ -50,7 +59,10 @@ def _state(indices=(3, 4, 7), *, recordings=(), status=TransmissionSyncStatus.RE
     for index in recordings:
         state.transmission_audio.recordings[index] = TransmissionRecording(
             index=index,
-            path=f"/tmp/transmission_{index:02d}.ogg",
+            # 16,000 bytes = 1000ms at 8kHz mono 16-bit, matching the
+            # 20-frame/50ms envelope below. The two durations must agree in a
+            # fixture, or tests silently assert against the wrong one.
+            pcm=b"\x00\x01" * 8000,
             bands=16,
             frames=20,
             frame_ms=50,
@@ -145,82 +157,312 @@ class EqualizerTests(unittest.TestCase):
         self.assertEqual(equalizer.silent_levels(3), [0.0, 0.0, 0.0])
 
 
-class _FakeMusic:
-    """Stands in for ``pygame.mixer.music``, including its two traps."""
-
-    def __init__(self, duration_ms: int = 5000) -> None:
-        self.duration_ms = duration_ms
-        self.elapsed = 0
-        self.loaded = None
-        self.playing = False
-        self.paused = False
-        self.calls: list[str] = []
-
-    def load(self, path):
-        self.loaded = path
-        self.calls.append("load")
-
-    def play(self):
-        self.playing = True
-        self.elapsed = 0
-        self.calls.append("play")
-
-    def stop(self):
-        self.playing = False
-        self.calls.append("stop")
-
-    def pause(self):
-        self.paused = True
-        self.calls.append("pause")
-
-    def unpause(self):
-        self.paused = False
-        self.calls.append("unpause")
-
-    def get_busy(self):
-        return self.playing
-
-    def get_pos(self):
-        # Trap 1: counts since play(), ignoring set_pos.
-        return self.elapsed if self.playing else -1
-
-    def set_pos(self, seconds):
-        # Trap 2: raises past end-of-track, with a misleading message.
-        if seconds * 1000 >= self.duration_ms:
-            raise _FakePygameError("Position not implemented for music type")
-        self.calls.append(f"set_pos:{seconds}")
-
-
 class _FakePygameError(Exception):
     pass
+
+
+class _FakeChannel:
+    def __init__(self) -> None:
+        self.busy = True
+        self.calls: list[str] = []
+
+    def pause(self) -> None:
+        self.calls.append("pause")
+
+    def unpause(self) -> None:
+        self.calls.append("unpause")
+
+    def stop(self) -> None:
+        self.busy = False
+        self.calls.append("stop")
+
+    def get_busy(self) -> bool:
+        return self.busy
+
+
+class _FakeSound:
+    def __init__(self, buffer: bytes, owner: "_FakeMixer") -> None:
+        self.buffer = bytes(buffer)
+        self._owner = owner
+
+    def play(self):
+        channel = _FakeChannel()
+        self._owner.channels.append(channel)
+        return channel
+
+
+class _FakeMixer:
+    def __init__(self) -> None:
+        self.buffers: list[bytes] = []
+        self.channels: list[_FakeChannel] = []
+        self.raise_on_sound = False
+
+    def Sound(self, buffer=None):  # noqa: N802 - mirrors pygame's name
+        if self.raise_on_sound:
+            raise _FakePygameError("mixer not initialized")
+        self.buffers.append(bytes(buffer))
+        return _FakeSound(buffer, self)
 
 
 class _FakePygame:
     error = _FakePygameError
 
-    def __init__(self, music: _FakeMusic) -> None:
-        class _Mixer:
-            pass
-
-        self.mixer = _Mixer()
-        self.mixer.music = music
+    def __init__(self) -> None:
+        self.mixer = _FakeMixer()
 
 
-def _sink_with(music: _FakeMusic) -> MusicAudioSink:
-    sink = MusicAudioSink.__new__(MusicAudioSink)
-    sink._pygame = _FakePygame(music)
+class _FakeClock:
+    """Monotonic clock the tests drive by hand, in seconds."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance_ms(self, ms: int) -> None:
+        self.now += ms / 1000.0
+
+
+def _buffer_sink():
+    """A `BufferAudioSink` over a fake pygame and a hand-driven clock."""
+    pygame = _FakePygame()
+    clock = _FakeClock()
+    sink = BufferAudioSink.__new__(BufferAudioSink)
+    sink._pygame = pygame
+    sink._clock = clock
+    sink._pcm = b""
     sink._duration_ms = 0
     sink._seek_base_ms = 0
-    sink._seek_origin_ms = 0
+    sink._started_at = 0.0
+    sink._paused_at = 0.0
     sink._paused = False
     sink._active = False
-    return sink
+    sink._sound = None
+    sink._channel = None
+    return sink, pygame.mixer, clock
+
+
+# 16 bytes per millisecond at 8kHz mono 16-bit.
+def _pcm(duration_ms: int) -> bytes:
+    return bytes(duration_ms * 16)
+
+
+class ByteOffsetTests(unittest.TestCase):
+    """`byte_offset` is tested directly, and here is why.
+
+    The alignment guard cannot be reached through `seek_by`: with integer
+    millisecond targets and 16 bytes per millisecond the offset is always
+    `ms * 16`, always even. Driving it through the seek path would be a test
+    that cannot fail - the pattern this suite has been bitten by three times.
+    So the helper is exercised on its own, including inputs that would yield
+    an odd offset if the rate ever changes.
+    """
+
+    def test_five_seconds_is_exactly_eighty_thousand_bytes(self) -> None:
+        self.assertEqual(byte_offset(5000), 80_000)
+
+    def test_offset_is_always_even(self) -> None:
+        for ms in (0, 1, 7, 999, 5000, 10_943):
+            self.assertEqual(byte_offset(ms) % 2, 0, f"odd offset for {ms}ms")
+
+    def test_negative_and_zero_clamp_to_zero(self) -> None:
+        self.assertEqual(byte_offset(0), 0)
+        self.assertEqual(byte_offset(-5000), 0)
+
+
+class _RealisticFakeMixer:
+    """Reproduces the pygame behaviour that made every transmission play
+    11x too fast.
+
+    The trap is that ``mixer.init()`` is a **silent no-op when the mixer is
+    already initialised** -- it returns cleanly and keeps the old format. And
+    the mixer is nearly always already up, because ``pygame.init()``
+    initialises every module including this one, at 44.1kHz stereo, and this
+    app calls it while loading config (`config.py:388`).
+    """
+
+    DEFAULT = (44100, -16, 2)
+
+    def __init__(self, *, already_initialised=True, refuse=None) -> None:
+        self.format = self.DEFAULT if already_initialised else None
+        self.refuse = refuse
+
+    def quit(self) -> None:
+        self.format = None
+
+    def init(self, frequency=44100, size=-16, channels=2) -> None:
+        if self.format is not None:
+            return  # <-- the no-op
+        self.format = self.refuse if self.refuse else (frequency, size, channels)
+
+    def get_init(self):
+        return self.format
+
+
+class _FakePygameModule:
+    def __init__(self, mixer) -> None:
+        self.mixer = mixer
+
+
+class _FixedPositionSink:
+    """A sink that reports a position, for renderer tests."""
+
+    def __init__(self, position_ms: int, *, playing=True, paused=False) -> None:
+        self.position_ms = position_ms
+        self.is_playing = playing
+        self.is_paused = paused
+
+    def play(self, pcm, duration_ms): pass
+    def toggle_pause(self): pass
+    def seek_by(self, delta_ms): pass
+    def stop(self): pass
+    def tick(self): pass
+
+
+class TimebarTests(unittest.TestCase):
+    """The transport had no visual feedback at all until this was added:
+    pause and the 5-second seek worked, but nothing on screen moved, so the
+    screen read as having no controls rather than no feedback."""
+
+    def test_clock_is_floored_not_rounded(self) -> None:
+        # A stopwatch never shows a second the audio has not reached.
+        self.assertEqual(archives.format_clock(0), "0:00")
+        self.assertEqual(archives.format_clock(999), "0:00")
+        self.assertEqual(archives.format_clock(1000), "0:01")
+        self.assertEqual(archives.format_clock(59_999), "0:59")
+        self.assertEqual(archives.format_clock(60_000), "1:00")
+        self.assertEqual(archives.format_clock(125_000), "2:05")
+
+    def test_clock_clamps_negative_to_zero(self) -> None:
+        self.assertEqual(archives.format_clock(-5000), "0:00")
+
+    def test_the_fill_grows_with_position(self) -> None:
+        """Pixel-counted, because the point of this feature is that the
+        user can SEE the position move."""
+        surface = pygame.Surface((240, 40))
+        rect = pygame.Rect(0, 0, 240, 30)
+
+        def lit(position_ms: int) -> int:
+            surface.fill((0, 0, 0))
+            archives._draw_timebar(surface, rect, position_ms, 10_000)
+            return sum(
+                1
+                for x in range(surface.get_width())
+                for y in range(surface.get_height())
+                if surface.get_at((x, y))[:3] == palette.FOREGROUND
+            )
+
+        start, middle, end = lit(0), lit(5000), lit(10_000)
+        self.assertLess(start, middle, "the bar did not advance")
+        self.assertLess(middle, end, "the bar did not reach the end")
+
+    def test_a_finished_track_fills_the_whole_track(self) -> None:
+        surface = pygame.Surface((240, 40))
+        archives._draw_timebar(surface, pygame.Rect(0, 0, 240, 30), 10_000, 10_000)
+        row = archives._TIMEBAR_HEIGHT // 2
+        self.assertEqual(surface.get_at((239, row))[:3], palette.FOREGROUND)
+
+    def test_position_past_the_end_does_not_overflow_the_track(self) -> None:
+        surface = pygame.Surface((240, 40))
+        archives._draw_timebar(surface, pygame.Rect(0, 0, 240, 30), 99_000, 10_000)
+        self.assertEqual(surface.get_at((239, 0))[:3], palette.FOREGROUND)
+
+    def test_zero_duration_draws_a_track_but_no_fill(self) -> None:
+        surface = pygame.Surface((240, 40))
+        surface.fill((0, 0, 0))
+        archives._draw_timebar(surface, pygame.Rect(0, 0, 240, 30), 0, 0)
+        row = archives._TIMEBAR_HEIGHT // 2
+        self.assertEqual(surface.get_at((0, row))[:3], palette.DIM, "no track drawn")
+
+    def test_player_labels_duration_from_the_pcm_not_the_envelope(self) -> None:
+        """Two recordings with the SAME envelope and DIFFERENT audio lengths.
+
+        The envelope rounds up to a whole 50ms frame, so it is a different
+        number from the PCM's duration and using it would leave the fill and
+        the total short on every transmission. Asserting `format_clock` on
+        both values would NOT catch that - it never touches the renderer -
+        so this drives the real screen instead: same envelope means the same
+        equalizer bars at the same position, therefore any pixel difference
+        is the timebar reading a different duration. Render both and require
+        them to differ.
+        """
+        def render(pcm_ms: int) -> bytes:
+            state = _state(recordings=())
+            state.transmission_audio.recordings[1] = TransmissionRecording(
+                index=1,
+                pcm=b"\x00" * (pcm_ms * 16),
+                bands=16,
+                frames=180,            # 180 * 50ms = 9,000ms for both
+                frame_ms=50,
+                envelope=_envelope(16, 180),
+            )
+            surface = pygame.Surface((480, 320))
+            surface.fill((0, 0, 0))
+            archives.render_transmission_player(
+                surface, pygame.Rect(0, 0, 480, 320), state, 1,
+                _FixedPositionSink(1000),
+            )
+            # Hashed, not raw bytes: a failure here should print a short
+            # digest, not 3MB of pixels.
+            return hashlib.sha256(pygame.image.tostring(surface, "RGB")).hexdigest()
+
+        # 0:08 against 0:05, both inside a 0:09 envelope.
+        self.assertNotEqual(
+            render(8999), render(5000),
+            "the screen renders identically for two different audio lengths, "
+            "so it is labelling from the envelope duration, not the PCM",
+        )
+
+    def test_the_player_screen_draws_the_timebar(self) -> None:
+        surface = pygame.Surface((480, 320))
+        rect = pygame.Rect(0, 0, 480, 320)
+        state = _state(recordings=(1,))
+
+        def lit(position_ms: int) -> int:
+            surface.fill((0, 0, 0))
+            archives.render_transmission_player(
+                surface, rect, state, 1, _FixedPositionSink(position_ms)
+            )
+            return sum(
+                1
+                for x in range(surface.get_width())
+                for y in range(surface.get_height())
+                if surface.get_at((x, y))[:3] != (0, 0, 0)
+            )
+
+        # Same envelope frame (50ms apart would be identical bars), so any
+        # difference is the timebar and the clock, not the equalizer.
+        self.assertNotEqual(lit(0), lit(900), "the player screen shows no position")
+
+
+class CreateSinkTests(unittest.TestCase):
+    def test_mixer_already_up_at_44k_is_torn_down_and_reopened_at_8k(self) -> None:
+        """Fails against a `create_sink` that does not call `mixer.quit()`:
+        the format stays 44100/stereo and playback runs at 11.03x."""
+        mixer = _RealisticFakeMixer(already_initialised=True)
+        sink = create_sink(pygame_module=_FakePygameModule(mixer))
+
+        self.assertEqual(mixer.get_init(), REQUIRED_MIXER_FORMAT)
+        self.assertIsInstance(sink, BufferAudioSink)
+
+    def test_a_mixer_that_will_not_give_the_format_degrades_to_silence(self) -> None:
+        """Silence is diagnosable; 11x-speed audio sounds like a decoder bug."""
+        mixer = _RealisticFakeMixer(already_initialised=True, refuse=(48000, -16, 2))
+        sink = create_sink(pygame_module=_FakePygameModule(mixer))
+        self.assertIsInstance(sink, NullAudioSink)
+
+    def test_disabled_yields_a_null_sink_without_touching_the_mixer(self) -> None:
+        mixer = _RealisticFakeMixer(already_initialised=True)
+        sink = create_sink(enabled=False, pygame_module=_FakePygameModule(mixer))
+        self.assertIsInstance(sink, NullAudioSink)
+        self.assertEqual(mixer.get_init(), _RealisticFakeMixer.DEFAULT, "mixer was touched")
 
 
 class NullSinkTests(unittest.TestCase):
     def test_every_call_is_a_noop(self) -> None:
         sink = NullAudioSink()
-        sink.play("/nope", 1000)
+        sink.play(b"\x00\x00", 1000)
         sink.toggle_pause()
         sink.seek_by(5000)
         sink.tick()
@@ -230,85 +472,156 @@ class NullSinkTests(unittest.TestCase):
         self.assertEqual(sink.position_ms, 0)
 
 
-class MusicSinkTests(unittest.TestCase):
-    def test_position_is_tracked_across_a_seek(self) -> None:
-        """`get_pos()` ignores `set_pos()`, so the sink must add a base."""
-        music = _FakeMusic(duration_ms=10_000)
-        sink = _sink_with(music)
-        sink.play("/a.ogg", 10_000)
-        music.elapsed = 500
+class BufferSinkTests(unittest.TestCase):
+    def test_play_hands_the_whole_buffer_to_sound_and_keeps_it_alive(self) -> None:
+        sink, mixer, _clock = _buffer_sink()
+        pcm = _pcm(5000)
+        sink.play(pcm, 5000)
+
+        self.assertTrue(sink.is_playing)
+        self.assertEqual(mixer.buffers, [pcm])
+        # pygame does not hold the Sound for you; a collected one stops
+        # playback mid-track.
+        self.assertIsNotNone(sink._sound)
+
+    def test_position_advances_with_the_clock_and_freezes_while_paused(self) -> None:
+        sink, _mixer, clock = _buffer_sink()
+        sink.play(_pcm(10_000), 10_000)
+
+        clock.advance_ms(500)
         self.assertEqual(sink.position_ms, 500)
 
-        # SDL does NOT restart its counter at a seek; it keeps counting
-        # from play(). The sink must subtract the reading it took at the
-        # seek, or every seek compounds. Measured against real SDL in the
-        # TASK-024 P0 check.
-        sink.seek_by(3000)
-        self.assertEqual(sink.position_ms, 3500, "position lands on the seek target")
-        music.elapsed = 1000  # 500ms more wall-clock since the seek
-        self.assertEqual(sink.position_ms, 4000, "and advances from there, once")
+        sink.toggle_pause()
+        clock.advance_ms(2000)
+        self.assertEqual(sink.position_ms, 500, "a paused track does not advance")
 
-    def test_rewind_clamps_at_zero(self) -> None:
-        music = _FakeMusic(duration_ms=10_000)
-        sink = _sink_with(music)
-        sink.play("/a.ogg", 10_000)
-        music.elapsed = 1000
+        sink.toggle_pause()
+        clock.advance_ms(300)
+        self.assertEqual(sink.position_ms, 800, "and resumes from where it stopped")
+
+    def test_position_clamps_to_the_declared_duration(self) -> None:
+        sink, _mixer, clock = _buffer_sink()
+        sink.play(_pcm(5000), 5000)
+        clock.advance_ms(9999)
+        self.assertEqual(sink.position_ms, 5000)
+
+    def test_seek_forward_slices_exactly_eighty_thousand_bytes(self) -> None:
+        """Asserts the slice handed to `Sound`, not the bookkeeping field."""
+        sink, mixer, clock = _buffer_sink()
+        pcm = _pcm(20_000)
+        sink.play(pcm, 20_000)
+        clock.advance_ms(1000)
+
+        sink.seek_by(5000)
+
+        self.assertEqual(len(mixer.buffers), 2)
+        self.assertEqual(mixer.buffers[1], pcm[byte_offset(6000):])
+        self.assertEqual(len(pcm) - len(mixer.buffers[1]), 96_000)
+        self.assertEqual(sink.position_ms, 6000)
+
+    def test_rewind_past_the_start_clamps_to_offset_zero(self) -> None:
+        sink, mixer, clock = _buffer_sink()
+        pcm = _pcm(20_000)
+        sink.play(pcm, 20_000)
+        clock.advance_ms(2000)
+
         sink.seek_by(-5000)
-        self.assertEqual(sink.position_ms, 0)
-        self.assertTrue(sink.is_playing)
 
-    def test_fast_forward_past_the_end_stops_instead_of_seeking(self) -> None:
-        """The P0 finding: `set_pos()` past the end raises, so it is never
-        called with an out-of-range target."""
-        music = _FakeMusic(duration_ms=5000)
-        sink = _sink_with(music)
-        sink.play("/a.ogg", 5000)
-        music.elapsed = 4000
+        self.assertTrue(sink.is_playing)
+        self.assertEqual(sink.position_ms, 0)
+        self.assertEqual(mixer.buffers[1], pcm, "clamped seek replays the whole buffer")
+
+    def test_seek_into_the_envelope_rounding_gap_stops_instead_of_slicing_empty(self) -> None:
+        """The near-end case, with `boil1`'s real, non-frame-aligned size.
+
+        175,090 bytes is 10,943ms of audio, but its 219 envelope frames
+        describe 10,950ms. A sink that bounds seeks on the ENVELOPE duration
+        accepts a target in that 7ms gap and then slices an empty buffer:
+        playback stops silently while the transport still shows time left.
+
+        The duration passed here is deliberately the wrong one - the
+        envelope's - so the test fails against a sink that trusts it.
+
+        The target matters. `_start_at` refuses an offset past the end of the
+        buffer, so most of the gap is caught by that guard whichever bound is
+        used, and a test aiming there passes against BOTH implementations.
+        10,943ms is the one millisecond in the gap whose byte offset
+        (175,088) still lands inside the buffer: bound on the envelope and
+        the sink happily builds a Sound over the final 2 bytes - one sample -
+        and reports itself as playing.
+        """
+        sink, mixer, clock = _buffer_sink()
+        pcm = bytes(175_090)  # boil1: 10,943ms of audio, 10,950ms of envelope
+        sink.play(pcm, 10_950)
+        clock.advance_ms(5943)
+
+        sink.seek_by(5000)  # target 10,943ms: the end of the audio exactly
+
+        self.assertFalse(sink.is_playing, "must stop rather than play a 2-byte tail")
+        self.assertEqual(len(mixer.buffers), 1, "no second Sound was built")
+
+    def test_fast_forward_past_the_end_stops(self) -> None:
+        sink, _mixer, clock = _buffer_sink()
+        sink.play(_pcm(5000), 5000)
+        clock.advance_ms(4000)
         sink.seek_by(5000)
         self.assertFalse(sink.is_playing)
-        self.assertNotIn("set_pos:9.0", music.calls)
 
-    def test_toggle_pause_round_trips(self) -> None:
-        music = _FakeMusic()
-        sink = _sink_with(music)
-        sink.play("/a.ogg", 5000)
+    def test_a_seek_while_paused_stays_paused(self) -> None:
+        sink, _mixer, clock = _buffer_sink()
+        sink.play(_pcm(20_000), 20_000)
+        clock.advance_ms(1000)
+        sink.toggle_pause()
+
+        sink.seek_by(5000)
+
+        self.assertTrue(sink.is_paused, "a seek must not silently resume playback")
+        self.assertEqual(sink.position_ms, 6000)
+
+    def test_toggle_pause_round_trips_on_the_channel(self) -> None:
+        sink, mixer, _clock = _buffer_sink()
+        sink.play(_pcm(5000), 5000)
+
         sink.toggle_pause()
         self.assertTrue(sink.is_paused)
         sink.toggle_pause()
         self.assertFalse(sink.is_paused)
-        self.assertEqual(music.calls.count("pause"), 1)
-        self.assertEqual(music.calls.count("unpause"), 1)
 
-    def test_stop_resets_so_replay_starts_from_the_beginning(self) -> None:
-        music = _FakeMusic(duration_ms=10_000)
-        sink = _sink_with(music)
-        sink.play("/a.ogg", 10_000)
-        music.elapsed = 2000
-        sink.seek_by(3000)
-        sink.stop()
-        self.assertEqual(sink.position_ms, 0)
-        sink.play("/a.ogg", 10_000)
-        music.elapsed = 0
-        self.assertEqual(sink.position_ms, 0)
+        channel = mixer.channels[0]
+        self.assertEqual(channel.calls.count("pause"), 1)
+        self.assertEqual(channel.calls.count("unpause"), 1)
 
     def test_tick_notices_a_finished_track(self) -> None:
-        music = _FakeMusic()
-        sink = _sink_with(music)
-        sink.play("/a.ogg", 5000)
-        music.playing = False
+        sink, mixer, _clock = _buffer_sink()
+        sink.play(_pcm(5000), 5000)
+        mixer.channels[0].busy = False
         sink.tick()
         self.assertFalse(sink.is_playing)
 
-    def test_a_failed_load_does_not_leave_the_sink_active(self) -> None:
-        music = _FakeMusic()
+    def test_stop_resets_so_replay_starts_from_the_beginning(self) -> None:
+        sink, _mixer, clock = _buffer_sink()
+        pcm = _pcm(10_000)
+        sink.play(pcm, 10_000)
+        clock.advance_ms(2000)
+        sink.seek_by(3000)
+        sink.stop()
+        self.assertEqual(sink.position_ms, 0)
 
-        def boom(_path):
-            raise _FakePygameError("no such file")
+        sink.play(pcm, 10_000)
+        self.assertEqual(sink.position_ms, 0)
 
-        music.load = boom
-        sink = _sink_with(music)
-        sink.play("/missing.ogg", 1000)
+    def test_a_failing_mixer_leaves_the_sink_stopped_rather_than_raising(self) -> None:
+        sink, mixer, _clock = _buffer_sink()
+        mixer.raise_on_sound = True
+        sink.play(_pcm(5000), 5000)
         self.assertFalse(sink.is_playing)
+        self.assertEqual(sink.position_ms, 0)
+
+    def test_an_empty_buffer_is_not_playable(self) -> None:
+        sink, mixer, _clock = _buffer_sink()
+        sink.play(b"", 0)
+        self.assertFalse(sink.is_playing)
+        self.assertEqual(mixer.buffers, [])
 
 
 class _RecordingSink:
@@ -522,7 +835,7 @@ def _hdev(bands: int, frames: int, frame_ms: int = 50) -> bytes:
 
 
 class TransmissionSyncTests(unittest.TestCase):
-    """Criterion 12 (fetch on connect) and 14 (no truncated file)."""
+    """Criterion 12 (fetch on connect) and 8 (nothing written to disk)."""
 
     def setUp(self) -> None:
         import base64
@@ -532,9 +845,6 @@ class TransmissionSyncTests(unittest.TestCase):
         self.state.transmission_audio.status = TransmissionSyncStatus.FETCHING
         self.client = _client_for(self.state)
 
-    def tearDown(self) -> None:
-        self.client._discard_transmission_scratch()
-
     def test_manifest_drives_the_fetch_set_not_availability(self) -> None:
         """The disk the player has NOT found is still fetched."""
         self.state.player.transmissions = [Transmission(index=3, title="FOUND")]
@@ -542,8 +852,8 @@ class TransmissionSyncTests(unittest.TestCase):
         self.assertEqual(self.state.transmission_audio.manifest, [3, 9])
         self.assertEqual(self.client.sent[-1]["type"], "getTransmissionAudio")
 
-    def test_full_fetch_stores_a_playable_recording(self) -> None:
-        audio = b"OggS" + b"\x00" * 100
+    def test_full_fetch_stores_a_playable_recording_in_memory(self) -> None:
+        audio = bytes(range(256)) * 4
         env = _hdev(4, 10)
         self.client._on_transmission_manifest({"entries": [{"index": 3}]})
         self.client._on_transmission_audio_header({
@@ -554,13 +864,45 @@ class TransmissionSyncTests(unittest.TestCase):
             "index": 3, "chunk": 0, "dataB64": self.b64(audio).decode(),
         })
         recording = self.state.transmission_audio.recordings[3]
-        self.assertEqual(recording.duration_ms, 500)
-        with open(recording.path, "rb") as handle:
-            self.assertEqual(handle.read(), audio)
+        self.assertEqual(recording.duration_ms, 500, "envelope duration: 10 frames x 50ms")
+        self.assertEqual(recording.pcm, audio, "the PCM is held, not a path to it")
         self.assertIs(self.state.transmission_audio.status, TransmissionSyncStatus.READY)
 
+    def test_the_fetch_writes_no_file_anywhere(self) -> None:
+        """Criterion 8, asserted by watching the filesystem rather than by
+        asserting the absence of a call."""
+        import tempfile as _tempfile
+        from pathlib import Path
+
+        audio = bytes(512)
+        env = _hdev(4, 10)
+        with _tempfile.TemporaryDirectory() as scratch:
+            before = set(Path(scratch).rglob("*"))
+            cwd = os.getcwd()
+            os.chdir(scratch)
+            try:
+                self.client._on_transmission_manifest({"entries": [{"index": 3}]})
+                self.client._on_transmission_audio_header({
+                    "index": 3, "bytes": len(audio), "chunkCount": 1,
+                    "chunkBytes": 4096, "envelopeB64": self.b64(env).decode(),
+                })
+                self.client._on_transmission_audio_chunk({
+                    "index": 3, "chunk": 0, "dataB64": self.b64(audio).decode(),
+                })
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(set(Path(scratch).rglob("*")), before,
+                             "the transmission fetch created a file")
+
+    def test_a_manifest_entry_needs_only_an_index(self) -> None:
+        """schemaVersion 15 dropped `bytes` and `envelopeBytes`."""
+        self.client._on_transmission_manifest({"entries": [{"index": 3}, {"index": 7}]})
+        self.assertEqual(self.state.transmission_audio.manifest, [3, 7])
+
     def test_a_short_transfer_stores_nothing(self) -> None:
-        """Criterion 14: a truncated stream must never become a file."""
+        """A truncated stream must never become a recording. The length
+        check is now the ONLY integrity gate, since there is no file to be
+        left behind half-written - so it matters more, not less."""
         env = _hdev(4, 10)
         self.client._on_transmission_manifest({"entries": [{"index": 3}]})
         self.client._on_transmission_audio_header({

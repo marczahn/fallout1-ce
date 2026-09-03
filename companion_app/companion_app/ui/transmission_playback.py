@@ -70,7 +70,9 @@ def apply(
         if after_index is not None:
             recording = state.transmission_audio.recordings.get(after_index)
             if recording is not None:
-                sink.play(recording.path, recording.duration_ms)
+                # `pcm_duration_ms`, not `duration_ms`: the envelope's is
+                # rounded up to a whole frame and is for the equalizer.
+                sink.play(recording.pcm, recording.pcm_duration_ms)
         return
 
     if after_index is None:

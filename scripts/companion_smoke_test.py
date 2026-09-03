@@ -62,6 +62,15 @@ RECV_TIMEOUT_SECONDS = 2.0
 
 # Must match `kMapChunkBytes` in src/companion_server.cc.
 MAP_CHUNK_BYTES = 147456
+
+# Wire schema version this script asserts against. Mirrors
+# `kCompanionSchemaVersion` in `companion_protocol.h`.
+SCHEMA_VERSION = 15
+
+# Transmission PCM format. Fixed, not negotiated: the app reads the buffer in
+# its mixer's format and nothing on the wire carries a rate.
+TRANSMISSION_SAMPLE_RATE = 8000
+TRANSMISSION_BYTES_PER_SECOND = TRANSMISSION_SAMPLE_RATE * 2
 # Must match `kOutboundCap` in src/companion_server.cc.
 OUTBOUND_CAP = 256 * 1024
 
@@ -152,8 +161,9 @@ def test_auth_then_hello(sock, password):
     msg = json.loads(line)
     assert_equal(msg.get("type"), "world", "type")
     assert_field(msg, "schemaVersion", "world")
-    # Current protocol version after the player.quests kind was added.
-    assert_equal(msg.get("schemaVersion"), 14, "world.schemaVersion")
+    # Current protocol version. 15 (TASK-026) made the transmission manifest
+    # index-only, with audio decoded and degraded from MASTER.DAT in-process.
+    assert_equal(msg.get("schemaVersion"), SCHEMA_VERSION, "world.schemaVersion")
     assert_field(msg, "game", "world")
     assert_field(msg, "playerAvailable", "world")
     assert_is_bool(msg["playerAvailable"], "world.playerAvailable")
@@ -870,7 +880,12 @@ def test_transmission_audio(sock):
     if entries:
         entry = entries[0]
         index = entry["index"]
-        expected_bytes = entry["bytes"]
+
+        # The manifest is INDEX-ONLY since schemaVersion 15: `bytes` and
+        # `envelopeBytes` are properties of a buffer the engine has not
+        # generated yet at manifest time. The size now comes from the header,
+        # which is emitted after generation.
+        assert_equal(sorted(entry.keys()), ["index"], "manifest entry is index-only")
 
         send(sock, {"type": "getTransmissionAudio", "index": index})
         header = stream.next_message(RECV_TIMEOUT_SECONDS)
@@ -878,7 +893,9 @@ def test_transmission_audio(sock):
             fail("no transmissionAudioHeader reply")
         assert_equal(header.get("type"), "transmissionAudioHeader", "audio header type")
         assert_equal(header.get("index"), index, "audio header index")
-        assert_equal(header.get("bytes"), expected_bytes, "audio header bytes matches manifest")
+        expected_bytes = header.get("bytes")
+        if not isinstance(expected_bytes, int) or expected_bytes <= 0:
+            fail(f"audio header bytes is not a positive int: {expected_bytes!r}")
 
         envelope = base64.b64decode(header["envelopeB64"])
         if len(envelope) < 12 or envelope[:4] != b"HDEV":
@@ -900,9 +917,24 @@ def test_transmission_audio(sock):
             assert_equal(chunk_msg.get("type"), "transmissionAudioChunk", "chunk type")
             received.extend(base64.b64decode(chunk_msg["dataB64"]))
         assert_equal(len(received), expected_bytes, "reassembled audio length")
-        if bytes(received[:4]) != b"OggS":
-            fail(f"reassembled audio is not Ogg: {bytes(received[:4])!r}")
-        print(f"  audio: {len(received)} bytes reassembled, OggS magic intact")
+
+        # Raw PCM since schemaVersion 15, not an encoded container, so there
+        # is no magic to check. What CAN be asserted is the format contract
+        # the app's mixer depends on: 8 kHz mono 16-bit little-endian.
+        if len(received) % 2 != 0:
+            fail(f"PCM length {len(received)} is not 16-bit aligned")
+
+        duration_ms = len(received) * 1000 // TRANSMISSION_BYTES_PER_SECOND
+        envelope_ms = frames * frame_ms
+        if envelope_ms < duration_ms:
+            fail(f"envelope covers {envelope_ms}ms but the PCM is {duration_ms}ms")
+
+        # Every-sample-zero would pass every check above and be silence.
+        if not any(received):
+            fail("reassembled PCM is entirely zero")
+
+        print(f"  audio: {len(received)} bytes reassembled, {duration_ms}ms of "
+              f"{TRANSMISSION_SAMPLE_RATE}Hz mono PCM")
     else:
         skipped("transmissionManifest is empty -- the audio header, envelope and "
                 "chunk-reassembly checks did NOT run. Expected until TASK-026 "
@@ -933,6 +965,35 @@ def test_transmission_audio(sock):
     print("  negative cases: 3/3 errored without dropping the connection")
 
 
+def test_udp_announce(host, port):
+    """The UDP discovery datagram, and specifically its schemaVersion.
+
+    This exists because the announce site DRIFTED once: TASK-024's reviewer
+    gate found it still emitting `12` while the TCP handshake emitted `13`.
+    Two independent string literals with nothing tying them together. They now
+    share `kCompanionSchemaVersion`, and this asserts they agree on the wire
+    rather than trusting that they do in source.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+        udp.settimeout(RECV_TIMEOUT_SECONDS)
+        udp.sendto(json.dumps({"type": "discover"}).encode("ascii") + b"\n", (host, port))
+        try:
+            data, _ = udp.recvfrom(4096)
+        except socket.timeout:
+            skipped("UDP discovery did not answer -- the announce schemaVersion "
+                    "check, the one site that has drifted before, did not run")
+            return
+
+    msg = json.loads(data.decode("ascii").strip())
+    assert_equal(msg.get("type"), "announce", "announce type")
+    assert_equal(msg.get("game"), "fallout1-ce", "announce game")
+    assert_equal(msg.get("schemaVersion"), SCHEMA_VERSION, "announce.schemaVersion")
+    assert_field(msg, "host", "announce")
+    assert_field(msg, "port", "announce")
+    assert_field(msg, "authRequired", "announce")
+    print(f"  announce: schemaVersion {msg['schemaVersion']} matches the TCP handshake")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default=DEFAULT_HOST)
@@ -953,6 +1014,8 @@ def main():
     if not args.password:
         print("FAIL: --password (or FALLOUT_COMPANION_PASSWORD) is required", file=sys.stderr)
         sys.exit(2)
+
+    test_udp_announce(args.host, args.port)
 
     with socket.create_connection((args.host, args.port), timeout=RECV_TIMEOUT_SECONDS) as sock:
         sock.settimeout(RECV_TIMEOUT_SECONDS)

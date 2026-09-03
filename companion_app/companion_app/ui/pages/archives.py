@@ -79,6 +79,21 @@ _DISK_STATE_SIZE: int = 16
 _EQ_BAR_GAP: int = 4
 _EQ_HEIGHT: int = 160
 _EQ_TOP_GAP: int = 40
+
+# Timebar: a filled progress track plus `M:SS / M:SS`.
+#
+# Without this the transport is invisible. Pause and the 5-second seek have
+# always worked, but with only an equalizer and a PLAYING/PAUSED line on
+# screen there is no way to see that a seek moved anything - which reads as
+# "there are no controls" rather than "the controls give no feedback".
+_TIMEBAR_HEIGHT: int = 6
+_TIMEBAR_TOP_GAP: int = 14
+_TIMEBAR_TEXT_SIZE: int = 14
+_TIMEBAR_TEXT_GAP: int = 6
+# Vertical space the timebar block claims below the equalizer.
+_TIMEBAR_BLOCK: int = (
+    _TIMEBAR_TOP_GAP + _TIMEBAR_HEIGHT + _TIMEBAR_TEXT_GAP + _TIMEBAR_TEXT_SIZE
+)
 # A paused/stopped bar is still drawn, as a floor, so the equalizer reads
 # as "present but still" rather than as a failure to draw.
 _EQ_FLOOR_PX: int = 2
@@ -658,6 +673,62 @@ def _draw_equalizer(
         x += bar_width + _EQ_BAR_GAP
 
 
+def format_clock(milliseconds: int) -> str:
+    """`M:SS`, floored, clamped at zero.
+
+    Floored rather than rounded so the readout never shows a second the
+    audio has not reached: at 999ms this says 0:00, which is what a
+    stopwatch does.
+    """
+    if milliseconds < 0:
+        milliseconds = 0
+    total_seconds = milliseconds // 1000
+    return f"{total_seconds // 60}:{total_seconds % 60:02d}"
+
+
+def _draw_timebar(
+    surface: pygame.Surface,
+    rect: pygame.Rect,
+    position_ms: int,
+    duration_ms: int,
+) -> None:
+    """A progress track with an elapsed fill, and `M:SS / M:SS` beneath it.
+
+    ``duration_ms`` must be the PCM's duration, not the envelope's - the
+    envelope rounds up to a whole 50ms frame, so using it would leave the
+    fill short of the end on every transmission.
+    """
+    if rect.width <= 0:
+        return
+
+    track = pygame.Rect(rect.left, rect.top, rect.width, _TIMEBAR_HEIGHT)
+    surface.fill(palette.DIM, track)
+
+    if duration_ms > 0:
+        fraction = position_ms / duration_ms
+        fraction = 0.0 if fraction < 0.0 else (1.0 if fraction > 1.0 else fraction)
+        filled = int(round(track.width * fraction))
+        if filled > 0:
+            surface.fill(
+                palette.FOREGROUND,
+                pygame.Rect(track.left, track.top, filled, track.height),
+            )
+
+    label = f"{format_clock(position_ms)} / {format_clock(duration_ms)}"
+    font.draw_text_centered(
+        surface,
+        label,
+        pygame.Rect(
+            rect.left,
+            track.bottom + _TIMEBAR_TEXT_GAP,
+            rect.width,
+            _TIMEBAR_TEXT_SIZE + 4,
+        ),
+        _TIMEBAR_TEXT_SIZE,
+        palette.FOREGROUND,
+    )
+
+
 def render_transmission_player(
     surface: pygame.Surface,
     body_rect: pygame.Rect,
@@ -699,7 +770,17 @@ def render_transmission_player(
         inner.left,
         inner.top + _DISK_TITLE_SIZE + _EQ_TOP_GAP,
         inner.width,
-        min(_EQ_HEIGHT, max(0, inner.height - _DISK_TITLE_SIZE - _EQ_TOP_GAP - 40)),
+        min(
+            _EQ_HEIGHT,
+            max(
+                0,
+                inner.height
+                - _DISK_TITLE_SIZE
+                - _EQ_TOP_GAP
+                - _TIMEBAR_BLOCK
+                - 40,
+            ),
+        ),
     )
 
     if sink is not None and sink.is_playing and not sink.is_paused:
@@ -717,11 +798,32 @@ def render_transmission_player(
 
     _draw_equalizer(surface, eq_rect, levels)
 
+    # Position comes from the sink, which is the only thing that knows it;
+    # duration from the PCM, NOT `recording.duration_ms` (the envelope's,
+    # rounded up to a whole frame).
+    position_ms = sink.position_ms if sink is not None else 0
+    _draw_timebar(
+        surface,
+        pygame.Rect(
+            inner.left,
+            eq_rect.bottom + _TIMEBAR_TOP_GAP,
+            inner.width,
+            _TIMEBAR_BLOCK,
+        ),
+        position_ms,
+        recording.pcm_duration_ms,
+    )
+
     paused = sink is not None and sink.is_paused
     font.draw_text_centered(
         surface,
         PAUSED_TEXT if paused else PLAYING_TEXT,
-        pygame.Rect(inner.left, eq_rect.bottom + 12, inner.width, _DISK_STATE_SIZE + 8),
+        pygame.Rect(
+            inner.left,
+            eq_rect.bottom + _TIMEBAR_BLOCK + 12,
+            inner.width,
+            _DISK_STATE_SIZE + 8,
+        ),
         _DISK_STATE_SIZE,
         palette.FOREGROUND if not paused else palette.DIM,
     )

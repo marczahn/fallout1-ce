@@ -17,7 +17,21 @@ namespace fallout {
 
 #define GAME_CONFIG_COMPANION_BIND_KEY "bind"
 #define GAME_CONFIG_COMPANION_PASSWORD_KEY "password"
-#define GAME_CONFIG_COMPANION_TRANSMISSION_AUDIO_DIR_KEY "transmission_audio_dir"
+
+// Transmission radio-degradation recipe (TASK-026). All optional; an absent
+// key keeps the built-in default, so an untouched `fallout.cfg` produces the
+// intended sound. Changes take effect on the next connection, with no
+// rebuild.
+//
+// There is deliberately NO `transmission_sample_rate`: the output rate is a
+// compile-time constant, because the companion app reads the PCM buffer in
+// its mixer's format and nothing on the wire carries a rate. See
+// `kTransmissionSampleRate` in `companion_audio_degrade.h`.
+#define GAME_CONFIG_COMPANION_TRANSMISSION_BAND_LOW_KEY "transmission_band_low"
+#define GAME_CONFIG_COMPANION_TRANSMISSION_BAND_HIGH_KEY "transmission_band_high"
+#define GAME_CONFIG_COMPANION_TRANSMISSION_NOISE_KEY "transmission_noise"
+#define GAME_CONFIG_COMPANION_TRANSMISSION_COMPRESS_RATIO_KEY "transmission_compress_ratio"
+#define GAME_CONFIG_COMPANION_TRANSMISSION_LIMIT_KEY "transmission_limit"
 
 #define GAME_CONFIG_EXECUTABLE_KEY "executable"
 #define GAME_CONFIG_MASTER_DAT_KEY "master_dat"

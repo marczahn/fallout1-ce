@@ -2807,4 +2807,12 @@ uint8_t getOffset(uint16_t v)
     return static_cast<int8_t>(v & 0xFF) + dword_51F018[v >> 8];
 }
 
+// Companion-specific read-only accessor over the file-static DPCM delta
+// table. See the declaration in `movie_lib.h`. Nothing in the playback path
+// is touched by this.
+const unsigned short* companionMveDeltaTable()
+{
+    return word_51EBE0;
+}
+
 } // namespace fallout
